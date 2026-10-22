@@ -1,0 +1,13 @@
+{
+  "editor": ["code", "--wait"],
+  "profiles": {
+    "default": {
+      "spaceUrl": "https://example.backlog.com",
+      "apiKeyEnv": "BACKLOG_API_KEY"
+    },
+    "work": {
+      "spaceUrl": "https://company.backlog.jp",
+      "apiKeyEnv": "BACKLOG_WORK_API_KEY"
+    }
+  }
+}
