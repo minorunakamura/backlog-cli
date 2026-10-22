@@ -1,0 +1,13 @@
+{
+  "project": "MYAPP",
+  "issue": {
+    "create": {
+      "issueType": "タスク",
+      "priority": "中",
+      "assignee": "self"
+    },
+    "list": {
+      "status": ["未対応", "処理中"]
+    }
+  }
+}
