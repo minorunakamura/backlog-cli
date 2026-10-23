@@ -172,7 +172,7 @@ module名は初版のローカル内部用 `backlog-cli` とし、公開Go libra
 固定する実行/開発版：
 - Go **1.26.10**。
 - Huh **v0.8.0**、Bubble Tea **v1.3.10**、Bubbles **v0.21.1**、Glamour **v0.9.1**。
-- Lip Gloss **v1.1.0**、x/ansi **v0.11.5**、x/term **v0.2.2**、Goldmark **v1.7.8**、Cobra **v1.9.1**。
+- Lip Gloss **v1.1.0**、x/ansi **v0.11.5**、x/term **v0.2.2**、Goldmark **v1.7.17**、Cobra **v1.9.1**。
 - `golang.org/x/net v0.61.0`、その要求する `x/text v0.43.0` などは既知脆弱性を避けるため固定し、実際の解決結果をgo.mod/go.sumへ記録する。UIのversionだけ古いtransitive dependencyへ戻さない。
 - golangci-lint **v2.9.0**。Go 1.26.10でビルドしたtoolを使用。内包formatterのgofumpt **v0.9.2**、goimports（x/tools **v0.42.0**）を使用し、別のformatter版を重ねてインストールしない。
 - govulncheck **v1.9.0**を開発検証入口として固定。実行時依存にしない。
@@ -200,6 +200,27 @@ GitHub Actionsは固定Go/tool版でtest/lint/race/securityとcross build/archiv
 - 上記Probeに対するgovulncheck v1.9.0 -testで検出なし。ただし本番の全呼出し範囲や今後のadvisoryを保証する結果ではない。
 - 依存のbuild/Model単体検証と、実端末での操作感・全本文変換/無害化の完成検証を区別する。後者はImplementationの受入条件とする。
 - 実スペース接続は行っていない。
+
+### Issue #7 再計画：Goldmarkのセキュリティ更新
+
+対象は既存Issue [#7 Markdown課題を安全に整形して固定表示する](https://github.com/minorunakamura/backlog-cli/issues/7)。固定版Goldmarkを **v1.7.8からv1.7.17へ変更する**。理由は [GO-2026-5320](https://pkg.go.dev/vuln/GO-2026-5320) の検出により、Issue #7の部分実装で `make security` が失敗したため。公式advisoryの修正版はv1.7.17である。元の「構成と依存」の現状記述と「調査・Probeで確認した事実」は初回Planning時点の記録であり、当時の検出なしを現在の安全性の根拠にしない。
+
+**維持する契約・対象外：**
+- Glamour v0.9.1、Go 1.26.10を含む他の固定依存、機能範囲、本文変換表、公開コマンド・JSON契約、Issue #7の依存関係と既存の受入条件を変更しない。Backlog記法対応とTTY viewerは従来どおり後続Issueの範囲。
+- 通常Goldmark ASTによるcode/escape保護、危険entityの描画前処理、inline codeだけのampersand追加escape、fenced code原文保持、描画後のSGR以外の端末操作遮断、非TTYのANSI除去、JSON原本保持を維持する。脆弱性検査の無効化・除外・抑制で回避しない。
+- 本Planningでは作業ツリーの未コミット部分実装・README・go.mod/go.sum・テストを変更・破棄しない。承認後は本Planを同じ正式パスへ保存し、別途確認・公開承認を得て既存Issue #7の本文に改訂理由と参照・検証条件を整合させる。新しいIssueは作成せず、実装を開始しない。
+
+**互換性・保護処理への影響の根拠：**
+- [公式修正](https://github.com/yuin/goldmark/commit/cb46bbc4eca29d55aa9721e04ad207c23ccc44f9) はHTML rendererのlink/imageでURL変換後に危険性を判定し、autolinkにも判定を追加するもの。Glamour v0.9.1は独自ANSI rendererを使い、inline codeでGo標準 `html.UnescapeString` を使うため、この更新だけでCLIのentity/端末制御文字対策が不要になるとは扱わない。
+- Goldmark v1.7.17の最低Go版は1.22で、固定Go 1.26.10で満たす。Goldmark自身に他moduleのrequireはない。途中版にはentity APIやparser（fenced code・表・見出し等）の変更もあるため、patch番号だけで完全互換とは判断しない。
+- 未コミット部分実装を含む作業ツリーの一時コピーで、v1.7.8では `go test ./...` が成功し、`make security` がGO-2026-5320（renderAutoLink/renderImage/renderLink）の検出で失敗することを再現した。これは検査上の結果であり、CLIでのXSS成立を実証したものではない。
+- 一時コピーだけで `go get github.com/yuin/goldmark@v1.7.17` と `go mod tidy` を実行。go.modの変更はGoldmarkの1行だけ、go.sumは同moduleの本体/go.mod checksumの置換だけで、他依存は不変。Glamour v0.9.1との組合せで `make check`、`make test-race`、`make security`（検出なし）、`make build` が成功した。
+- 既存の公開入口テスト `internal/markup/markdown_test.go`、`internal/output/content_test.go`、`internal/cli/view*_test.go` 等により、通常文・URL・inline/fenced code・escapeのentity、HTML内code保護、通常改行、OSC/C0/C1/壊れたsequence、日本語/emoji、非TTY表示、JSON原本保持の回帰を確認した。公式な組合せ保証やあらゆる入力の同一出力を主張するものではない。実端末・実Backlog API・実CIは本再計画で未検証。
+
+**Issue #7での実装・完了条件・検証：**
+- 次の新しいImplementationセッションで、本Planと更新後の既存Issue #7を読み、部分実装を保持して再開する。依存更新はgo.mod/go.sumのGoldmark関連差分だけとし、実際の依存解決結果を確認する。想定外の他固定依存変更や契約変更が必要なら自動で拡張せず再計画する。
+- 元のIssue #7の実装・受入条件をそのまま完了させる。既存TDD方針と公開変換/描画・CLIのseamsを維持し、不足する振る舞いは既存tdd Skillによるtest→最小実装で追加する。依存更新自体は専用の内部構造テストを増やさず、修正前に失敗した `make security` と上記の既存回帰テストで確認する。
+- 実際の実装ツリーでGoldmark v1.7.17・Glamour v0.9.1と他固定依存不変を確認し、`make check`、`make test-race`、`make security`、`make build` を再実行して成功させる。entity/code保護・端末安全性・JSON原本保持を弱めない。本Probe成功をIssue #7の実装完了や実端末受入の代わりにしない。
 
 ## 完了条件
 

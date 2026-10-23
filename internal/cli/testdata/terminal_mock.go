@@ -26,6 +26,8 @@ func run() int {
 			return
 		}
 		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v2/issues/") && r.URL.Path != "/api/v2/issues/count":
+			_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": "APP-1", "projectId": 42, "summary": "Markdown固定表示 日本語👩‍💻\x1b]52;c;stolen\a mock-only-secret", "description": "# 見出し\n一行目\n二行目\n\n[toc]\n\n## 詳細\n<details><summary>クリックして詳細を表示</summary>展開された本文</details>\n\n**強調** ~~削除~~\n- [x] 済\n\n[[APP-2]] / APP-3 / [[Home]]\n#rev(11) / #rev(app:abcdefg) / #attach(sample.zip:11) / #image(11)\n\n![画像alt](https://example.invalid/image.png)\n\n| |結合||\n|見出し１|見出し２|見出し３|\n|---|---|---|\n|セル1|長いセル||\n|セル2|中央|右|\n[サンプル]\n\n`#rev(11) &amp; &#27;`\n\n```text\n#rev(11) &amp; &#27;\n```\n\n日本語👩‍💻\x1b[31m赤\x1b[0m &#27;[2J\x1b]52;c;stolen\a mock-only-secret"})
 		case r.URL.Path == "/api/v2/issues/count":
 			_, _ = fmt.Fprint(w, `{"count":3}`)
 		case r.URL.Path == "/api/v2/issues" && r.Method == http.MethodPost:
@@ -56,8 +58,8 @@ func run() int {
 				projects[i] = map[string]any{"id": i + 1, "projectKey": fmt.Sprintf("APP_%02d", i+1), "name": strings.Repeat("長い日本語👩‍💻", 12) + "\x1b[31m赤\x1b[0m\x07mock-only-secret"}
 			}
 			_ = json.NewEncoder(w).Encode(projects)
-		case r.URL.Path == "/api/v2/projects/APP":
-			_, _ = fmt.Fprint(w, `{"id":42,"projectKey":"APP"}`)
+		case r.URL.Path == "/api/v2/projects/APP" || r.URL.Path == "/api/v2/projects/42":
+			_, _ = fmt.Fprint(w, `{"id":42,"projectKey":"APP","textFormattingRule":"markdown"}`)
 		case r.URL.Path == "/api/v2/users/myself":
 			_, _ = fmt.Fprint(w, `{"id":10,"name":"本人"}`)
 		case strings.HasPrefix(r.URL.Path, "/api/v2/projects/") && strings.HasSuffix(r.URL.Path, "/statuses"):

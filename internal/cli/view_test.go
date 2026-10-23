@@ -106,20 +106,35 @@ func assertIssueViewInputError(t *testing.T, args []string) {
 	}
 }
 
-func TestExecuteIssueViewTextIsRejectedWithoutPrintingRawBody(t *testing.T) {
+func TestExecuteIssueViewMarkdownFixedOutputWithoutReadingInput(t *testing.T) {
 	for _, flags := range [][]string{nil, {"--no-input"}, {"--json=false"}} {
 		t.Run(fmt.Sprint(flags), func(t *testing.T) {
 			requests := 0
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests++
-				_, _ = fmt.Fprint(w, `{"issueKey":"APP-1","description":"RAW BODY\u001b[31m"}`)
+				switch r.URL.Path {
+				case "/api/v2/issues/APP-1":
+					_, _ = fmt.Fprint(w, `{"issueKey":"OTHER-9","projectId":42,"summary":"件名👩‍💻\u001b]52;c;stolen\u0007 test-secret+/?日本","description":"# 見出し\n一行目\n二行目\n\n[[APP-2]]\n\n**本文**\u001b[31m &#27;[2J test-secret+/?日本"}`)
+				case "/api/v2/projects/42":
+					_, _ = fmt.Fprint(w, `{"textFormattingRule":"markdown"}`)
+				default:
+					t.Errorf("unexpected API: %s", r.URL.Path)
+				}
 			}))
 			defer server.Close()
 			configure(t, server.URL)
 			var stdout, stderr bytes.Buffer
 			exit := cli.ExecuteWithInput(context.Background(), append([]string{"issue", "view", "APP-1"}, flags...), unreadableInput{t}, &stdout, &stderr, server.Client())
-			if exit != 2 || stdout.Len() != 0 || requests != 0 || !strings.Contains(stderr.String(), "--json") || strings.Contains(stderr.String(), "RAW BODY") || strings.Contains(stderr.String(), "\x1b") {
+			if exit != 0 || requests != 2 || stderr.Len() != 0 {
 				t.Fatalf("exit=%d requests=%d stdout=%q stderr=%q", exit, requests, &stdout, &stderr)
+			}
+			for _, want := range []string{"OTHER-9", "件名👩‍💻", "見出し", "一行目", "二行目", "本文", "[REDACTED]", server.URL + "/view/OTHER-9", server.URL + "/view/APP-2"} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("missing %q in %s", want, &stdout)
+				}
+			}
+			if strings.ContainsAny(stdout.String(), "\x1b\a") || strings.Contains(stdout.String(), "test-secret") || strings.Contains(stdout.String(), "stolen") {
+				t.Fatalf("unsafe output: %q", &stdout)
 			}
 		})
 	}
