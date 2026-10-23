@@ -1,6 +1,6 @@
 # backlog-cli
 
-Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題の名前/ID条件・self・横断検索による1ページ検索、Markdown/Backlog記法の課題の固定詳細表示・JSONでの原本取得、非対話での課題作成を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
+Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題の名前/ID条件・self・横断検索による1ページ検索、Markdown/Backlog記法の課題の詳細viewer・固定表示・JSONでの原本取得、非対話での課題作成を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
 
 ```sh
 bl --help
@@ -22,7 +22,7 @@ bl issue create -p MYAPP --issue-type タスク --priority 中 -t "ログイン�
 bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file ticket.md
 ```
 
-対話での課題作成、課題一覧/detailの対話UI、editor起動、配布archiveは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
+対話での課題作成、課題一覧の対話UI（一覧からの詳細遷移・復帰を含む）、editor起動、配布archiveは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
 
 ## 設定
 
@@ -61,17 +61,19 @@ bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file
 - TTYでも今回の課題一覧は固定1ページのみで、一覧UIや全件自動取得はありません。空ページはtotalにかかわらず終了、非空なら `offset + 実取得count < 開始時total` の場合だけ続きがあります（整数overflowは回避）。固定表示の `Next offset: N` は、その続きのページを `--offset N` で明示取得するための案内です。
 - countとlistは別snapshotです。途中の追加・削除・更新によって重複・取りこぼし・totalとの差が生じ得ます。一貫したsnapshotは保証しません。次のコマンド実行ではcountを取り直します。
 
-## 課題の固定詳細表示とJSON取得
+## 課題の詳細viewer・固定表示とJSON取得
 
 `bl issue view <issueIdOrKey> --json` は正整数int64 IDまたは課題キー（例: `MYAPP-123`）を検証・path encodeし、`GET /api/v2/issues/:issueIdOrKey` を1回だけ呼びます。API応答objectの構造・未知フィールド・大整数・本文のJSON string値を保持し、設定originと検証した応答issueKeyから作る `url` を追加します。secretは既存の出力処理で除去します。
 
 - project指定は不要で、ローカルproject・検索条件・作成既定値は適用しません。設定自体の検証と `--profile` は他コマンドと共通です。
 - JSON取得にproject/本文記法のAPIは呼びません。TTYの有無にかかわらず選択UI・viewer・editorを起動せず、stdinも読みません。
-- `--json` なしでは、取得課題の `projectId` からproject detail APIを取得し、`textFormattingRule`（`markdown` / `backlog`）に応じて変換し、件名・URL・整形済み本文を1回固定出力します。TTYでもviewerや入力待ちはありません。非TTYではANSIなしです。`--no-input` も同じ固定表示です。
+- `--json` なしでは、取得課題の `projectId` からproject detail APIを取得し、`textFormattingRule`（`markdown` / `backlog`）に応じて変換し、件名・URL・整形済み本文を表示します。**stdin/stdoutがともにTTYで `--no-input` もfalseのときだけ**、Bubbles viewportのCLI内viewerを起動します。短い本文でも自動終了せず、`q`で閉じるとコマンドが終了します。外部pagerや切替設定はありません。
+- viewerは上下 / `j`・`k`、PgUp/PgDn / `b`・Space、先頭 `g`・Home / 末尾 `G`・Endで移動します。Ctrl-Cまたはcontext cancelはexit 130です。幅のresizeでは共通の安全描画を再実行し、スクロール位置を範囲内へ調整します。20列×4行未満ではサイズ案内を表示し、`q`で閉じられます。
+- `--no-input` または片側でも非TTYならviewerを起動せず、80列基準の整形済み詳細を1回固定出力して即終了します。stdoutが非TTYならANSIなしです。JSONは常に入力待ちなしで原本を返します。
 - Markdown/GFMとBacklog記法の基本書式・通常改行を保持し、detailsは展開、色は本文保持、課題キーは設定originのURL、Wiki/Git/SVN/添付参照は説明text、目次は静的リスト、画像はalt/既知URL/IDだけを表示します。結合表はセル・見出し・captionを落とさず通常表へ簡略化します。外部画像や参照先は取得しません。
 - code block/inline code/escapeを保護し、未知macroは説明表現、未知HTMLはタグを除いて本文を保持します。外部ANSI/危険な制御文字とentity復号による制御文字の復活を防ぎ、描画後もGlamour生成SGR以外の端末操作を除去します。JSON原本文にこの表示処理は適用しません。
 - Backlog記法は行/inline scannerで見出し・list・強調・引用・code・checklist・表をMarkdownへ変換し、`{code}` / `{code:lang}` とU+005C escapeを保護します。Backlog原文のMarkdown専用記号は文字として保持します。
-- 未知・欠落した `textFormattingRule` は推測せず表示エラー（exit 1、`--json` を案内）です。原本文の直接出力やMarkdownへの誤適用では代用しません。固定表示は80列を基準に整形します（resize/スクロールviewerは後続範囲）。
+- 未知・欠落した `textFormattingRule` は推測せず表示エラー（exit 1、`--json` を案内）です。原本文の直接出力やMarkdownへの誤適用では代用しません。固定表示は従来どおり80列を基準に整形します。
 - 入力不足・不正はexit 2、404・認証/権限等のAPI拒否は `api_error`、通信失敗は `transport_error`、不正JSON/object/issueKeyは `response_error`（いずれもexit 1）です。JSONエラーはstderrだけに出します。
 
 ## 非対話の課題作成
@@ -165,7 +167,7 @@ mise exec -- go test ./internal/backlog ./internal/config ./internal/output ./in
 mise exec -- go test ./cmd/bl -count=1 -v
 ```
 
-CLIテストは認証/path、JSON原本、固定表示、未知flag/args、API拒否、不正JSON、redirect、出力失敗、本文読込中のcancel、未信頼TLS拒否に加え、projectのkey/ID・長短flag・local優先順位・重複/all/不足拒否・API失敗を検証します。UI ModelのUpdate/Viewテストは選択・取消・候補無害化・filter無効・長い日本語/emoji・resize/極小サイズを検証します。HTTP境界テストでrequest contextの30秒deadlineと本文読込のdeadline適用を確認します。`cmd/bl` テストは実バイナリのhelp/parser/config/stream/exitを検証します。実バイナリへmock独自CAを渡す本番用flag/debug機能はありません。darwinの実バイナリは通常のOS trustを使うため、self-signed mockは上の注入境界で検証してください。
+CLIテストは認証/path、JSON原本、固定表示、未知flag/args、API拒否、不正JSON、redirect、出力失敗、本文読込中のcancel、未信頼TLS拒否に加え、projectのkey/ID・長短flag・local優先順位・重複/all/不足拒否・API失敗を検証します。UI ModelのUpdate/Viewテストは選択・取消・候補無害化・filter無効・長い日本語/emoji・resize/極小サイズに加え、detailの移動キー・短い本文のq待機・親を終了しない閉鎖結果・再flow/offset clamp・中断/描画エラーを検証します。HTTP境界テストでrequest contextの30秒deadlineと本文読込のdeadline適用を確認します。`cmd/bl` テストは実バイナリのhelp/parser/config/stream/exitを検証します。実バイナリへmock独自CAを渡す本番用flag/debug機能はありません。darwinの実バイナリは通常のOS trustを使うため、self-signed mockは上の注入境界で検証してください。
 
 課題検索の公開CLI/HTTP/出力テストでは、count/listのquery一致・順序/回数、名前の完全一致/不一致/曖昧さ、数字・カンマの名前、selfと実名self、名前/IDのOR・重複除去・混在拒否、単一値flag重複、limit/offset境界、設定優先/status all、mineとlistの出力一致、横断検索の許可/拒否と不要な候補APIの不在を確認します。候補API/count/list失敗・不正応答・中断、空ページ・totalとの差・int64上限、JSON原本/大整数/未知フィールドとURL、安全な固定表示も検証します。
 
@@ -182,7 +184,7 @@ CLIテストは認証/path、JSON原本、固定表示、未知flag/args、API�
 ```sh
 mise exec -- go build -o /tmp/bl-terminal-mock ./internal/cli/testdata/terminal_mock.go
 /tmp/bl-terminal-mock issue-type list
-/tmp/bl-terminal-mock issue view APP-1              # TTYでも即終了、SGR装飾のみ
+/tmp/bl-terminal-mock issue view APP-1              # 両TTYならviewer、qで閉じる
 /tmp/bl-terminal-mock issue view APP-1 | cat        # ANSIなし、通常改行/日本語/👩‍💻を保持
 /tmp/bl-terminal-mock issue view APP-1 --no-input   # 同じ固定表示、待機なし
 /tmp/bl-terminal-mock issue view APP-1 --json       # 原本文のentity/ESCをJSON値として保持
@@ -190,9 +192,17 @@ mise exec -- go build -o /tmp/bl-terminal-mock ./internal/cli/testdata/terminal_
 BL_TERMINAL_MOCK_RULE=backlog /tmp/bl-terminal-mock issue view APP-1
 BL_TERMINAL_MOCK_RULE=backlog /tmp/bl-terminal-mock issue view APP-1 --no-input | cat
 BL_TERMINAL_MOCK_RULE=backlog /tmp/bl-terminal-mock issue view APP-1 --json
+# mock専用: 短い/長い詳細（RULE=backlogとの併用も可能）
+BL_TERMINAL_MOCK_BODY=short /tmp/bl-terminal-mock issue view APP-1
+BL_TERMINAL_MOCK_BODY=long /tmp/bl-terminal-mock issue view APP-1
+# mock専用: 装飾をまたぐダミーsecret。80→20→36→80列で本文の[REDACTED]維持を確認（RULE=backlogも対象）
+BL_TERMINAL_MOCK_BODY=styled-secret /tmp/bl-terminal-mock issue view APP-1
+/tmp/bl-terminal-mock issue view APP-1 </dev/null  # stdin非TTY、固定表示で即終了
 ```
 
-issue viewは両記法で、見出し・連続する通常改行・展開されたdetails・参照説明・結合表の全セル/見出し/caption・codeのentity原文字列が読めること、画像を取得しないこと、clipboard/title/画面消去等が起きずsecretが出ないこと、qを待たず1回で終了することを別途確認してください。
+issue viewは両記法で、見出し・連続する通常改行・展開されたdetails・参照説明・結合表の全セル/見出し/caption・codeのentity原文字列が読めること、画像を取得しないこと、clipboard/title/画面消去等が起きずsecretが出ないこと、JSON/no-input/片側非TTYでは待機せず固定表示/JSONで終了することを別途確認してください。
+
+詳細viewerは両記法の短い/長い本文で、(1) 短い本文でも画面が残り`q`で終了0、(2) 上下・`j/k`、PgUp/PgDn・`b`/Space、`g`/Home・`G`/Endで移動でき、先頭末尾で行が欠けない、(3) 日本語・👩‍💻・長い行・件名・URLが読める、(4) 幅を80→36→80列などへ変えて再flowし、末尾で高さを増やしても空白へ飛ばない、(5) 10列×3行でサイズ案内、元のサイズへ戻して読み続けられる、(6) `q`/Ctrl-Cで元の画面と端末入力が復元され、`echo $?`が0/130、を人間の実端末で確認してください。**一覧UI・一覧への復帰は今回未実装です。**
 
 Apple Silicon Macの日本語端末で、(1) 上下で20件を超えて移動しEnter、`ID / NAME` 固定出力に選択projectの番号が現れる、(2) 長い日本語/👩‍💻が崩れず幅内で省略される、(3) resizeと10列×3行程度の極小サイズでpanicせずサイズ案内が出る、(4) EscとCtrl-Cそれぞれで元の端末へ戻り `echo $?` が130、を確認してください。実行し直すと必ず未指定状態から選び直します。`q`は取消キーではありません。
 
@@ -226,7 +236,7 @@ Apple Silicon Macの日本語端末で、(1) 上下で20件を超えて移動し
 
 スクロールの再受入では、↓を1回ずつ押し、表示範囲内では候補を消さずカーソルだけが移動し、下端に達したときだけ表示範囲が1行ずつ動くことを確認してください。末尾でも候補行数が減って空白にならず、↑で先頭まで戻れ、resize後も選択が保持されることを確認します。27行以上の端末では25候補すべてが上下移動中も表示され続けることを確認してください。
 
-任意のPython 3標準PTYによる自動smokeも用意しています（Goの正式checkにはPython不要）。両TTY/片側非TTY/両非TTY、json/no-input gate、選択と取消130、resizeを検証します。
+任意のPython 3標準PTYによる自動smokeも用意しています（Goの正式checkにはPython不要）。両TTY/片側非TTY/両非TTY、json/no-input gate、選択と取消130、resizeに加え、両記法のdetailのq待機・移動キー/幅変更の再描画・極小サイズ・Ctrl-C/context cancel 130・非TTY ANSIなし・JSON原本を検証します。
 
 ```sh
 python3 internal/cli/testdata/terminal_check.py /tmp/bl-terminal-mock

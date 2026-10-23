@@ -11,14 +11,60 @@ import (
 
 // Redact removes the key and common transport encodings without exposing raw diagnostics.
 func Redact(value, key string) string {
+	for _, secret := range secretForms(key) {
+		value = strings.ReplaceAll(value, secret, "[REDACTED]")
+	}
+	return value
+}
+
+func secretForms(key string) []string {
 	if key == "" {
-		return value
+		return nil
 	}
 	escaped, _ := json.Marshal(key)
-	for _, secret := range []string{key, url.QueryEscape(key), url.PathEscape(key), html.EscapeString(key), string(escaped[1 : len(escaped)-1]), base64.StdEncoding.EncodeToString([]byte(key)), base64.RawStdEncoding.EncodeToString([]byte(key)), base64.URLEncoding.EncodeToString([]byte(key))} {
-		value = strings.ReplaceAll(value, secret, "[REDACTED]")
+	forms := []string{key, url.QueryEscape(key), url.PathEscape(key), html.EscapeString(key), string(escaped[1 : len(escaped)-1]), base64.StdEncoding.EncodeToString([]byte(key)), base64.RawStdEncoding.EncodeToString([]byte(key)), base64.URLEncoding.EncodeToString([]byte(key))}
+	var result []string
+	for _, secret := range forms {
+		result = append(result, secret)
 		if strings.Contains(secret, "%") {
-			value = strings.ReplaceAll(value, lowerEscapes(secret), "[REDACTED]")
+			result = append(result, lowerEscapes(secret))
+		}
+	}
+	return result
+}
+
+// Glamour can split styled secrets with a newline and padding; preserve all other whitespace.
+func redactWrappedContent(value, key string) string {
+	for _, secret := range secretForms(key) {
+		var result strings.Builder
+		copied := 0
+		for start := 0; start < len(value); start++ {
+			if value[start] != secret[0] {
+				continue
+			}
+			end, matched := start, 0
+			for matched < len(secret) && end < len(value) {
+				if value[end] != secret[matched] {
+					padding := end
+					for end < len(value) && strings.ContainsRune(" \t\n", rune(value[end])) {
+						end++
+					}
+					if !strings.Contains(value[padding:end], "\n") || end == len(value) || value[end] != secret[matched] {
+						break
+					}
+				}
+				end++
+				matched++
+			}
+			if matched == len(secret) {
+				result.WriteString(value[copied:start])
+				result.WriteString("[REDACTED]")
+				copied, start = end, end-1
+			}
+		}
+		if copied > 0 {
+			result.WriteString(value[copied:])
+			value = result.String()
 		}
 	}
 	return value

@@ -5,16 +5,21 @@ import (
 	"backlog-cli/internal/config"
 	"backlog-cli/internal/markup"
 	"backlog-cli/internal/output"
+	"backlog-cli/internal/ui"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
 
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 )
 
-func issueViewCommand(ctx context.Context, profile *singleValue, jsonMode *bool, key *string, checked *checkedWriter, client *http.Client) *cobra.Command {
+func issueViewCommand(ctx context.Context, profile *singleValue, jsonMode, noInput *bool, key *string, stdin io.Reader, checked *checkedWriter, client *http.Client) *cobra.Command {
 	return &cobra.Command{Use: "view <issueIdOrKey>", Short: "Show one issue", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if ctx.Err() != nil {
 			return output.NewFailure("cancelled", "command cancelled", 0)
@@ -62,16 +67,34 @@ func issueViewCommand(ctx context.Context, profile *singleValue, jsonMode *bool,
 		if json.Unmarshal(project, &formatting) != nil {
 			return output.NewFailure("response_error", "invalid project textFormattingRule; use --json", 200)
 		}
-		render := markup.Render
+		render := markup.RenderWidth
 		switch formatting.Rule {
 		case "markdown":
 		case "backlog":
-			render = markup.RenderBacklog
+			render = markup.RenderBacklogWidth
 		default:
 			return output.NewFailure("response_error", "unknown project textFormattingRule; use --json", 200)
 		}
 		tty := isTerminal(checked.Writer)
-		rendered, err := render(output.Redact(output.SafeText(output.Redact(issue.Description, *key)), *key), settings.SpaceURL, tty)
+		source := output.Redact(output.SafeText(output.Redact(issue.Description, *key)), *key)
+		if tty && isTerminal(stdin) && !*noInput {
+			var screen io.Writer = checked
+			if file, ok := checked.Writer.(term.File); ok {
+				screen = checkedTerminal{checked, file}
+			}
+			return ui.ShowIssueDetail(ctx, stdin, screen, func(width int) (string, error) {
+				rendered, err := render(source, settings.SpaceURL, tty, width)
+				if err != nil {
+					return "", output.NewFailure("output_error", "could not render issue detail; use --json", 200)
+				}
+				var content bytes.Buffer
+				if err := output.WriteIssueDetail(&content, item, settings.SpaceURL, rendered, tty, *key); err != nil {
+					return "", err
+				}
+				return ansi.Wrap(content.String(), width, ""), nil
+			})
+		}
+		rendered, err := render(source, settings.SpaceURL, tty, 80)
 		if err != nil {
 			return output.NewFailure("output_error", "could not render issue detail; use --json", 200)
 		}

@@ -23,8 +23,8 @@ func WriteIssueDetail(w io.Writer, item json.RawMessage, origin, rendered string
 	header := Redact(SafeText(Redact(fmt.Sprintf("%s  %s\n%s/view/%s\n", fields.IssueKey, fields.Summary, origin, fields.IssueKey), key)), key)
 	content := Redact(SafeContent(Redact(rendered, key), tty), key)
 	plain := SafeText(content)
-	if redacted := Redact(plain, key); redacted != plain {
-		// SGR can split a secret; discard styling only when plain-text redaction finds it.
+	if redacted := redactWrappedContent(plain, key); redacted != plain {
+		// Discard styling only when a secret spans SGR or rendered line breaks.
 		content = redacted
 	}
 	if err := write(w, []byte(header+content+"\n")); err != nil {
