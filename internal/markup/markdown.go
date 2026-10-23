@@ -69,11 +69,15 @@ func Markdown(source, origin string) string {
 
 // Render uses a fixed built-in style (no terminal queries, environment styles, or resource fetches).
 func Render(source, origin string, tty bool) (string, error) {
+	return render(Markdown(source, origin), tty)
+}
+
+func render(markdown string, tty bool) (string, error) {
 	renderer, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(80), glamour.WithPreservedNewLines())
 	if err != nil {
 		return "", err
 	}
-	rendered, err := renderer.Render(Markdown(source, origin))
+	rendered, err := renderer.Render(markdown)
 	if err != nil {
 		return "", err
 	}

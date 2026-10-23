@@ -62,15 +62,16 @@ func issueViewCommand(ctx context.Context, profile *singleValue, jsonMode *bool,
 		if json.Unmarshal(project, &formatting) != nil {
 			return output.NewFailure("response_error", "invalid project textFormattingRule; use --json", 200)
 		}
+		render := markup.Render
 		switch formatting.Rule {
 		case "markdown":
 		case "backlog":
-			return output.NewFailure("response_error", "Backlog formatting is not supported yet; use --json", 200)
+			render = markup.RenderBacklog
 		default:
 			return output.NewFailure("response_error", "unknown project textFormattingRule; use --json", 200)
 		}
 		tty := isTerminal(checked.Writer)
-		rendered, err := markup.Render(output.Redact(output.SafeText(output.Redact(issue.Description, *key)), *key), settings.SpaceURL, tty)
+		rendered, err := render(output.Redact(output.SafeText(output.Redact(issue.Description, *key)), *key), settings.SpaceURL, tty)
 		if err != nil {
 			return output.NewFailure("output_error", "could not render issue detail; use --json", 200)
 		}
