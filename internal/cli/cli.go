@@ -4,6 +4,7 @@ import (
 	"backlog-cli/internal/backlog"
 	"backlog-cli/internal/config"
 	"backlog-cli/internal/output"
+	"backlog-cli/internal/ui"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,28 +14,35 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 )
 
 // Execute runs a command with caller-owned streams. A nil client uses verified system TLS.
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer, client *http.Client) int {
+	return ExecuteWithInput(ctx, args, os.Stdin, stdout, stderr, client)
+}
+
+// ExecuteWithInput connects caller-owned input; only terminal input and output permit prompts.
+func ExecuteWithInput(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, client *http.Client) int {
 	root := &cobra.Command{Use: "bl", Short: "Backlog CLI", SilenceErrors: true, SilenceUsage: true}
 	checked := &checkedWriter{Writer: stdout}
 	root.SetOut(checked)
 	root.SetErr(stderr)
 	root.SetArgs(args)
 	root.CompletionOptions.DisableDefaultCmd = true
-	profile := &singleProfile{value: "default"}
+	profile := &singleValue{value: "default"}
 	var jsonMode, noInput bool
 	var key string
 	root.PersistentFlags().Var(profile, "profile", "Configuration profile")
 	root.PersistentFlags().BoolVar(&jsonMode, "json", false, "Output JSON")
 	root.PersistentFlags().BoolVar(&noInput, "no-input", false, "Disable interactive input")
-	for _, name := range []string{"project", "priority"} {
+	for _, name := range []string{"project", "priority", "issue-type"} {
+		project := &singleValue{}
 		group := &cobra.Command{Use: name, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 			return output.NewFailure("input_error", "subcommand required (see --help)", 0)
 		}}
-		group.AddCommand(&cobra.Command{Use: "list", Short: "List " + name, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		list := &cobra.Command{Use: "list", Short: "List " + name, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 			if ctx.Err() != nil {
 				return output.NewFailure("cancelled", "command cancelled", 0)
 			}
@@ -52,19 +60,51 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer, clien
 				return err
 			}
 			var items []json.RawMessage
-			if name == "project" {
+			switch name {
+			case "project":
 				items, err = api.Projects(ctx)
-			} else {
+			case "priority":
 				items, err = api.Priorities(ctx)
+			case "issue-type":
+				value := project.value
+				if !project.seen {
+					value = settings.Local.Project
+				}
+				if value == "" && !project.seen {
+					if jsonMode || noInput || !isTerminal(stdin) || !isTerminal(stdout) {
+						return output.NewFailure("input_error", "project is required (--project/-p)", 0)
+					}
+					projects, err := api.Projects(ctx)
+					if err != nil {
+						return err
+					}
+					var screen io.Writer = checked
+					if file, ok := stdout.(term.File); ok {
+						screen = checkedTerminal{checked, file}
+					}
+					value, err = ui.SelectProject(ctx, stdin, screen, projects, key)
+					if err != nil {
+						return err
+					}
+				}
+				id, resolveErr := resolveProject(ctx, api, value)
+				if resolveErr != nil {
+					return resolveErr
+				}
+				items, err = api.IssueTypes(ctx, id)
 			}
 			if err != nil {
 				return err
 			}
 			return output.WriteList(checked, items, name, jsonMode, key)
-		}})
+		}}
+		if name == "issue-type" {
+			list.Flags().VarP(project, "project", "p", "Project key or positive integer ID")
+		}
+		group.AddCommand(list)
 		root.AddCommand(group)
 	}
-	err := root.ExecuteContext(ctx)
+	cmd, err := root.ExecuteContextC(ctx)
 	if err == nil && checked.err != nil {
 		err = output.NewFailure("output_error", "could not write output", 0)
 	}
@@ -77,12 +117,17 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer, clien
 			failure.Code = "cancelled"
 			failure.Message = "command cancelled"
 		}
-		if err := output.WriteFailure(stderr, failure, jsonRequested(args), key); err != nil && failure.Code != "cancelled" {
+		if err := output.WriteFailure(stderr, failure, jsonRequested(cmd, args), key); err != nil && failure.Code != "cancelled" {
 			return 1
 		}
 		return failure.ExitCode()
 	}
 	return 0
+}
+
+func isTerminal(stream any) bool {
+	file, ok := stream.(interface{ Fd() uintptr })
+	return ok && term.IsTerminal(file.Fd())
 }
 
 // Cobra's help renderer does not propagate writer errors.
@@ -102,16 +147,24 @@ func (w *checkedWriter) Write(data []byte) (int, error) {
 	return n, err
 }
 
-type singleProfile struct {
+// Preserve the terminal descriptor so Bubble Tea can read size and resize events.
+type checkedTerminal struct {
+	*checkedWriter
+	term.File
+}
+
+func (w checkedTerminal) Write(data []byte) (int, error) { return w.checkedWriter.Write(data) }
+
+type singleValue struct {
 	value string
 	seen  bool
 }
 
-func (v *singleProfile) String() string { return v.value }
-func (v *singleProfile) Type() string   { return "string" }
-func (v *singleProfile) Set(value string) error {
+func (v *singleValue) String() string { return v.value }
+func (v *singleValue) Type() string   { return "string" }
+func (v *singleValue) Set(value string) error {
 	if v.seen {
-		return errors.New("profile specified more than once")
+		return errors.New("single-value flag specified more than once")
 	}
 	v.seen = true
 	v.value = value
@@ -119,16 +172,23 @@ func (v *singleProfile) Set(value string) error {
 }
 
 // Parser failures can occur before Cobra reaches a later --json flag.
-func jsonRequested(args []string) bool {
+func jsonRequested(cmd *cobra.Command, args []string) bool {
 	enabled := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
 			break
 		}
-		if arg == "--profile" {
-			i++
-			continue
+		if name, ok := strings.CutPrefix(arg, "--"); ok {
+			if flag := cmd.Flags().Lookup(name); flag != nil && flag.NoOptDefVal == "" {
+				i++
+				continue
+			}
+		} else if len(arg) == 2 && arg[0] == '-' {
+			if flag := cmd.Flags().ShorthandLookup(arg[1:]); flag != nil && flag.NoOptDefVal == "" {
+				i++
+				continue
+			}
 		}
 		if arg == "--json" {
 			enabled = true
