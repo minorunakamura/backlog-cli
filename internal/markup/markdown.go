@@ -69,11 +69,16 @@ func Markdown(source, origin string) string {
 
 // Render uses a fixed built-in style (no terminal queries, environment styles, or resource fetches).
 func Render(source, origin string, tty bool) (string, error) {
-	return render(Markdown(source, origin), tty)
+	return RenderWidth(source, origin, tty, 80)
 }
 
-func render(markdown string, tty bool) (string, error) {
-	renderer, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(80), glamour.WithPreservedNewLines())
+// RenderWidth uses the same safe display pipeline at the viewer's current width.
+func RenderWidth(source, origin string, tty bool, width int) (string, error) {
+	return render(Markdown(source, origin), tty, width)
+}
+
+func render(markdown string, tty bool, width int) (string, error) {
+	renderer, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(max(20, width)), glamour.WithPreservedNewLines())
 	if err != nil {
 		return "", err
 	}

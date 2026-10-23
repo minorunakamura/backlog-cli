@@ -35,7 +35,20 @@ func run() int {
 			if rule == "backlog" {
 				description = backlogDescription
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": "APP-1", "projectId": 42, "summary": rule + "固定表示 日本語👩‍💻\x1b]52;c;stolen\a mock-only-secret", "description": description})
+			switch os.Getenv("BL_TERMINAL_MOCK_BODY") {
+			case "short":
+				description = "短い本文 日本語👩‍💻"
+			case "styled-secret":
+				description = "xxxxxxxx mock-only-**secret**"
+				if rule == "backlog" {
+					description = "xxxxxxxx mock-only-''secret''"
+				}
+			case "long":
+				for i := range 100 {
+					description += fmt.Sprintf("\n\n行%03d %s", i, strings.Repeat("長い日本語👩‍💻の本文 ", 12))
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": "APP-1", "projectId": 42, "summary": rule + "詳細表示 日本語👩‍💻\x1b]52;c;stolen\a mock-only-secret", "description": description})
 		case r.URL.Path == "/api/v2/issues/count":
 			_, _ = fmt.Fprint(w, `{"count":3}`)
 		case r.URL.Path == "/api/v2/issues" && r.Method == http.MethodPost:

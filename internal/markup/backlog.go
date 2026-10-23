@@ -585,5 +585,10 @@ func backlogMacro(name, value string) string {
 
 // RenderBacklog uses the same fixed renderer and output safety checks as Markdown.
 func RenderBacklog(source, origin string, tty bool) (string, error) {
-	return render(Backlog(source, origin), tty)
+	return RenderBacklogWidth(source, origin, tty, 80)
+}
+
+// RenderBacklogWidth renders Backlog through the shared safe, width-aware pipeline.
+func RenderBacklogWidth(source, origin string, tty bool, width int) (string, error) {
+	return render(Backlog(source, origin), tty, width)
 }
