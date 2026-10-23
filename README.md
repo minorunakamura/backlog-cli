@@ -22,7 +22,7 @@ bl issue create -p MYAPP --issue-type タスク --priority 中 -t "ログイン�
 bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file ticket.md
 ```
 
-Backlog記法の人向け詳細表示、対話での課題作成、課題一覧/detailの対話UI、editor起動、配布archive、CIは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
+Backlog記法の人向け詳細表示、対話での課題作成、課題一覧/detailの対話UI、editor起動、配布archiveは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
 
 ## 設定
 
@@ -149,6 +149,10 @@ mise exec -- make build
 - `build`: `CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o dist/bl ./cmd/bl`
 
 editorの保存時整形にも、このリポジトリのcwdから `mise exec -- make fmt`（または `.tools/bin/golangci-lint fmt ./...`）を使用してください。gopls等が使う別版formatterと混在させないよう設定します。特定editor向け設定ファイルは提供しません。
+
+### CI
+
+[GitHub Actions](.github/workflows/ci.yml) はmainへのpush / pull request時にmacOS runnerで `make tools` → `make check` → `make test-race` → `make security` → `make build` を実行します。Goのバージョンは `go.mod` から読み、module/build cacheを利用します。実Backlog APIへの接続やAPI keyのSecrets設定は不要です。配布archive作成・リリース公開は行いません。
 
 ### 実APIなしの直接検証
 
