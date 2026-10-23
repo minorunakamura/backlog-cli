@@ -73,6 +73,12 @@ func TestExecuteErrorsUseStderrJSONAndExitContract(t *testing.T) {
 		exit   int
 	}{
 		{"unknown flag", []string{"project", "list", "--unknown", "--json"}, 200, `[]`, "input_error", 2},
+		{"project flag not registered", []string{"project", "list", "--project", "--json"}, 200, `[]`, "input_error", 2},
+		{"short project flag not registered", []string{"priority", "list", "-p", "--json"}, 200, `[]`, "input_error", 2},
+		{"root project flag not registered", []string{"--project", "--json"}, 200, `[]`, "input_error", 2},
+		{"unknown command project flag", []string{"bogus", "--project", "--json"}, 200, `[]`, "input_error", 2},
+		{"extra arg project flag", []string{"project", "list", "extra", "--project", "--json"}, 200, `[]`, "input_error", 2},
+		{"explicit JSON disabled then enabled", []string{"project", "list", "--unknown", "--json=false", "--json"}, 200, `[]`, "input_error", 2},
 		{"unknown subcommand", []string{"project", "bogus", "--json"}, 200, `[]`, "input_error", 2},
 		{"unknown command", []string{"bogus", "--json"}, 200, `[]`, "input_error", 2},
 		{"extra arg", []string{"project", "list", "extra", "--json"}, 200, `[]`, "input_error", 2},
@@ -259,5 +265,243 @@ func TestExecuteConfigurationErrorDoesNotCallAPI(t *testing.T) {
 	exit := cli.Execute(context.Background(), []string{"project", "list", "--json"}, &stdout, &stderr, nil)
 	if exit != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"config_error"`) {
 		t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+	}
+}
+
+func TestExecuteIssueTypeListDirectIDPreservesAPIObjects(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/api/v2/projects/9223372036854775807/issueTypes" || r.URL.RawQuery != "" || r.Header.Get("Backlog-API-Key") != "test-secret+/?日本" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected endpoint", 404)
+			return
+		}
+		_, _ = fmt.Fprint(w, `[{"id":7,"name":"日本語👩‍💻\u001b[31m","future":{"value":12345678901234567890},"secret":"test-secret+/?日本"}]`)
+	}))
+	defer server.Close()
+	configure(t, server.URL)
+	var stdout, stderr bytes.Buffer
+	exit := cli.Execute(context.Background(), []string{"issue-type", "list", "-p", "9223372036854775807", "--json"}, &stdout, &stderr, server.Client())
+	want := `{"items":[{"future":{"value":12345678901234567890},"id":7,"name":"日本語👩‍💻\u001b[31m","secret":"[REDACTED]"}]}` + "\n"
+	if exit != 0 || stdout.String() != want || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+	}
+}
+
+func TestExecuteIssueTypeProjectResolutionAndPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, local string
+		flags       []string
+		paths       []string
+	}{
+		{"key", "", []string{"--project", "APP"}, []string{"/api/v2/projects/APP", "/api/v2/projects/42/issueTypes"}},
+		{"short key", "", []string{"-pAPP"}, []string{"/api/v2/projects/APP", "/api/v2/projects/42/issueTypes"}},
+		{"local key", "APP", nil, []string{"/api/v2/projects/APP", "/api/v2/projects/42/issueTypes"}},
+		{"explicit overrides local", "OTHER", []string{"-p", "APP"}, []string{"/api/v2/projects/APP", "/api/v2/projects/42/issueTypes"}},
+		{"local ID", "42", nil, []string{"/api/v2/projects/42/issueTypes"}},
+		{"explicit ID overrides local", "APP", []string{"--project=42"}, []string{"/api/v2/projects/42/issueTypes"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var paths []string
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case "/api/v2/projects/APP":
+					_, _ = fmt.Fprint(w, `{"id":42,"projectKey":"APP","future":true}`)
+				case "/api/v2/projects/42/issueTypes":
+					_, _ = fmt.Fprint(w, `[{"id":7,"name":"タスク"}]`)
+				default:
+					http.Error(w, "unexpected endpoint", 404)
+				}
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			if tc.local != "" {
+				if err := os.Mkdir(".backlog", 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(".backlog/settings.json", []byte(fmt.Sprintf(`{"project":%q}`, tc.local)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"issue-type", "list"}, tc.flags...)
+			exit := cli.Execute(context.Background(), args, &stdout, &stderr, server.Client())
+			if exit != 0 || stdout.String() != "ID\tNAME\n7\tタスク\n" || stderr.Len() != 0 || strings.Join(paths, ",") != strings.Join(tc.paths, ",") {
+				t.Fatalf("exit=%d paths=%v stdout=%s stderr=%s", exit, paths, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteIssueTypeRejectsInvalidProjectBeforeAPI(t *testing.T) {
+	for _, flags := range [][]string{
+		{"--project", "all"},
+		{"-p", "0"},
+		{"-p=-1"},
+		{"-p", "9223372036854775808"},
+		{"-p", ""},
+		{"--project", " \t"},
+		{"--project", "APP", "-p", "APP"},
+		{"-pAPP", "--project=APP"},
+		{"--project=APP", "--project=OTHER"},
+		{"-p42", "-p43"},
+	} {
+		t.Run(strings.Join(flags, " "), func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("invalid input reached API")
+				http.Error(w, "unexpected", 500)
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"issue-type", "list", "--json"}, flags...)
+			exit := cli.Execute(context.Background(), args, &stdout, &stderr, server.Client())
+			if exit != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"input_error"`) {
+				t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteJSONFlagValuesAndTerminatorDoNotEnableJSONErrors(t *testing.T) {
+	for _, args := range [][]string{
+		{"--unknown", "--profile", "--json"},
+		{"project", "list", "--unknown", "--profile", "--json"},
+		{"bogus", "--profile", "--json"},
+		{"project", "list", "--", "--json"},
+		{"project", "list", "--unknown", "--json", "--json=false"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			exit := cli.Execute(context.Background(), args, &stdout, &stderr, nil)
+			if exit != 2 || stdout.Len() != 0 || stderr.Len() == 0 || strings.HasPrefix(stderr.String(), "{") {
+				t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteProjectFlagValueDoesNotEnableJSONErrors(t *testing.T) {
+	for _, flags := range [][]string{{"--project", "--json"}, {"-p", "--json"}, {"-p--json"}, {"-p=--json"}, {"--project=--json"}} {
+		t.Run(strings.Join(flags, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"issue-type", "list", "--unknown"}, flags...)
+			exit := cli.Execute(context.Background(), args, &stdout, &stderr, nil)
+			if exit != 2 || stdout.Len() != 0 || strings.HasPrefix(stderr.String(), "{") {
+				t.Fatalf("project value misread as flag: exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+type unreadableInput struct{ t *testing.T }
+
+func (r unreadableInput) Read([]byte) (int, error) {
+	r.t.Error("noninteractive command read stdin")
+	return 0, errors.New("unexpected read")
+}
+
+func TestExecuteIssueTypeMissingProjectDoesNotPromptNonTTY(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("missing project called API")
+		http.Error(w, "unexpected", 500)
+	}))
+	defer server.Close()
+	configure(t, server.URL)
+	for _, flags := range [][]string{nil, {"--json"}, {"--no-input"}, {"--json", "--no-input"}} {
+		var stdout, stderr bytes.Buffer
+		args := append([]string{"issue-type", "list"}, flags...)
+		exit := cli.ExecuteWithInput(context.Background(), args, unreadableInput{t}, &stdout, &stderr, server.Client())
+		if exit != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "project is required") {
+			t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+		}
+	}
+}
+
+func TestExecuteIssueTypeFailuresDoNotBecomeEmptyResults(t *testing.T) {
+	for _, tc := range []struct {
+		name, project, detail, types, code string
+		status                             int
+	}{
+		{"detail rejection", "APP", `{"errors":[{"code":11,"message":"test-secret+/?日本"}]}`, `[]`, "api_error", 403},
+		{"detail malformed", "APP", `{broken`, `[]`, "response_error", 200},
+		{"detail list", "APP", `[]`, `[]`, "response_error", 200},
+		{"detail null", "APP", `null`, `[]`, "response_error", 200},
+		{"detail missing ID", "APP", `{"name":"APP"}`, `[]`, "response_error", 200},
+		{"detail invalid ID", "APP", `{"id":0}`, `[]`, "response_error", 200},
+		{"detail overflow ID", "APP", `{"id":9223372036854775808}`, `[]`, "response_error", 200},
+		{"types rejected", "42", ``, `{"errors":[{"code":11,"message":"test-secret+/?日本"}]}`, "api_error", 403},
+		{"types malformed", "42", ``, `{broken`, "response_error", 200},
+		{"types null", "42", ``, `null`, "response_error", 200},
+		{"types nonobject", "42", ``, `[1]`, "response_error", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				if strings.HasSuffix(r.URL.Path, "/issueTypes") {
+					_, _ = fmt.Fprint(w, tc.types)
+				} else {
+					_, _ = fmt.Fprint(w, tc.detail)
+				}
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			var stdout, stderr bytes.Buffer
+			exit := cli.Execute(context.Background(), []string{"issue-type", "list", "-p", tc.project, "--json"}, &stdout, &stderr, server.Client())
+			if exit != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"`+tc.code+`"`) || !strings.Contains(stderr.String(), fmt.Sprintf(`"httpStatus":%d`, tc.status)) || strings.Contains(stderr.String(), "test-secret") {
+				t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteIssueTypeDoesNotIgnoreInvalidLocalConfiguration(t *testing.T) {
+	for _, local := range []string{`{"unknown":true}`, `{"project":"0"}`, `{"project":"-1"}`, `{"project":"9223372036854775808"}`, `{"project":"all"}`} {
+		for _, explicit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/explicit=%t", local, explicit), func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					_, _ = fmt.Fprint(w, `[]`)
+				}))
+				defer server.Close()
+				configure(t, server.URL)
+				if err := os.Mkdir(".backlog", 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(".backlog/settings.json", []byte(local), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"issue-type", "list", "--json"}
+				if explicit {
+					args = append(args, "-p", "42")
+				}
+				var stdout, stderr bytes.Buffer
+				exit := cli.Execute(context.Background(), args, &stdout, &stderr, server.Client())
+				if exit != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"config_error"`) || requests.Load() != 0 {
+					t.Fatalf("exit=%d requests=%d stdout=%s stderr=%s", exit, requests.Load(), &stdout, &stderr)
+				}
+			})
+		}
+	}
+}
+
+func TestExecuteIssueTypeFixedOutputIsSafeAndEmptyJSONIsArray(t *testing.T) {
+	for _, tc := range []struct {
+		body, want string
+		flags      []string
+	}{
+		{`[{"id":7,"name":"日本語👩‍💻\u001b[31m赤\u001b[0m\u0001\u0085\u007ftest-secret+/?日本"}]`, "ID\tNAME\n7\t日本語👩‍💻赤[REDACTED]\n", nil},
+		{`[]`, "{\"items\":[]}\n", []string{"--json"}},
+	} {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, tc.body) }))
+		configure(t, server.URL)
+		var stdout, stderr bytes.Buffer
+		args := append([]string{"issue-type", "list", "-p42"}, tc.flags...)
+		exit := cli.Execute(context.Background(), args, &stdout, &stderr, server.Client())
+		server.Close()
+		if exit != 0 || stdout.String() != tc.want || stderr.Len() != 0 {
+			t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+		}
 	}
 }

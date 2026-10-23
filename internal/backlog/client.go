@@ -33,7 +33,7 @@ func New(origin, key string, client *http.Client) (*Client, error) {
 	return &Client{origin: origin, key: key, http: &copyClient}, nil
 }
 
-func (c *Client) list(ctx context.Context, path string) ([]json.RawMessage, error) {
+func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.origin+path, nil)
 	if err != nil {
 		return nil, output.NewFailure("config_error", "could not construct API request", 0)
@@ -67,13 +67,21 @@ func (c *Client) list(ctx context.Context, path string) ([]json.RawMessage, erro
 		}
 		return nil, failure
 	}
+	return data, nil
+}
+
+func (c *Client) list(ctx context.Context, path string) ([]json.RawMessage, error) {
+	data, err := c.get(ctx, path)
+	if err != nil {
+		return nil, err
+	}
 	var items []json.RawMessage
 	if len(bytes.TrimSpace(data)) == 0 || bytes.TrimSpace(data)[0] != '[' || json.Unmarshal(data, &items) != nil {
-		return nil, output.NewFailure("response_error", "invalid API list JSON", response.StatusCode)
+		return nil, output.NewFailure("response_error", "invalid API list JSON", http.StatusOK)
 	}
 	for _, item := range items {
 		if len(item) == 0 || bytes.TrimSpace(item)[0] != '{' {
-			return nil, output.NewFailure("response_error", "API list item is not an object", response.StatusCode)
+			return nil, output.NewFailure("response_error", "API list item is not an object", http.StatusOK)
 		}
 	}
 	if items == nil {
