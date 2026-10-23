@@ -44,20 +44,24 @@ func (c *Creation) Identify(origin, location string, item json.RawMessage) {
 
 // WriteCreatedIssue preserves unknown API fields and adds the validated issue URL.
 func WriteCreatedIssue(w io.Writer, item json.RawMessage, origin string, jsonMode bool, key string) error {
+	return writeIssue(w, item, origin, jsonMode, key, 201)
+}
+
+func writeIssue(w io.Writer, item json.RawMessage, origin string, jsonMode bool, key string, status int) error {
 	var fields map[string]json.RawMessage
 	var issueKey string
 	if json.Unmarshal(item, &fields) != nil || json.Unmarshal(fields["issueKey"], &issueKey) != nil || !issueKeyPattern.MatchString(issueKey) {
-		return NewFailure("response_error", "invalid API issue JSON or key", 201)
+		return NewFailure("response_error", "invalid API issue JSON or key", status)
 	}
 	issueURL := origin + "/view/" + issueKey
 	fields["url"], _ = json.Marshal(issueURL)
 	data, err := json.Marshal(fields)
 	if err != nil {
-		return NewFailure("output_error", "could not encode output", 201)
+		return NewFailure("output_error", "could not encode output", status)
 	}
 	data, err = RedactJSON(data, key)
 	if err != nil {
-		return NewFailure("output_error", "could not encode output", 201)
+		return NewFailure("output_error", "could not encode output", status)
 	}
 	if jsonMode {
 		data = append(data, '\n')
@@ -65,7 +69,7 @@ func WriteCreatedIssue(w io.Writer, item json.RawMessage, origin string, jsonMod
 		data = []byte(Redact(SafeText(Redact(fmt.Sprintf("Created %s\n%s\n", issueKey, issueURL), key)), key))
 	}
 	if err := write(w, data); err != nil {
-		return NewFailure("output_error", "could not write output", 201)
+		return NewFailure("output_error", "could not write output", status)
 	}
 	return nil
 }

@@ -22,6 +22,7 @@ func issueCommand(ctx context.Context, profile *singleValue, jsonMode, noInput *
 		group.AddCommand(issueSearchCommand(name, ctx, profile, jsonMode, noInput, key, stdin, stdout, checked, client))
 	}
 	group.AddCommand(issueCreateCommand(ctx, profile, jsonMode, key, stdin, checked, client, creation))
+	group.AddCommand(issueViewCommand(ctx, profile, jsonMode, key, checked, client))
 	return group
 }
 
