@@ -19,7 +19,7 @@ import (
 func TestExecuteHelpNeedsNoConfiguration(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	for _, args := range [][]string{{"--help"}, {"help", "project", "list"}, {"priority", "list", "--help"}} {
+	for _, args := range [][]string{{"--help"}, {"help", "project", "list"}, {"priority", "list", "--help"}, {"issue", "list", "--help"}} {
 		var stdout, stderr bytes.Buffer
 		exit := cli.Execute(context.Background(), args, &stdout, &stderr, nil)
 		if exit != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Usage:") {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -19,11 +20,26 @@ func main() { os.Exit(run()) }
 
 func run() int {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Backlog-API-Key") != "mock-only-secret" || r.URL.RawQuery != "" {
+		issues := r.URL.Path == "/api/v2/issues" || r.URL.Path == "/api/v2/issues/count"
+		if r.Header.Get("Backlog-API-Key") != "mock-only-secret" || (!issues && r.URL.RawQuery != "") {
 			http.Error(w, "unexpected authentication or query", 400)
 			return
 		}
 		switch {
+		case r.URL.Path == "/api/v2/issues/count":
+			_, _ = fmt.Fprint(w, `{"count":3}`)
+		case r.URL.Path == "/api/v2/issues":
+			limit, limitErr := strconv.ParseInt(r.URL.Query().Get("count"), 10, 64)
+			offset, offsetErr := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+			if limitErr != nil || offsetErr != nil || limit < 1 || limit > 100 || offset < 0 {
+				http.Error(w, "unexpected pagination", 400)
+				return
+			}
+			items := []map[string]any{}
+			for i := offset; i < 3 && int64(len(items)) < limit; i++ {
+				items = append(items, map[string]any{"issueKey": fmt.Sprintf("APP-%d", i+1), "summary": "日本語👩‍💻\x1b[31m赤\x1b[0m\x07mock-only-secret", "status": map[string]string{"name": "処理中"}, "assignee": nil, "future": json.Number("12345678901234567890")})
+			}
+			_ = json.NewEncoder(w).Encode(items)
 		case r.URL.Path == "/api/v2/projects":
 			projects := make([]map[string]any, 25)
 			for i := range projects {

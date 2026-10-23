@@ -4,7 +4,6 @@ import (
 	"backlog-cli/internal/backlog"
 	"backlog-cli/internal/config"
 	"backlog-cli/internal/output"
-	"backlog-cli/internal/ui"
 	"context"
 	"encoding/json"
 	"errors"
@@ -66,28 +65,7 @@ func ExecuteWithInput(ctx context.Context, args []string, stdin io.Reader, stdou
 			case "priority":
 				items, err = api.Priorities(ctx)
 			case "issue-type":
-				value := project.value
-				if !project.seen {
-					value = settings.Local.Project
-				}
-				if value == "" && !project.seen {
-					if jsonMode || noInput || !isTerminal(stdin) || !isTerminal(stdout) {
-						return output.NewFailure("input_error", "project is required (--project/-p)", 0)
-					}
-					projects, err := api.Projects(ctx)
-					if err != nil {
-						return err
-					}
-					var screen io.Writer = checked
-					if file, ok := stdout.(term.File); ok {
-						screen = checkedTerminal{checked, file}
-					}
-					value, err = ui.SelectProject(ctx, stdin, screen, projects, key)
-					if err != nil {
-						return err
-					}
-				}
-				id, resolveErr := resolveProject(ctx, api, value)
+				id, resolveErr := projectForList(ctx, api, project, settings.Local.Project, jsonMode, noInput, stdin, stdout, checked, key)
 				if resolveErr != nil {
 					return resolveErr
 				}
@@ -104,6 +82,7 @@ func ExecuteWithInput(ctx context.Context, args []string, stdin io.Reader, stdou
 		group.AddCommand(list)
 		root.AddCommand(group)
 	}
+	root.AddCommand(issueCommand(ctx, profile, &jsonMode, &noInput, &key, stdin, stdout, checked, client))
 	cmd, err := root.ExecuteContextC(ctx)
 	if err == nil && checked.err != nil {
 		err = output.NewFailure("output_error", "could not write output", 0)

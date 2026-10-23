@@ -1,6 +1,6 @@
 # backlog-cli
 
-Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
+Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題のID条件による1ページ検索を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
 
 ```sh
 bl --help
@@ -9,9 +9,11 @@ bl priority list --json --no-input
 bl --profile work project list --json
 bl issue-type list --project MYAPP
 bl issue-type list -p 123 --json --no-input
+bl issue list "ログイン" -p MYAPP --status-id 1 --status-id 2 --json
+bl issue list -p 123 --assignee-id 456 --milestone-id 789 --limit 20 --offset 0
 ```
 
-課題の検索・閲覧・作成、課題一覧/detailの対話UI、editor起動、配布archive、CIはこのスライスには含みません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
+名前による検索条件の解決、`issue mine`、`--project all`、課題の閲覧・作成、課題一覧/detailの対話UI、editor起動、配布archive、CIは後続の範囲です。未対応のコマンド・flagや `--project all` はエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
 
 ## 設定
 
@@ -24,7 +26,7 @@ bl issue-type list -p 123 --json --no-input
 
 ローカル設定の例は [examples/settings.json](examples/settings.json)。必要なら実行時のcwd直下 `.backlog/settings.json` に配置します。親ディレクトリは探索しません。ローカル設定の不在は正常、読み取り失敗・JSON破損・型不正・未知キー・不正値はエラーです。共通設定の不在は設定エラーです。
 
-ローカルの `project` は `issue-type list` の既定値です。`issue.create.{issueType,priority,assignee}`、`issue.list.status` は将来のコマンドの既定値として読込・検証します。status未設定・`[]` は状態絞り込みなし。**`project list` はローカルprojectで絞り込まず、APIの既定 `all=false` の参加プロジェクト全体を1回取得します。**
+ローカルの `project` は `issue-type list` / `issue list` の既定値です。`issue.create.{issueType,priority,assignee}` は将来の作成用に読込・検証しますが、課題検索には適用しません。`issue.list.status` はstatus名の既定値で、未設定・`[]` は状態絞り込みなし。非空の場合は今回まだ名前解決できないためエラーです。明示 `--status-id` はこの既定値を上書きします。**`project list` はローカルprojectで絞り込まず、APIの既定 `all=false` の参加プロジェクト全体を1回取得します。**
 
 ## 課題種別一覧のproject指定
 
@@ -35,12 +37,29 @@ bl issue-type list -p 123 --json --no-input
 - 両方とも未指定なら、stdin/stdoutがともにTTYで、`--json` / `--no-input` がともにfalseのときだけ参加プロジェクト候補から選びます。他の場合は入力不足エラーです。暗黙の全プロジェクト検索はしません。
 - 選択は上下・Enter、取消はEsc/Ctrl-C（exit 130）。候補のフィルターはありません。長い行はセル幅で省略し、極小端末ではサイズ案内を表示します。選択結果はこの呼出しだけで使い、設定へ保存しません。
 
+## 課題の1ページ検索
+
+`bl issue list [keyword]` は任意の1位置引数をそのままkeywordにし、`--project/-p` は上の課題種別一覧と同じ明示 → local → TTY候補選択の順で決定します。未指定を横断検索として扱いません。直接project IDならproject detailも候補APIも呼びません。
+
+- `--status-id` / `--assignee-id` / `--milestone-id` は正整数int64。反復すると各項目内でORになり、正規化後の同じIDは重複除去します。カンマ分割はしません。
+- `--limit` は既定20、1〜100。`--offset` は既定0、0以上のint64です。project/limit/offset/profileなど単一値flagの重複は長短名混在も含めエラーです。
+- `--status/-s`、`--assignee/-a`、`--assignee-name`、`--milestone/-m` の名前指定は未対応でエラーです。self/allの名前解決も先行実装していません。
+- 確定した同じfilterで最初にcountを1回取得し、成功した場合だけlistを1回取得します。countにlimit/offset/sort/orderは渡さず、listには `count=limit` / `offset` / `sort=updated` / `order=desc` を明示します。count失敗を0件に置き換えません。
+- TTYでも今回の課題一覧は固定1ページのみで、一覧UIや全件自動取得はありません。空ページはtotalにかかわらず終了、非空なら `offset + 実取得count < 開始時total` の場合だけ続きがあります（整数overflowは回避）。固定表示の `Next offset: N` は、その続きのページを `--offset N` で明示取得するための案内です。
+- countとlistは別snapshotです。途中の追加・削除・更新によって重複・取りこぼし・totalとの差が生じ得ます。一貫したsnapshotは保証しません。次のコマンド実行ではcountを取り直します。
+
 ## 出力と失敗
 
-`--json` はstdoutへ改行終端のJSON文書1つだけを出します。APIの各objectの構造・未知フィールド・日本語・制御文字の値を保持し、secretだけを除去します。ページ送りはありません。
+`--json` はstdoutへ改行終端のJSON文書1つだけを出します。APIの各objectの構造・未知フィールド・日本語・制御文字の値を保持し、secretだけを除去します。課題以外の一覧にはpaginationを付けません。
 
 ```json
 {"items":[]}
+```
+
+課題一覧は検証したissueKeyと設定originから作る `url` を各API objectへ追加し、paginationのcountは実取得件数、totalは検索開始時件数です。`hasMore` は出しません。空ページも `items: []` です。
+
+```json
+{"items":[{"issueKey":"MYAPP-1","summary":"件名","url":"https://example.backlog.com/view/MYAPP-1"}],"pagination":{"offset":0,"limit":20,"count":1,"total":1}}
 ```
 
 JSONモードの失敗はstderrだけへ出し、stdoutに部分成功を出しません。例:
@@ -51,7 +70,7 @@ JSONモードの失敗はstderrだけへ出し、stdoutに部分成功を出し�
 
 `code` は `input_error` / `config_error` / `api_error` / `transport_error` / `response_error` / `output_error` / `cancelled`。HTTP応答を受けた場合は `httpStatus` を入れ、Backlogの `errors` 配列を `backlogErrors` に構造保持します。secretはエラー内でも除去します。今回は `creation` は常にnullです。
 
-人向け出力は固定表示（project: `ID / KEY / NAME`、issue-type/priority: `ID / NAME`）。ANSIと危険なC0/C1/DELを除去し、LF/TAB、日本語、emojiのZWJは保持します。空一覧では見出しだけを表示します。`project list` / `priority list` は入力待ちしません。`issue-type list` はproject未指定時だけ上記条件で候補選択に入ります。helpは設定・APIなしで利用できます。
+人向け出力は固定表示（project: `ID / KEY / NAME`、issue-type/priority: `ID / NAME`、issue: `KEY / SUMMARY / STATUS / ASSIGNEE`）。ANSIと危険なC0/C1/DELを除去し、LF/TAB、日本語、emojiのZWJは保持します。空一覧では見出しだけを表示します。`project list` / `priority list` は入力待ちしません。`issue-type list` / `issue list` はproject未指定時だけ上記条件で候補選択に入ります。helpは設定・APIなしで利用できます。
 
 | 結果 | exit |
 | --- | --- |
@@ -100,6 +119,8 @@ mise exec -- go test ./cmd/bl -count=1 -v
 
 CLIテストは認証/path、JSON原本、固定表示、未知flag/args、API拒否、不正JSON、redirect、出力失敗、本文読込中のcancel、未信頼TLS拒否に加え、projectのkey/ID・長短flag・local優先順位・重複/all/不足拒否・API失敗を検証します。UI ModelのUpdate/Viewテストは選択・取消・候補無害化・filter無効・長い日本語/emoji・resize/極小サイズを検証します。HTTP境界テストでrequest contextの30秒deadlineと本文読込のdeadline適用を確認します。`cmd/bl` テストは実バイナリのhelp/parser/config/stream/exitを検証します。実バイナリへmock独自CAを渡す本番用flag/debug機能はありません。darwinの実バイナリは通常のOS trustを使うため、self-signed mockは上の注入境界で検証してください。
 
+課題検索の公開CLI/HTTP/出力テストでは、count/listのquery一致・順序/回数、IDのOR/正規化/重複除去、単一値flag重複、limit/offset境界、設定優先、未知/未対応入力、count/list失敗、空ページ・totalとの差・int64上限、JSON原本/大整数/未知フィールドとURL、安全な固定表示を確認します。
+
 実スペースへの接続は自動テストに含みません。
 
 ### 実APIなしの実端末受入（人間による確認が別途必要）
@@ -122,6 +143,9 @@ Apple Silicon Macの日本語端末で、(1) 上下で20件を超えて移動し
 /tmp/bl-terminal-mock issue-type list | cat          # stdout非TTY、bl側exit 2（shellのpipe exitに注意）
 /tmp/bl-terminal-mock issue-type list -p APP          # key→ID 42、固定出力
 /tmp/bl-terminal-mock issue-type list -p 42 --json    # 大整数を保持したitems JSON
+/tmp/bl-terminal-mock issue list -p 42 --limit 2       # 固定2件、Next offset: 2（一覧UIなし）
+/tmp/bl-terminal-mock issue list -p APP --offset 2 --json # key解決後、最終1件とpagination
+/tmp/bl-terminal-mock issue list -p 42 --offset 3 --json  # total=3でも空items、終了
 ```
 
 スクロールの再受入では、↓を1回ずつ押し、表示範囲内では候補を消さずカーソルだけが移動し、下端に達したときだけ表示範囲が1行ずつ動くことを確認してください。末尾でも候補行数が減って空白にならず、↑で先頭まで戻れ、resize後も選択が保持されることを確認します。27行以上の端末では25候補すべてが上下移動中も表示され続けることを確認してください。
