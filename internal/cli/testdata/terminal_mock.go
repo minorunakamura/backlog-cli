@@ -48,6 +48,14 @@ func run() int {
 			_ = json.NewEncoder(w).Encode(projects)
 		case r.URL.Path == "/api/v2/projects/APP":
 			_, _ = fmt.Fprint(w, `{"id":42,"projectKey":"APP"}`)
+		case r.URL.Path == "/api/v2/users/myself":
+			_, _ = fmt.Fprint(w, `{"id":10,"name":"本人"}`)
+		case strings.HasPrefix(r.URL.Path, "/api/v2/projects/") && strings.HasSuffix(r.URL.Path, "/statuses"):
+			_, _ = fmt.Fprint(w, `[{"id":1,"name":"未対応"},{"id":2,"name":"処理中"},{"id":3,"name":"完了"},{"id":4,"name":"123"},{"id":5,"name":"a,b"},{"id":6,"name":"all"},{"id":7,"name":"重複"},{"id":8,"name":"重複"}]`)
+		case strings.HasPrefix(r.URL.Path, "/api/v2/projects/") && strings.HasSuffix(r.URL.Path, "/users"):
+			_, _ = fmt.Fprint(w, `[{"id":10,"name":"本人"},{"id":11,"name":"self"},{"id":12,"name":"山田"},{"id":13,"name":"123"},{"id":14,"name":"a,b"},{"id":15,"name":"重複"},{"id":16,"name":"重複"}]`)
+		case strings.HasPrefix(r.URL.Path, "/api/v2/projects/") && strings.HasSuffix(r.URL.Path, "/versions"):
+			_, _ = fmt.Fprint(w, `[{"id":7,"name":"v1.0"},{"id":8,"name":"123"},{"id":9,"name":"a,b"},{"id":10,"name":"重複"},{"id":11,"name":"重複"}]`)
 		case strings.HasPrefix(r.URL.Path, "/api/v2/projects/") && strings.HasSuffix(r.URL.Path, "/issueTypes"):
 			project := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v2/projects/"), "/issueTypes")
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "name": "タスク👩‍💻 (project " + project + ")", "future": json.Number("12345678901234567890")}})

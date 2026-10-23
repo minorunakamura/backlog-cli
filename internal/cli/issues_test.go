@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -69,11 +71,13 @@ func TestExecuteIssueListOutputFailure(t *testing.T) {
 }
 
 func TestExecuteIssueListFlagValuesDoNotEnableJSONErrors(t *testing.T) {
-	for _, flag := range []string{"--project", "-p", "--limit", "--offset", "--status-id", "--assignee-id", "--milestone-id"} {
-		var stdout, stderr bytes.Buffer
-		exit := cli.Execute(context.Background(), []string{"issue", "list", "--unknown", flag, "--json"}, &stdout, &stderr, nil)
-		if exit != 2 || stdout.Len() != 0 || stderr.Len() == 0 || strings.HasPrefix(stderr.String(), "{") {
-			t.Fatalf("flag=%s exit=%d stdout=%s stderr=%s", flag, exit, &stdout, &stderr)
+	for _, command := range []string{"list", "mine"} {
+		for _, flag := range []string{"--project", "-p", "--limit", "--offset", "--status", "-s", "--status-id", "--assignee", "-a", "--assignee-name", "--assignee-id", "--milestone", "-m", "--milestone-id"} {
+			var stdout, stderr bytes.Buffer
+			exit := cli.Execute(context.Background(), []string{"issue", command, "--unknown", flag, "--json"}, &stdout, &stderr, nil)
+			if exit != 2 || stdout.Len() != 0 || stderr.Len() == 0 || strings.HasPrefix(stderr.String(), "{") {
+				t.Fatalf("flag=%s exit=%d stdout=%s stderr=%s", flag, exit, &stdout, &stderr)
+			}
 		}
 	}
 }
@@ -196,13 +200,6 @@ func TestExecuteIssueListRejectsInvalidOrUnsupportedInputWithoutAPI(t *testing.T
 		{"--offset=-1"},
 		{"--offset=9223372036854775808"},
 		{"--offset=1.5"},
-		{"--status=all"},
-		{"-s未対応"},
-		{"--assignee=self"},
-		{"-a山田"},
-		{"--assignee-name=self"},
-		{"--milestone=v1"},
-		{"-mv1"},
 		{"--sort=created"},
 	}
 	for _, name := range []string{"status-id", "assignee-id", "milestone-id"} {
@@ -229,7 +226,7 @@ func TestExecuteIssueListRejectsInvalidOrUnsupportedInputWithoutAPI(t *testing.T
 			}
 		})
 	}
-	for _, args := range [][]string{{"issue", "mine", "--json"}, {"issue", "--json"}} {
+	for _, args := range [][]string{{"issue", "--json"}} {
 		var stdout, stderr bytes.Buffer
 		exit := cli.Execute(context.Background(), args, &stdout, &stderr, nil)
 		if exit != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"input_error"`) {
@@ -260,7 +257,7 @@ func TestExecuteIssueListProjectAndStatusDefaults(t *testing.T) {
 	}{
 		{"local project", `{"project":"APP","issue":{"create":{"assignee":"self"}}}`, nil, []string{"/api/v2/projects/APP", "/api/v2/issues/count", "/api/v2/issues"}, 0},
 		{"explicit project", `{"project":"OTHER","issue":{"list":{"status":[]}}}`, []string{"-p42"}, []string{"/api/v2/issues/count", "/api/v2/issues"}, 0},
-		{"unresolved local status", `{"project":"APP","issue":{"list":{"status":["未対応"]}}}`, nil, nil, 2},
+		{"resolved local status", `{"project":"APP","issue":{"list":{"status":["未対応"]}}}`, nil, []string{"/api/v2/projects/APP", "/api/v2/projects/42/statuses", "/api/v2/issues/count", "/api/v2/issues"}, 0},
 		{"explicit status ID overrides local", `{"project":"42","issue":{"list":{"status":["未対応"]}}}`, []string{"--status-id=1"}, []string{"/api/v2/issues/count", "/api/v2/issues"}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -270,6 +267,8 @@ func TestExecuteIssueListProjectAndStatusDefaults(t *testing.T) {
 				switch r.URL.Path {
 				case "/api/v2/projects/APP":
 					_, _ = fmt.Fprint(w, `{"id":42}`)
+				case "/api/v2/projects/42/statuses":
+					_, _ = fmt.Fprint(w, `[{"id":1,"name":"未対応"}]`)
 				case "/api/v2/issues/count":
 					if r.URL.Query().Get("projectId[]") != "42" {
 						t.Errorf("project filter=%v", r.URL.Query())
@@ -277,7 +276,7 @@ func TestExecuteIssueListProjectAndStatusDefaults(t *testing.T) {
 					if len(r.URL.Query()["assigneeId[]"]) != 0 {
 						t.Error("create assignee leaked into list")
 					}
-					if len(tc.flags) > 0 && tc.flags[0] == "--status-id=1" && r.URL.Query().Get("statusId[]") != "1" {
+					if (tc.name == "resolved local status" || tc.name == "explicit status ID overrides local") && r.URL.Query().Get("statusId[]") != "1" {
 						t.Error("status override missing")
 					}
 					_, _ = fmt.Fprint(w, `{"count":0}`)
@@ -367,5 +366,504 @@ func TestExecuteIssueListCountsThenListsOnePage(t *testing.T) {
 	want := fmt.Sprintf(`{"items":[{"future":{"number":12345678901234567890},"issueKey":"APP-1","summary":"日本語\u001b[31m","url":%q}],"pagination":{"offset":0,"limit":20,"count":1,"total":7}}`+"\n", server.URL+"/view/APP-1")
 	if exit != 0 || stderr.Len() != 0 || stdout.String() != want || strings.Join(paths, ",") != "/api/v2/issues/count,/api/v2/issues" {
 		t.Fatalf("exit=%d paths=%v stdout=%s stderr=%s", exit, paths, &stdout, &stderr)
+	}
+}
+
+func TestExecuteIssueListStatusNames(t *testing.T) {
+	var paths []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v2/projects/42/statuses":
+			_, _ = fmt.Fprint(w, `[{"id":1,"name":"未対応"},{"id":2,"name":"123"},{"id":3,"name":"a,b"}]`)
+		case "/api/v2/issues/count", "/api/v2/issues":
+			if !reflect.DeepEqual(r.URL.Query()["statusId[]"], []string{"1", "2", "3"}) {
+				t.Errorf("status filter=%v", r.URL.Query())
+			}
+			if r.URL.Path == "/api/v2/issues/count" {
+				_, _ = fmt.Fprint(w, `{"count":0}`)
+			} else {
+				_, _ = fmt.Fprint(w, `[]`)
+			}
+		default:
+			t.Errorf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configure(t, server.URL)
+	var stdout, stderr bytes.Buffer
+	exit := cli.Execute(context.Background(), []string{"issue", "list", "-p42", "-s未対応", "--status=123", "-sa,b", "-s未対応", "--json"}, &stdout, &stderr, server.Client())
+	if exit != 0 || stderr.Len() != 0 || stdout.String() != "{\"items\":[],\"pagination\":{\"offset\":0,\"limit\":20,\"count\":0,\"total\":0}}\n" || strings.Join(paths, ",") != "/api/v2/projects/42/statuses,/api/v2/issues/count,/api/v2/issues" {
+		t.Fatalf("exit=%d paths=%v stdout=%s stderr=%s", exit, paths, &stdout, &stderr)
+	}
+}
+
+func TestExecuteIssueListStatusDefaultsAndAll(t *testing.T) {
+	for _, tc := range []struct {
+		name, local, want string
+		flags             []string
+		candidates        bool
+		exit              int
+	}{
+		{"local names", `["未対応"]`, "1", nil, true, 0},
+		{"empty local", `[]`, "", nil, false, 0},
+		{"explicit name replaces local", `["missing"]`, "2", []string{"-s完了"}, true, 0},
+		{"explicit ID replaces local", `["missing"]`, "3", []string{"--status-id=3"}, false, 0},
+		{"all removes local", `["missing"]`, "", []string{"--status=all"}, false, 0},
+		{"literal all by ID", `[]`, "4", []string{"--status-id=4"}, false, 0},
+		{"all and name", `[]`, "", []string{"-sall", "-s完了"}, false, 2},
+		{"all repeated", `[]`, "", []string{"-sall", "--status=all"}, false, 2},
+		{"all and ID", `[]`, "", []string{"-sall", "--status-id=1"}, false, 2},
+		{"name and ID", `[]`, "", []string{"-s完了", "--status-id=1"}, false, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var paths []string
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case "/api/v2/projects/42/statuses":
+					if !tc.candidates {
+						t.Error("unnecessary statuses request")
+					}
+					_, _ = fmt.Fprint(w, `[{"id":1,"name":"未対応"},{"id":2,"name":"完了"},{"id":4,"name":"all"}]`)
+				case "/api/v2/issues/count", "/api/v2/issues":
+					if r.URL.Query().Get("statusId[]") != tc.want {
+						t.Errorf("query=%v", r.URL.Query())
+					}
+					if r.URL.Path == "/api/v2/issues/count" {
+						_, _ = fmt.Fprint(w, `{"count":0}`)
+					} else {
+						_, _ = fmt.Fprint(w, `[]`)
+					}
+				default:
+					t.Errorf("unexpected path=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			if err := os.Mkdir(".backlog", 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(".backlog/settings.json", []byte(`{"project":"42","issue":{"list":{"status":`+tc.local+`}}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			exit := cli.Execute(context.Background(), append([]string{"issue", "list", "--json"}, tc.flags...), &stdout, &stderr, server.Client())
+			wantCalls := 2
+			if tc.candidates {
+				wantCalls++
+			}
+			if exit != tc.exit || (exit == 0 && (stderr.Len() != 0 || len(paths) != wantCalls)) || (exit != 0 && (len(paths) != 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"input_error"`))) {
+				t.Fatalf("exit=%d paths=%v stdout=%s stderr=%s", exit, paths, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteIssueListMilestoneNames(t *testing.T) {
+	var paths []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v2/projects/42/versions":
+			_, _ = fmt.Fprint(w, `[{"id":7,"name":"v1"},{"id":8,"name":"123"},{"id":9,"name":"a,b"}]`)
+		case "/api/v2/issues/count", "/api/v2/issues":
+			if !reflect.DeepEqual(r.URL.Query()["milestoneId[]"], []string{"7", "8", "9"}) {
+				t.Errorf("query=%v", r.URL.Query())
+			}
+			if r.URL.Path == "/api/v2/issues/count" {
+				_, _ = fmt.Fprint(w, `{"count":0}`)
+			} else {
+				_, _ = fmt.Fprint(w, `[]`)
+			}
+		default:
+			t.Errorf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configure(t, server.URL)
+	var stdout, stderr bytes.Buffer
+	exit := cli.Execute(context.Background(), []string{"issue", "list", "-p42", "-mv1", "--milestone=123", "-ma,b", "-mv1", "--json"}, &stdout, &stderr, server.Client())
+	if exit != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"items":[]`) || strings.Join(paths, ",") != "/api/v2/projects/42/versions,/api/v2/issues/count,/api/v2/issues" {
+		t.Fatalf("exit=%d paths=%v stdout=%s stderr=%s", exit, paths, &stdout, &stderr)
+	}
+}
+
+func TestExecuteIssueListAssigneeNamesAndSelf(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		flags, wantIDs, wantPaths []string
+	}{
+		{"self only", []string{"-aself", "--assignee=self"}, []string{"10"}, []string{"/api/v2/users/myself"}},
+		{"literal self", []string{"--assignee-name=self"}, []string{"11"}, []string{"/api/v2/projects/42/users"}},
+		{"combined names", []string{"-aself", "-a山田", "--assignee-name=self", "--assignee-name=本人", "-a123", "-aa,b", "-a山田"}, []string{"10", "11", "12", "13", "14"}, []string{"/api/v2/users/myself", "/api/v2/projects/42/users"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var paths []string
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case "/api/v2/users/myself":
+					_, _ = fmt.Fprint(w, `{"id":10,"name":"本人"}`)
+				case "/api/v2/projects/42/users":
+					_, _ = fmt.Fprint(w, `[{"id":10,"name":"本人"},{"id":11,"name":"self"},{"id":12,"name":"山田"},{"id":13,"name":"123"},{"id":14,"name":"a,b"}]`)
+				case "/api/v2/issues/count", "/api/v2/issues":
+					actual := r.URL.Query()["assigneeId[]"]
+					slices.Sort(actual)
+					if !reflect.DeepEqual(actual, tc.wantIDs) {
+						t.Errorf("query=%v want assignees=%v", r.URL.Query(), tc.wantIDs)
+					}
+					if r.URL.Path == "/api/v2/issues/count" {
+						_, _ = fmt.Fprint(w, `{"count":0}`)
+					} else {
+						_, _ = fmt.Fprint(w, `[]`)
+					}
+				default:
+					t.Errorf("unexpected path=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			var stdout, stderr bytes.Buffer
+			exit := cli.Execute(context.Background(), append([]string{"issue", "list", "-p42", "--json"}, tc.flags...), &stdout, &stderr, server.Client())
+			wantPaths := append(append([]string{}, tc.wantPaths...), "/api/v2/issues/count", "/api/v2/issues")
+			if exit != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"items":[]`) || !reflect.DeepEqual(paths, wantPaths) {
+				t.Fatalf("exit=%d paths=%v stdout=%s stderr=%s", exit, paths, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteIssueMineSharesListSearchAndOutput(t *testing.T) {
+	for _, mode := range []string{"--json", "--no-input"} {
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v2/users/myself":
+					_, _ = fmt.Fprint(w, `{"id":10}`)
+				case "/api/v2/projects/42/statuses":
+					_, _ = fmt.Fprint(w, `[{"id":1,"name":"未対応"}]`)
+				case "/api/v2/projects/42/versions":
+					_, _ = fmt.Fprint(w, `[{"id":7,"name":"v1"}]`)
+				case "/api/v2/issues/count", "/api/v2/issues":
+					want := url.Values{"projectId[]": {"42"}, "statusId[]": {"1"}, "assigneeId[]": {"10"}, "milestoneId[]": {"7"}, "keyword": {"検索"}}
+					if r.URL.Path == "/api/v2/issues/count" {
+						_, _ = fmt.Fprint(w, `{"count":9}`)
+					} else {
+						want.Set("count", "2")
+						want.Set("offset", "3")
+						want.Set("sort", "updated")
+						want.Set("order", "desc")
+						_, _ = fmt.Fprint(w, `[{"issueKey":"APP-1","summary":"件名","status":{"name":"未対応"},"assignee":{"name":"本人"},"future":true}]`)
+					}
+					if !reflect.DeepEqual(r.URL.Query(), want) {
+						t.Errorf("query=%v want=%v", r.URL.Query(), want)
+					}
+				default:
+					t.Errorf("unexpected path=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			if err := os.Mkdir(".backlog", 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(".backlog/settings.json", []byte(`{"project":"42","issue":{"list":{"status":["未対応"]}}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var outputs []string
+			for _, command := range []string{"list", "mine"} {
+				args := []string{"issue", command, "検索", "-mv1", "--limit=2", "--offset=3", mode}
+				if command == "list" {
+					args = append(args, "-aself")
+				}
+				var stdout, stderr bytes.Buffer
+				exit := cli.ExecuteWithInput(context.Background(), args, unreadableInput{t}, &stdout, &stderr, server.Client())
+				if exit != 0 || stderr.Len() != 0 {
+					t.Fatalf("%s exit=%d stdout=%s stderr=%s", command, exit, &stdout, &stderr)
+				}
+				outputs = append(outputs, stdout.String())
+			}
+			if outputs[0] != outputs[1] || !strings.Contains(outputs[1], "APP-1") {
+				t.Fatalf("list=%q mine=%q", outputs[0], outputs[1])
+			}
+			if mode == "--json" && !strings.Contains(outputs[1], `"pagination":{"offset":3,"limit":2,"count":1,"total":9}`) {
+				t.Fatal(outputs[1])
+			}
+			if mode == "--no-input" && outputs[1] != "KEY\tSUMMARY\tSTATUS\tASSIGNEE\nAPP-1\t件名\t未対応\t本人\nNext offset: 4\n" {
+				t.Fatal(outputs[1])
+			}
+		})
+	}
+}
+
+func TestExecuteIssueCrossProjectSearch(t *testing.T) {
+	for _, tc := range []struct {
+		name, command, keyword string
+		flags                  []string
+		self                   bool
+		exit                   int
+	}{
+		{"keyword", "list", "検索", nil, false, 0},
+		{"self", "list", "", []string{"-aself", "--assignee=self"}, true, 0},
+		{"keyword and self", "list", " 検索 ", []string{"-aself"}, true, 0},
+		{"mine", "mine", "", nil, true, 0},
+		{"mine keyword", "mine", "検索", nil, true, 0},
+		{"unconditional", "list", "", nil, false, 2},
+		{"whitespace keyword", "list", " \t\n", nil, false, 2},
+		{"status name", "list", "検索", []string{"-s完了"}, false, 2},
+		{"status all", "list", "検索", []string{"-sall"}, false, 2},
+		{"status ID", "list", "検索", []string{"--status-id=1"}, false, 2},
+		{"milestone name", "list", "検索", []string{"-mv1"}, false, 2},
+		{"milestone ID", "list", "検索", []string{"--milestone-id=1"}, false, 2},
+		{"ordinary assignee", "list", "検索", []string{"-a山田"}, false, 2},
+		{"self and ordinary", "list", "検索", []string{"-aself", "-a山田"}, false, 2},
+		{"literal self", "list", "検索", []string{"--assignee-name=self"}, false, 2},
+		{"assignee ID", "list", "検索", []string{"--assignee-id=10"}, false, 2},
+		{"mine status", "mine", "検索", []string{"-sall"}, false, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var paths []string
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case "/api/v2/users/myself":
+					_, _ = fmt.Fprint(w, `{"id":10}`)
+				case "/api/v2/issues/count", "/api/v2/issues":
+					want := url.Values{}
+					if tc.keyword != "" {
+						want.Set("keyword", tc.keyword)
+					}
+					if tc.self {
+						want.Add("assigneeId[]", "10")
+					}
+					if r.URL.Path == "/api/v2/issues/count" {
+						_, _ = fmt.Fprint(w, `{"count":0}`)
+					} else {
+						want.Set("count", "2")
+						want.Set("offset", "3")
+						want.Set("sort", "updated")
+						want.Set("order", "desc")
+						_, _ = fmt.Fprint(w, `[]`)
+					}
+					if !reflect.DeepEqual(r.URL.Query(), want) {
+						t.Errorf("query=%v want=%v", r.URL.Query(), want)
+					}
+				default:
+					t.Errorf("unexpected request=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			if err := os.Mkdir(".backlog", 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(".backlog/settings.json", []byte(`{"project":"IGNORED","issue":{"list":{"status":["missing"]},"create":{"assignee":"missing"}}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"issue", tc.command, "--project=all", "--limit=2", "--offset=3", "--json"}
+			if tc.keyword != "" {
+				args = append(args, tc.keyword)
+			}
+			args = append(args, tc.flags...)
+			var stdout, stderr bytes.Buffer
+			exit := cli.ExecuteWithInput(context.Background(), args, unreadableInput{t}, &stdout, &stderr, server.Client())
+			wantPaths := []string{"/api/v2/issues/count", "/api/v2/issues"}
+			if tc.self {
+				wantPaths = append([]string{"/api/v2/users/myself"}, wantPaths...)
+			}
+			if tc.exit != 0 {
+				wantPaths = nil
+			}
+			if exit != tc.exit || !reflect.DeepEqual(paths, wantPaths) || (exit == 0 && (stderr.Len() != 0 || stdout.String() != "{\"items\":[],\"pagination\":{\"offset\":3,\"limit\":2,\"count\":0,\"total\":0}}\n")) || (exit != 0 && (stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"input_error"`))) {
+				t.Fatalf("exit=%d paths=%v stdout=%s stderr=%s", exit, paths, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteIssueSearchRejectsMixedNamesAndIDsAndMineAssignees(t *testing.T) {
+	for _, command := range []string{"list", "mine"} {
+		cases := [][]string{
+			{"-s完了", "--status-id=1"},
+			{"-mv1", "--milestone-id=7"},
+			{"-aself", "--assignee-id=10"},
+			{"--assignee-name=self", "--assignee-id=11"},
+			{"--project=42", "-p42"},
+			{"--limit=1", "--limit=2"},
+			{"--offset=0", "--offset=1"},
+		}
+		if command == "mine" {
+			for _, flag := range []string{"--assignee=self", "-aself", "--assignee=山田", "--assignee=", "--assignee-name=self", "--assignee-name=", "--assignee-id=10", "--assignee-id="} {
+				cases = append(cases, []string{flag})
+			}
+		}
+		for _, flags := range cases {
+			t.Run(command+" "+strings.Join(flags, " "), func(t *testing.T) {
+				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Errorf("invalid input called %s", r.URL.Path) }))
+				defer server.Close()
+				configure(t, server.URL)
+				var stdout, stderr bytes.Buffer
+				exit := cli.Execute(context.Background(), append([]string{"issue", command, "--json"}, flags...), &stdout, &stderr, server.Client())
+				if exit != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"input_error"`) {
+					t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+				}
+			})
+		}
+	}
+}
+
+func TestExecuteIssueNameResolutionFailures(t *testing.T) {
+	for _, field := range []struct{ flag, endpoint string }{{"--status", "statuses"}, {"--milestone", "versions"}, {"--assignee", "users"}, {"--assignee-name", "users"}} {
+		for _, tc := range []struct {
+			name, body, code string
+			status           int
+		}{
+			{"missing", `[]`, "input_error", 200},
+			{"not exact", `[{"id":1,"name":" target "},{"id":2,"name":"TARGET"}]`, "input_error", 200},
+			{"ambiguous", `[{"id":1,"name":"target"},{"id":2,"name":"target"}]`, "input_error", 200},
+			{"duplicate same ID", `[{"id":1,"name":"target"},{"id":1,"name":"target"}]`, "input_error", 200},
+			{"missing ID", `[{"name":"target"}]`, "response_error", 200},
+			{"zero ID", `[{"id":0,"name":"target"}]`, "response_error", 200},
+			{"negative ID", `[{"id":-1,"name":"target"}]`, "response_error", 200},
+			{"overflow ID", `[{"id":9223372036854775808,"name":"target"}]`, "response_error", 200},
+			{"string ID", `[{"id":"1","name":"target"}]`, "response_error", 200},
+			{"missing name", `[{"id":1}]`, "response_error", 200},
+			{"null name", `[{"id":1,"name":null}]`, "response_error", 200},
+			{"empty name", `[{"id":1,"name":""}]`, "response_error", 200},
+			{"wrong name type", `[{"id":1,"name":1}]`, "response_error", 200},
+			{"null list", `null`, "response_error", 200},
+			{"nonobject", `[null]`, "response_error", 200},
+			{"malformed", `[`, "response_error", 200},
+			{"API rejected", `{"errors":[{"code":11,"message":"test-secret+/?日本"}]}`, "api_error", 403},
+		} {
+			t.Run(field.flag+"/"+tc.name, func(t *testing.T) {
+				calls := 0
+				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if r.URL.Path != "/api/v2/projects/42/"+field.endpoint {
+						t.Errorf("unexpected path=%s", r.URL.Path)
+					}
+					w.WriteHeader(tc.status)
+					_, _ = fmt.Fprint(w, tc.body)
+				}))
+				defer server.Close()
+				configure(t, server.URL)
+				var stdout, stderr bytes.Buffer
+				exit := cli.Execute(context.Background(), []string{"issue", "list", "-p42", field.flag + "=target", "--json"}, &stdout, &stderr, server.Client())
+				wantExit := 1
+				if tc.code == "input_error" {
+					wantExit = 2
+				}
+				if exit != wantExit || calls != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"`+tc.code+`"`) || strings.Contains(stderr.String(), "test-secret") {
+					t.Fatalf("exit=%d calls=%d stdout=%s stderr=%s", exit, calls, &stdout, &stderr)
+				}
+			})
+		}
+	}
+}
+
+func TestExecuteIssueSelfUsesSelectedProfile(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Backlog-API-Key") != "work-secret" {
+			t.Error("self did not use selected profile")
+		}
+		switch r.URL.Path {
+		case "/api/v2/users/myself":
+			_, _ = fmt.Fprint(w, `{"id":20}`)
+		case "/api/v2/issues/count", "/api/v2/issues":
+			if !reflect.DeepEqual(r.URL.Query()["assigneeId[]"], []string{"20"}) {
+				t.Errorf("query=%v", r.URL.Query())
+			}
+			if r.URL.Path == "/api/v2/issues/count" {
+				_, _ = fmt.Fprint(w, `{"count":0}`)
+			} else {
+				_, _ = fmt.Fprint(w, `[]`)
+			}
+		default:
+			t.Errorf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configure(t, "https://default.invalid")
+	t.Setenv("WORK_TEST_KEY", "work-secret")
+	if err := os.WriteFile(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "backlog", "config.json"), []byte(fmt.Sprintf(`{"profiles":{"default":{"spaceUrl":"https://default.invalid","apiKeyEnv":"SLICE_TEST_KEY"},"work":{"spaceUrl":%q,"apiKeyEnv":"WORK_TEST_KEY"}}}`, server.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	exit := cli.Execute(context.Background(), []string{"--profile=work", "issue", "mine", "-pall", "--json"}, &stdout, &stderr, server.Client())
+	if exit != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"items":[]`) {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", exit, &stdout, &stderr)
+	}
+}
+
+func TestExecuteIssueSelfFailuresStopSearch(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, code string
+		status           int
+		truncated        bool
+	}{
+		{"missing ID", `{}`, "response_error", 200, false},
+		{"null ID", `{"id":null}`, "response_error", 200, false},
+		{"zero ID", `{"id":0}`, "response_error", 200, false},
+		{"negative ID", `{"id":-1}`, "response_error", 200, false},
+		{"overflow ID", `{"id":9223372036854775808}`, "response_error", 200, false},
+		{"fractional ID", `{"id":1.5}`, "response_error", 200, false},
+		{"string ID", `{"id":"1"}`, "response_error", 200, false},
+		{"null object", `null`, "response_error", 200, false},
+		{"array", `[]`, "response_error", 200, false},
+		{"malformed", `{`, "response_error", 200, false},
+		{"API rejected", `{"errors":[{"code":11,"message":"test-secret+/?日本"}]}`, "api_error", 403, false},
+		{"unexpected success", `{"id":1}`, "response_error", 201, false},
+		{"communication", `{}`, "transport_error", 200, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.Path != "/api/v2/users/myself" {
+					t.Errorf("unexpected path=%s", r.URL.Path)
+				}
+				if tc.truncated {
+					w.Header().Set("Content-Length", "1000")
+				}
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			var stdout, stderr bytes.Buffer
+			exit := cli.Execute(context.Background(), []string{"issue", "mine", "-pall", "--json"}, &stdout, &stderr, server.Client())
+			if exit != 1 || calls != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"`+tc.code+`"`) || !strings.Contains(stderr.String(), fmt.Sprintf(`"httpStatus":%d`, tc.status)) || strings.Contains(stderr.String(), "test-secret") {
+				t.Fatalf("exit=%d calls=%d stdout=%s stderr=%s", exit, calls, &stdout, &stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteIssueCandidateCancellationStopsSearch(t *testing.T) {
+	for _, tc := range []struct{ flag, path string }{{"-s未対応", "/api/v2/projects/42/statuses"}, {"-aself", "/api/v2/users/myself"}} {
+		t.Run(tc.flag, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.Path != tc.path {
+					t.Errorf("unexpected path=%s", r.URL.Path)
+				}
+				_, _ = fmt.Fprint(w, `{`)
+				w.(http.Flusher).Flush()
+				cancel()
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			configure(t, server.URL)
+			var stdout, stderr bytes.Buffer
+			exit := cli.Execute(ctx, []string{"issue", "list", "-p42", tc.flag, "--json"}, &stdout, &stderr, server.Client())
+			if exit != 130 || calls != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"cancelled"`) {
+				t.Fatalf("exit=%d calls=%d stdout=%s stderr=%s", exit, calls, &stdout, &stderr)
+			}
+		})
 	}
 }
