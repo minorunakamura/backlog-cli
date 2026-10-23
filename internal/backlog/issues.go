@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"backlog-cli/internal/output"
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/url"
@@ -28,6 +29,18 @@ func (f IssueFilter) query() url.Values {
 		query.Set("keyword", f.Keyword)
 	}
 	return query
+}
+
+// Issue retrieves one issue by ID or key, retaining the API object.
+func (c *Client) Issue(ctx context.Context, issueIDOrKey string) (json.RawMessage, error) {
+	data, err := c.get(ctx, "/api/v2/issues/"+url.PathEscape(issueIDOrKey))
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 || bytes.TrimSpace(data)[0] != '{' || !json.Valid(data) {
+		return nil, output.NewFailure("response_error", "invalid API issue JSON", 200)
+	}
+	return json.RawMessage(data), nil
 }
 
 // IssueCount retrieves the starting total without pagination or sort parameters.

@@ -26,6 +26,9 @@ func (p Pagination) NextOffset() (int64, bool) {
 
 var issueKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_]+-[0-9]+$`)
 
+// ValidIssueKey reports whether a key is safe for an issue API path and URL.
+func ValidIssueKey(value string) bool { return issueKeyPattern.MatchString(value) }
+
 // WriteIssueList preserves API objects, adding URLs built only from validated issue keys.
 func WriteIssueList(w io.Writer, items []json.RawMessage, pagination Pagination, origin string, jsonMode bool, key string) error {
 	safe := make([]json.RawMessage, len(items))

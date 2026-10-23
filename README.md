@@ -1,6 +1,6 @@
 # backlog-cli
 
-Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題の名前/ID条件・self・横断検索による1ページ検索、非対話での課題作成を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
+Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題の名前/ID条件・self・横断検索による1ページ検索、JSONでの課題取得、非対話での課題作成を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
 
 ```sh
 bl --help
@@ -15,11 +15,13 @@ bl issue list -p MYAPP -s 未対応 -s 処理中 -a self -a 山田 -m v1.0
 bl issue mine -p MYAPP --json
 bl issue mine -p all
 bl issue list "ログイン" -p all --json
+bl issue view MYAPP-123 --json
+bl issue view 12345 --json --no-input
 bl issue create -p MYAPP --issue-type タスク --priority 中 -t "ログインの修正" -a self --json
 bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file ticket.md
 ```
 
-課題の閲覧、対話での課題作成、課題一覧/detailの対話UI、editor起動、配布archive、CIは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
+課題の人向け詳細表示、対話での課題作成、課題一覧/detailの対話UI、editor起動、配布archive、CIは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
 
 ## 設定
 
@@ -57,6 +59,15 @@ bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file
 - 確定した同じfilterで最初にcountを1回取得し、成功した場合だけlistを1回取得します。countにlimit/offset/sort/orderは渡さず、listには `count=limit` / `offset` / `sort=updated` / `order=desc` を明示します。count失敗を0件に置き換えません。
 - TTYでも今回の課題一覧は固定1ページのみで、一覧UIや全件自動取得はありません。空ページはtotalにかかわらず終了、非空なら `offset + 実取得count < 開始時total` の場合だけ続きがあります（整数overflowは回避）。固定表示の `Next offset: N` は、その続きのページを `--offset N` で明示取得するための案内です。
 - countとlistは別snapshotです。途中の追加・削除・更新によって重複・取りこぼし・totalとの差が生じ得ます。一貫したsnapshotは保証しません。次のコマンド実行ではcountを取り直します。
+
+## JSONでの課題取得
+
+`bl issue view <issueIdOrKey> --json` は正整数int64 IDまたは課題キー（例: `MYAPP-123`）を検証・path encodeし、`GET /api/v2/issues/:issueIdOrKey` を1回だけ呼びます。API応答objectの構造・未知フィールド・大整数・本文のJSON string値を保持し、設定originと検証した応答issueKeyから作る `url` を追加します。secretは既存の出力処理で除去します。
+
+- project指定は不要で、ローカルproject・検索条件・作成既定値は適用しません。設定自体の検証と `--profile` は他コマンドと共通です。
+- JSON取得にproject/本文記法のAPIは呼びません。TTYの有無にかかわらず選択UI・viewer・editorを起動せず、stdinも読みません。
+- **人向け詳細表示は未実装です。`--json` なしはAPIを呼ばず入力エラー（exit 2）とし、`--json` を案内します。原本文の直接表示で代用しません。**
+- 入力不足・不正はexit 2、404・認証/権限等のAPI拒否は `api_error`、通信失敗は `transport_error`、不正JSON/object/issueKeyは `response_error`（いずれもexit 1）です。JSONエラーはstderrだけに出します。
 
 ## 非対話の課題作成
 
@@ -148,6 +159,8 @@ mise exec -- go test ./cmd/bl -count=1 -v
 CLIテストは認証/path、JSON原本、固定表示、未知flag/args、API拒否、不正JSON、redirect、出力失敗、本文読込中のcancel、未信頼TLS拒否に加え、projectのkey/ID・長短flag・local優先順位・重複/all/不足拒否・API失敗を検証します。UI ModelのUpdate/Viewテストは選択・取消・候補無害化・filter無効・長い日本語/emoji・resize/極小サイズを検証します。HTTP境界テストでrequest contextの30秒deadlineと本文読込のdeadline適用を確認します。`cmd/bl` テストは実バイナリのhelp/parser/config/stream/exitを検証します。実バイナリへmock独自CAを渡す本番用flag/debug機能はありません。darwinの実バイナリは通常のOS trustを使うため、self-signed mockは上の注入境界で検証してください。
 
 課題検索の公開CLI/HTTP/出力テストでは、count/listのquery一致・順序/回数、名前の完全一致/不一致/曖昧さ、数字・カンマの名前、selfと実名self、名前/IDのOR・重複除去・混在拒否、単一値flag重複、limit/offset境界、設定優先/status all、mineとlistの出力一致、横断検索の許可/拒否と不要な候補APIの不在を確認します。候補API/count/list失敗・不正応答・中断、空ページ・totalとの差・int64上限、JSON原本/大整数/未知フィールドとURL、安全な固定表示も検証します。
+
+課題取得のCLI/HTTP/出力テストはID/キー・path encode・profile、単一GETと不要なproject API/入力待ちの不在、JSON本文/日本語/ESC・未知field/大整数・応答キー由来のURL・secret除去、入力/args拒否、404/認証/通信/不正JSON/出力失敗/中断のstderrとexit、人向け未実装の安全な拒否を検証します。
 
 課題作成のCLI/HTTP/出力テストはform/header、POST1回・追加GET/redirect/retryなし、既定値/明示値/profile/self、本文経路とUTF-8・非トリミング、入力/排他/重複拒否、切断・timeout・送信後中断・5xx・201の壊れJSON/本文読込/出力失敗とcreation/exit、未知field/大整数/secretを検証します。
 
