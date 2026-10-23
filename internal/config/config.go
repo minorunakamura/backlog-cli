@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -45,6 +46,23 @@ func Origin(value string) (string, error) {
 	}
 	u.Path = ""
 	return u.String(), nil
+}
+
+// ProjectID validates a project value, returning its normalized ID or an empty string for a key.
+func ProjectID(value string) (string, error) {
+	if strings.TrimSpace(value) == "" || value == "all" {
+		return "", errors.New("project must be a key or positive integer ID (not all)")
+	}
+	// Signed integer spellings are IDs too, never keys on overflow or nonpositive input.
+	digits := strings.TrimPrefix(strings.TrimPrefix(value, "+"), "-")
+	if digits != "" && strings.Trim(digits, "0123456789") == "" {
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id <= 0 {
+			return "", errors.New("project ID must be a positive int64")
+		}
+		return strconv.FormatInt(id, 10), nil
+	}
+	return "", nil
 }
 
 // Load reads only the selected profile and the working directory's local defaults.
@@ -102,6 +120,11 @@ func Load(profile, cwd string) (Settings, error) {
 	}
 	if _, err := read(filepath.Join(cwd, ".backlog", "settings.json"), "local", &result.Local, true); err != nil {
 		return result, err
+	}
+	if result.Local.Project != "" {
+		if _, err := ProjectID(result.Local.Project); err != nil {
+			return result, fmt.Errorf("local configuration: %w", err)
+		}
 	}
 	return result, nil
 }

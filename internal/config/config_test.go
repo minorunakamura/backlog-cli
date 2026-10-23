@@ -104,6 +104,13 @@ func TestLoadLocalValidationAndNoParentSearch(t *testing.T) {
 		{"null status", `{"issue":{"list":{"status":null}}}`, "invalid setting type"},
 		{"string status", `{"issue":{"list":{"status":"new"}}}`, "invalid setting type"},
 		{"empty project", `{"project":" "}`, "invalid empty setting value"},
+		{"zero project ID", `{"project":"0"}`, "project ID must be a positive int64"},
+		{"negative project ID", `{"project":"-1"}`, "project ID must be a positive int64"},
+		{"overflow project ID", `{"project":"9223372036854775808"}`, "project ID must be a positive int64"},
+		{"all project", `{"project":"all"}`, "project must be a key or positive integer ID"},
+		{"maximum project ID", `{"project":"9223372036854775807"}`, ""},
+		{"signed project ID", `{"project":"+42"}`, ""},
+		{"project key without regex restriction", `{"project":"team/key-日本語"}`, ""},
 		{"empty name", `{"issue":{"create":{"priority":""}}}`, "invalid empty setting value"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
