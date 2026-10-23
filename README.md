@@ -1,6 +1,6 @@
 # backlog-cli
 
-Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題の名前/ID条件・self・横断検索による1ページ検索、JSONでの課題取得、非対話での課題作成を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
+Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題の名前/ID条件・self・横断検索による1ページ検索、Markdown課題の固定詳細表示・JSONでの原本取得、非対話での課題作成を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
 
 ```sh
 bl --help
@@ -15,13 +15,14 @@ bl issue list -p MYAPP -s 未対応 -s 処理中 -a self -a 山田 -m v1.0
 bl issue mine -p MYAPP --json
 bl issue mine -p all
 bl issue list "ログイン" -p all --json
+bl issue view MYAPP-123
 bl issue view MYAPP-123 --json
 bl issue view 12345 --json --no-input
 bl issue create -p MYAPP --issue-type タスク --priority 中 -t "ログインの修正" -a self --json
 bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file ticket.md
 ```
 
-課題の人向け詳細表示、対話での課題作成、課題一覧/detailの対話UI、editor起動、配布archive、CIは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
+Backlog記法の人向け詳細表示、対話での課題作成、課題一覧/detailの対話UI、editor起動、配布archive、CIは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
 
 ## 設定
 
@@ -60,13 +61,16 @@ bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file
 - TTYでも今回の課題一覧は固定1ページのみで、一覧UIや全件自動取得はありません。空ページはtotalにかかわらず終了、非空なら `offset + 実取得count < 開始時total` の場合だけ続きがあります（整数overflowは回避）。固定表示の `Next offset: N` は、その続きのページを `--offset N` で明示取得するための案内です。
 - countとlistは別snapshotです。途中の追加・削除・更新によって重複・取りこぼし・totalとの差が生じ得ます。一貫したsnapshotは保証しません。次のコマンド実行ではcountを取り直します。
 
-## JSONでの課題取得
+## 課題の固定詳細表示とJSON取得
 
 `bl issue view <issueIdOrKey> --json` は正整数int64 IDまたは課題キー（例: `MYAPP-123`）を検証・path encodeし、`GET /api/v2/issues/:issueIdOrKey` を1回だけ呼びます。API応答objectの構造・未知フィールド・大整数・本文のJSON string値を保持し、設定originと検証した応答issueKeyから作る `url` を追加します。secretは既存の出力処理で除去します。
 
 - project指定は不要で、ローカルproject・検索条件・作成既定値は適用しません。設定自体の検証と `--profile` は他コマンドと共通です。
 - JSON取得にproject/本文記法のAPIは呼びません。TTYの有無にかかわらず選択UI・viewer・editorを起動せず、stdinも読みません。
-- **人向け詳細表示は未実装です。`--json` なしはAPIを呼ばず入力エラー（exit 2）とし、`--json` を案内します。原本文の直接表示で代用しません。**
+- `--json` なしでは、取得課題の `projectId` からproject detail APIを取得し、`textFormattingRule=markdown` を確認して件名・URL・整形済み本文を1回固定出力します。TTYでもviewerや入力待ちはありません。非TTYではANSIなしです。`--no-input` も同じ固定表示です。
+- Markdown/GFMの基本書式・通常改行を保持し、detailsは展開、色は本文保持、課題キーは設定originのURL、Wiki/Git/SVN/添付参照は説明text、目次は静的リスト、画像はalt/既知URL/IDだけを表示します。結合表はセル・見出し・captionを落とさず通常表へ簡略化します。外部画像や参照先は取得しません。
+- code block/inline code/escapeを保護し、未知macroは説明表現、未知HTMLはタグを除いて本文を保持します。外部ANSI/危険な制御文字とentity復号による制御文字の復活を防ぎ、描画後もGlamour生成SGR以外の端末操作を除去します。JSON原本文にこの表示処理は適用しません。
+- `backlog` はまだ未対応、未知・欠落した `textFormattingRule` は推測せず表示エラー（exit 1、`--json` を案内）です。原本文の直接出力やMarkdownへの誤適用では代用しません。固定表示は80列を基準に整形します（resize/スクロールviewerは後続範囲）。
 - 入力不足・不正はexit 2、404・認証/権限等のAPI拒否は `api_error`、通信失敗は `transport_error`、不正JSON/object/issueKeyは `response_error`（いずれもexit 1）です。JSONエラーはstderrだけに出します。
 
 ## 非対話の課題作成
@@ -152,7 +156,7 @@ editorの保存時整形にも、このリポジトリのcwdから `mise exec --
 
 ```sh
 mise exec -- go test ./internal/cli -count=1 -v
-mise exec -- go test ./internal/backlog ./internal/config ./internal/output -count=1 -v
+mise exec -- go test ./internal/backlog ./internal/config ./internal/output ./internal/markup -count=1 -v
 mise exec -- go test ./cmd/bl -count=1 -v
 ```
 
@@ -160,7 +164,7 @@ CLIテストは認証/path、JSON原本、固定表示、未知flag/args、API�
 
 課題検索の公開CLI/HTTP/出力テストでは、count/listのquery一致・順序/回数、名前の完全一致/不一致/曖昧さ、数字・カンマの名前、selfと実名self、名前/IDのOR・重複除去・混在拒否、単一値flag重複、limit/offset境界、設定優先/status all、mineとlistの出力一致、横断検索の許可/拒否と不要な候補APIの不在を確認します。候補API/count/list失敗・不正応答・中断、空ページ・totalとの差・int64上限、JSON原本/大整数/未知フィールドとURL、安全な固定表示も検証します。
 
-課題取得のCLI/HTTP/出力テストはID/キー・path encode・profile、単一GETと不要なproject API/入力待ちの不在、JSON本文/日本語/ESC・未知field/大整数・応答キー由来のURL・secret除去、入力/args拒否、404/認証/通信/不正JSON/出力失敗/中断のstderrとexit、人向け未実装の安全な拒否を検証します。
+課題取得のCLI/HTTP/出力テストはID/キー・path encode・profile、単一GETと不要なproject API/入力待ちの不在、JSON本文/日本語/ESC・未知field/大整数・応答キー由来のURL・secret除去、入力/args拒否、404/認証/通信/不正JSON/出力失敗/中断のstderrとexit、Markdown固定表示・project記法取得・未対応/未知記法の安全な拒否・非TTY ANSI除去・入力待ちなしを検証します。変換/描画の公開境界では公式例fixture、code/escape、HTML/特殊参照/複雑表、entity/ANSI/C0/C1/壊れたsequence・長い未終端入力を検証します。
 
 課題作成のCLI/HTTP/出力テストはform/header、POST1回・追加GET/redirect/retryなし、既定値/明示値/profile/self、本文経路とUTF-8・非トリミング、入力/排他/重複拒否、切断・timeout・送信後中断・5xx・201の壊れJSON/本文読込/出力失敗とcreation/exit、未知field/大整数/secretを検証します。
 
@@ -173,7 +177,13 @@ CLIテストは認証/path、JSON原本、固定表示、未知flag/args、API�
 ```sh
 mise exec -- go build -o /tmp/bl-terminal-mock ./internal/cli/testdata/terminal_mock.go
 /tmp/bl-terminal-mock issue-type list
+/tmp/bl-terminal-mock issue view APP-1              # TTYでも即終了、SGR装飾のみ
+/tmp/bl-terminal-mock issue view APP-1 | cat        # ANSIなし、通常改行/日本語/👩‍💻を保持
+/tmp/bl-terminal-mock issue view APP-1 --no-input   # 同じ固定表示、待機なし
+/tmp/bl-terminal-mock issue view APP-1 --json       # 原本文のentity/ESC/未知fieldをJSON値として保持
 ```
+
+issue viewでは、見出し・連続する通常改行・展開されたdetails・参照説明・結合表の全セル/見出し/caption・codeのentity原文字列が読めること、画像を取得しないこと、clipboard/title/画面消去等が起きずsecretが出ないこと、qを待たず1回で終了することを別途確認してください。
 
 Apple Silicon Macの日本語端末で、(1) 上下で20件を超えて移動しEnter、`ID / NAME` 固定出力に選択projectの番号が現れる、(2) 長い日本語/👩‍💻が崩れず幅内で省略される、(3) resizeと10列×3行程度の極小サイズでpanicせずサイズ案内が出る、(4) EscとCtrl-Cそれぞれで元の端末へ戻り `echo $?` が130、を確認してください。実行し直すと必ず未指定状態から選び直します。`q`は取消キーではありません。
 
