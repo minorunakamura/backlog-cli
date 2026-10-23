@@ -1,0 +1,42 @@
+* 見出し
+一行目
+二行目
+
+#contents
+[toc]
+
+** 詳細
+<details><summary>クリックして詳細を表示</summary>本文</details>
+&color(red) { 色の本文 }
+<unknown>未知の本文</unknown>
+
+- リスト
+-- 入れ子
++ 番号
+- [x] 済
+''太字'' '''斜体''' %%打消し%%
+> 行引用
+{quote}
+ブロック引用
+{/quote}
+
+[[BLG-104]] / BLG-87 / [[Home]]
+[[Backlog>https://backlog.com/ja/]]
+#rev(11) / #rev(app:abcdefg) / #attach(sample.zip:11) / #image(11) / #thumbnail(11)
+<img alt="代替テキスト" src="https://example.test/image.png">
+#foo(残す内容)
+
+| |結合||
+|ヘッダー１|ヘッダー２|ヘッダー３|h
+|セル1|長いセル||
+|~セル2|中央寄せ|右寄せ|
+|escaped \| pipe|{code}code|pipe{/code}|追加セル|
+[サンプル]
+
+{code:java}
+#rev(11) &amp; &#27; [[BLG-104]]
+|code|table|h
+* コード内見出し
+{/code}
+\#rev(11)
+\[[BLG-104]]

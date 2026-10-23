@@ -18,7 +18,6 @@ func TestExecuteIssueViewFormattingErrorsNeverPrintBody(t *testing.T) {
 		status, requests     int
 	}{
 		{"unknown", `{"issueKey":"APP-1","projectId":42,"description":"PRIVATE BODY"}`, `{"textFormattingRule":"future"}`, 200, 2},
-		{"backlog", `{"issueKey":"APP-1","projectId":42,"description":"PRIVATE BODY"}`, `{"textFormattingRule":"backlog"}`, 200, 2},
 		{"missing rule", `{"issueKey":"APP-1","projectId":42}`, `{}`, 200, 2},
 		{"invalid rule", `{"issueKey":"APP-1","projectId":42}`, `{"textFormattingRule":1}`, 200, 2},
 		{"invalid project", `{"issueKey":"APP-1","projectId":42}`, `null`, 200, 2},
@@ -49,7 +48,7 @@ func TestExecuteIssueViewFormattingErrorsNeverPrintBody(t *testing.T) {
 			if exit != 1 || requests != tc.requests || stdout.Len() != 0 || stderr.Len() == 0 || strings.Contains(stderr.String(), "PRIVATE BODY") {
 				t.Fatalf("exit=%d requests=%d stdout=%q stderr=%q", exit, requests, &stdout, &stderr)
 			}
-			if (tc.name == "unknown" || tc.name == "backlog") && !strings.Contains(stderr.String(), "--json") {
+			if tc.name == "unknown" && !strings.Contains(stderr.String(), "--json") {
 				t.Fatalf("no JSON guidance: %s", &stderr)
 			}
 		})

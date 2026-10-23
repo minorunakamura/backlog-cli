@@ -19,6 +19,10 @@ import (
 func main() { os.Exit(run()) }
 
 func run() int {
+	rule := os.Getenv("BL_TERMINAL_MOCK_RULE")
+	if rule == "" {
+		rule = "markdown"
+	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issues := r.URL.Path == "/api/v2/issues" || r.URL.Path == "/api/v2/issues/count"
 		if r.Header.Get("Backlog-API-Key") != "mock-only-secret" || (!issues && r.URL.RawQuery != "") {
@@ -27,7 +31,11 @@ func run() int {
 		}
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/api/v2/issues/") && r.URL.Path != "/api/v2/issues/count":
-			_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": "APP-1", "projectId": 42, "summary": "Markdown固定表示 日本語👩‍💻\x1b]52;c;stolen\a mock-only-secret", "description": "# 見出し\n一行目\n二行目\n\n[toc]\n\n## 詳細\n<details><summary>クリックして詳細を表示</summary>展開された本文</details>\n\n**強調** ~~削除~~\n- [x] 済\n\n[[APP-2]] / APP-3 / [[Home]]\n#rev(11) / #rev(app:abcdefg) / #attach(sample.zip:11) / #image(11)\n\n![画像alt](https://example.invalid/image.png)\n\n| |結合||\n|見出し１|見出し２|見出し３|\n|---|---|---|\n|セル1|長いセル||\n|セル2|中央|右|\n[サンプル]\n\n`#rev(11) &amp; &#27;`\n\n```text\n#rev(11) &amp; &#27;\n```\n\n日本語👩‍💻\x1b[31m赤\x1b[0m &#27;[2J\x1b]52;c;stolen\a mock-only-secret"})
+			description := "# 見出し\n一行目\n二行目\n\n[toc]\n\n## 詳細\n<details><summary>クリックして詳細を表示</summary>展開された本文</details>\n\n**強調** ~~削除~~\n- [x] 済\n\n[[APP-2]] / APP-3 / [[Home]]\n#rev(11) / #rev(app:abcdefg) / #attach(sample.zip:11) / #image(11)\n\n![画像alt](https://example.invalid/image.png)\n\n| |結合||\n|見出し１|見出し２|見出し３|\n|---|---|---|\n|セル1|長いセル||\n|セル2|中央|右|\n[サンプル]\n\n`#rev(11) &amp; &#27;`\n\n```text\n#rev(11) &amp; &#27;\n```\n\n日本語👩‍💻\x1b[31m赤\x1b[0m &#27;[2J\x1b]52;c;stolen\a mock-only-secret"
+			if rule == "backlog" {
+				description = backlogDescription
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": "APP-1", "projectId": 42, "summary": rule + "固定表示 日本語👩‍💻\x1b]52;c;stolen\a mock-only-secret", "description": description})
 		case r.URL.Path == "/api/v2/issues/count":
 			_, _ = fmt.Fprint(w, `{"count":3}`)
 		case r.URL.Path == "/api/v2/issues" && r.Method == http.MethodPost:
@@ -59,7 +67,7 @@ func run() int {
 			}
 			_ = json.NewEncoder(w).Encode(projects)
 		case r.URL.Path == "/api/v2/projects/APP" || r.URL.Path == "/api/v2/projects/42":
-			_, _ = fmt.Fprint(w, `{"id":42,"projectKey":"APP","textFormattingRule":"markdown"}`)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "projectKey": "APP", "textFormattingRule": rule})
 		case r.URL.Path == "/api/v2/users/myself":
 			_, _ = fmt.Fprint(w, `{"id":10,"name":"本人"}`)
 		case strings.HasPrefix(r.URL.Path, "/api/v2/projects/") && strings.HasSuffix(r.URL.Path, "/statuses"):
@@ -111,3 +119,48 @@ func run() int {
 	defer stop()
 	return cli.ExecuteWithInput(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, server.Client())
 }
+
+const backlogDescription = `* 見出し
+一行目
+二行目
+
+#contents
+[toc]
+
+** 詳細
+<details><summary>クリックして詳細を表示</summary>本文</details>
+&color(red) { 色の本文 }
+<unknown>未知の本文</unknown>
+
+- リスト
+-- 入れ子
++ 番号
+- [x] 済
+''太字'' '''斜体''' %%打消し%%
+> 行引用
+{quote}
+ブロック引用
+{/quote}
+
+[[BLG-104]] / BLG-87 / [[Home]]
+[[Backlog>https://backlog.com/ja/]]
+#rev(11) / #rev(app:abcdefg) / #attach(sample.zip:11) / #image(11) / #thumbnail(11)
+<img alt="代替テキスト" src="https://example.test/image.png">
+#foo(残す内容)
+
+| |結合||
+|ヘッダー１|ヘッダー２|ヘッダー３|h
+|セル1|長いセル||
+|~セル2|中央寄せ|右寄せ|
+|escaped \| pipe|{code}code|pipe{/code}|追加セル|
+[サンプル]
+
+{code:java}
+#rev(11) &amp; &#27; [[BLG-104]]
+|code|table|h
+* コード内見出し
+{/code}
+\#rev(11)
+\[[BLG-104]]
+
+日本語👩‍💻` + "\x1b[31m赤\x1b[0m &#27;[2J\x1b]52;c;stolen\a mock-only-secret"
