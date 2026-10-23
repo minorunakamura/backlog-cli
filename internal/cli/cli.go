@@ -82,8 +82,20 @@ func ExecuteWithInput(ctx context.Context, args []string, stdin io.Reader, stdou
 		group.AddCommand(list)
 		root.AddCommand(group)
 	}
-	root.AddCommand(issueCommand(ctx, profile, &jsonMode, &noInput, &key, stdin, stdout, checked, client))
+	creation := &output.Creation{State: "not_created"}
+	root.AddCommand(issueCommand(ctx, profile, &jsonMode, &noInput, &key, stdin, stdout, checked, client, creation))
+	createCmd, _, _ := root.Find([]string{"issue", "create"})
 	cmd, err := root.ExecuteContextC(ctx)
+	if err != nil && createRequested(createCmd, args) {
+		cmd = createCmd
+	}
+	if err == nil && cmd == createCmd && errors.Is(ctx.Err(), context.Canceled) {
+		status := 0
+		if creation.State == "created" {
+			status = 201
+		}
+		err = output.NewFailure("cancelled", "command cancelled", status)
+	}
 	if err == nil && checked.err != nil {
 		err = output.NewFailure("output_error", "could not write output", 0)
 	}
@@ -92,16 +104,54 @@ func ExecuteWithInput(ctx context.Context, args []string, stdin io.Reader, stdou
 		if !errors.As(err, &failure) {
 			failure = output.NewFailure("input_error", "invalid command, arguments or flags (see --help)", 0)
 		}
+		if cmd != nil && cmd.Name() == "create" && cmd.Parent() != nil && cmd.Parent().Name() == "issue" {
+			failure.Creation = creation
+		}
 		if errors.Is(ctx.Err(), context.Canceled) {
 			failure.Code = "cancelled"
 			failure.Message = "command cancelled"
 		}
 		if err := output.WriteFailure(stderr, failure, jsonRequested(cmd, args), key); err != nil && failure.Code != "cancelled" {
+			if failure.Creation != nil && failure.Creation.State == "created" {
+				return failure.ExitCode()
+			}
 			return 1
 		}
 		return failure.ExitCode()
 	}
 	return 0
+}
+
+// An unknown flag before the subcommand can make Cobra return the root command.
+func createRequested(cmd *cobra.Command, args []string) bool {
+	var positionals []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, _, assigned := strings.Cut(arg[2:], "=")
+			flag := cmd.Flags().Lookup(name)
+			if flag == nil {
+				flag = cmd.InheritedFlags().Lookup(name)
+			}
+			if flag != nil && flag.NoOptDefVal == "" && !assigned {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && len(arg) > 1 {
+			flag := cmd.Flags().ShorthandLookup(arg[1:2])
+			if flag != nil && flag.NoOptDefVal == "" && len(arg) == 2 {
+				i++
+			}
+			continue
+		}
+		positionals = append(positionals, arg)
+	}
+	return len(positionals) >= 2 && positionals[0] == "issue" && positionals[1] == "create"
 }
 
 func isTerminal(stream any) bool {

@@ -14,13 +14,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func issueCommand(ctx context.Context, profile *singleValue, jsonMode, noInput *bool, key *string, stdin io.Reader, stdout io.Writer, checked *checkedWriter, client *http.Client) *cobra.Command {
+func issueCommand(ctx context.Context, profile *singleValue, jsonMode, noInput *bool, key *string, stdin io.Reader, stdout io.Writer, checked *checkedWriter, client *http.Client, creation *output.Creation) *cobra.Command {
 	group := &cobra.Command{Use: "issue", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 		return output.NewFailure("input_error", "subcommand required (see --help)", 0)
 	}}
 	for _, name := range []string{"list", "mine"} {
 		group.AddCommand(issueSearchCommand(name, ctx, profile, jsonMode, noInput, key, stdin, stdout, checked, client))
 	}
+	group.AddCommand(issueCreateCommand(ctx, profile, jsonMode, key, stdin, checked, client, creation))
 	return group
 }
 

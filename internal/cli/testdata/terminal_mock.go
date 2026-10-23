@@ -28,6 +28,16 @@ func run() int {
 		switch {
 		case r.URL.Path == "/api/v2/issues/count":
 			_, _ = fmt.Fprint(w, `{"count":3}`)
+		case r.URL.Path == "/api/v2/issues" && r.Method == http.MethodPost:
+			if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" || r.URL.RawQuery != "" || r.ParseForm() != nil || r.PostForm.Get("projectId") == "" || r.PostForm.Get("issueTypeId") == "" || r.PostForm.Get("priorityId") == "" || strings.TrimSpace(r.PostForm.Get("summary")) == "" {
+				http.Error(w, "unexpected create form", 400)
+				return
+			}
+			w.Header().Set("Location", "/view/APP-4")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": "APP-4", "summary": r.PostForm.Get("summary"), "description": r.PostForm.Get("description"), "future": json.Number("12345678901234567890")})
+		case r.URL.Path == "/api/v2/priorities":
+			_, _ = fmt.Fprint(w, `[{"id":3,"name":"中"}]`)
 		case r.URL.Path == "/api/v2/issues":
 			limit, limitErr := strconv.ParseInt(r.URL.Query().Get("count"), 10, 64)
 			offset, offsetErr := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
