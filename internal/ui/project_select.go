@@ -125,7 +125,8 @@ func SelectProject(ctx context.Context, stdin io.Reader, stdout io.Writer, items
 	if err != nil {
 		return "", err
 	}
-	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithInput(stdin), tea.WithOutput(stdout), tea.WithAltScreen()).Run()
+	// The caller owns OS signals through ctx; Tea's handler can race cancellation at shutdown.
+	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithoutSignalHandler(), tea.WithInput(stdin), tea.WithOutput(stdout), tea.WithAltScreen()).Run()
 	if model.cancelled || ctx.Err() != nil {
 		return "", output.NewFailure("cancelled", "command cancelled", 0)
 	}
