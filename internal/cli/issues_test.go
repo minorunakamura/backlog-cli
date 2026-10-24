@@ -147,30 +147,32 @@ func TestExecuteIssueListFixedPagesUseStartingTotalAndActualCount(t *testing.T) 
 		{"total smaller than page", "0", `[{"issueKey":"APP-1"}]`, "0", "1", "KEY\tSUMMARY\tSTATUS\tASSIGNEE\nAPP-1\t\t\t\n"},
 		{"sum exceeds int64", "9223372036854775807", `[{"issueKey":"APP-1"},{"issueKey":"APP-2"}]`, "9223372036854775806", "20", "KEY\tSUMMARY\tSTATUS\tASSIGNEE\nAPP-1\t\t\t\nAPP-2\t\t\t\n"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var paths []string
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				paths = append(paths, r.URL.Path)
-				switch r.URL.Path {
-				case "/api/v2/issues/count":
-					_, _ = fmt.Fprintf(w, `{"count":%s}`, tc.total)
-				case "/api/v2/issues":
-					if r.URL.Query().Get("count") != tc.limit || r.URL.Query().Get("offset") != tc.offset {
-						t.Errorf("query=%v", r.URL.Query())
+		for _, flags := range [][]string{nil, {"--no-input"}, {"--json=false", "--no-input=false"}} {
+			t.Run(tc.name+fmt.Sprint(flags), func(t *testing.T) {
+				var paths []string
+				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.URL.Path)
+					switch r.URL.Path {
+					case "/api/v2/issues/count":
+						_, _ = fmt.Fprintf(w, `{"count":%s}`, tc.total)
+					case "/api/v2/issues":
+						if r.URL.Query().Get("count") != tc.limit || r.URL.Query().Get("offset") != tc.offset {
+							t.Errorf("query=%v", r.URL.Query())
+						}
+						_, _ = fmt.Fprint(w, tc.body)
+					default:
+						t.Errorf("unexpected path %s", r.URL.Path)
 					}
-					_, _ = fmt.Fprint(w, tc.body)
-				default:
-					t.Errorf("unexpected path %s", r.URL.Path)
+				}))
+				defer server.Close()
+				configure(t, server.URL)
+				var stdout, stderr bytes.Buffer
+				exit := cli.ExecuteWithInput(context.Background(), append([]string{"issue", "list", "-p42", "--limit=" + tc.limit, "--offset=" + tc.offset}, flags...), unreadableInput{t}, &stdout, &stderr, server.Client())
+				if exit != 0 || stdout.String() != tc.want || stderr.Len() != 0 || strings.Join(paths, ",") != "/api/v2/issues/count,/api/v2/issues" {
+					t.Fatalf("exit=%d paths=%v stdout=%q stderr=%s", exit, paths, &stdout, &stderr)
 				}
-			}))
-			defer server.Close()
-			configure(t, server.URL)
-			var stdout, stderr bytes.Buffer
-			exit := cli.ExecuteWithInput(context.Background(), []string{"issue", "list", "-p42", "--limit=" + tc.limit, "--offset=" + tc.offset, "--no-input"}, unreadableInput{t}, &stdout, &stderr, server.Client())
-			if exit != 0 || stdout.String() != tc.want || stderr.Len() != 0 || strings.Join(paths, ",") != "/api/v2/issues/count,/api/v2/issues" {
-				t.Fatalf("exit=%d paths=%v stdout=%q stderr=%s", exit, paths, &stdout, &stderr)
-			}
-		})
+			})
+		}
 	}
 }
 

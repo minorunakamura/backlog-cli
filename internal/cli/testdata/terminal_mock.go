@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 func main() { os.Exit(run()) }
@@ -23,7 +24,19 @@ func run() int {
 	if rule == "" {
 		rule = "markdown"
 	}
+	total := 3
+	if value := os.Getenv("BL_TERMINAL_MOCK_ISSUES"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			fmt.Fprintln(os.Stderr, "invalid mock issue count")
+			return 2
+		}
+		total = parsed
+	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("BL_TERMINAL_MOCK_TRACE") == "1" {
+			fmt.Fprintf(os.Stderr, "MOCK %s offset=%s\n", r.URL.Path, r.URL.Query().Get("offset"))
+		}
 		issues := r.URL.Path == "/api/v2/issues" || r.URL.Path == "/api/v2/issues/count"
 		if r.Header.Get("Backlog-API-Key") != "mock-only-secret" || (!issues && r.URL.RawQuery != "") {
 			http.Error(w, "unexpected authentication or query", 400)
@@ -31,6 +44,11 @@ func run() int {
 		}
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/api/v2/issues/") && r.URL.Path != "/api/v2/issues/count":
+			issueKey := strings.TrimPrefix(r.URL.Path, "/api/v2/issues/")
+			if os.Getenv("BL_TERMINAL_MOCK_FAIL_DETAIL") == issueKey {
+				http.Error(w, "detail failed mock-only-secret\x1b]52;c;stolen\a", 500)
+				return
+			}
 			description := "# 見出し\n一行目\n二行目\n\n[toc]\n\n## 詳細\n<details><summary>クリックして詳細を表示</summary>展開された本文</details>\n\n**強調** ~~削除~~\n- [x] 済\n\n[[APP-2]] / APP-3 / [[Home]]\n#rev(11) / #rev(app:abcdefg) / #attach(sample.zip:11) / #image(11)\n\n![画像alt](https://example.invalid/image.png)\n\n| |結合||\n|見出し１|見出し２|見出し３|\n|---|---|---|\n|セル1|長いセル||\n|セル2|中央|右|\n[サンプル]\n\n`#rev(11) &amp; &#27;`\n\n```text\n#rev(11) &amp; &#27;\n```\n\n日本語👩‍💻\x1b[31m赤\x1b[0m &#27;[2J\x1b]52;c;stolen\a mock-only-secret"
 			if rule == "backlog" {
 				description = backlogDescription
@@ -48,9 +66,9 @@ func run() int {
 					description += fmt.Sprintf("\n\n行%03d %s", i, strings.Repeat("長い日本語👩‍💻の本文 ", 12))
 				}
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": "APP-1", "projectId": 42, "summary": rule + "詳細表示 日本語👩‍💻\x1b]52;c;stolen\a mock-only-secret", "description": description})
+			_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": issueKey, "projectId": 42, "summary": rule + "詳細表示 日本語👩‍💻\x1b]52;c;stolen\a mock-only-secret", "description": description})
 		case r.URL.Path == "/api/v2/issues/count":
-			_, _ = fmt.Fprint(w, `{"count":3}`)
+			_, _ = fmt.Fprintf(w, `{"count":%d}`, total)
 		case r.URL.Path == "/api/v2/issues" && r.Method == http.MethodPost:
 			if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" || r.URL.RawQuery != "" || r.ParseForm() != nil || r.PostForm.Get("projectId") == "" || r.PostForm.Get("issueTypeId") == "" || r.PostForm.Get("priorityId") == "" || strings.TrimSpace(r.PostForm.Get("summary")) == "" {
 				http.Error(w, "unexpected create form", 400)
@@ -68,9 +86,21 @@ func run() int {
 				http.Error(w, "unexpected pagination", 400)
 				return
 			}
+			if offset > 0 && os.Getenv("BL_TERMINAL_MOCK_FAIL_NEXT") == "1" {
+				http.Error(w, "next failed mock-only-secret\x1b]52;c;stolen\a", 500)
+				return
+			}
 			items := []map[string]any{}
-			for i := offset; i < 3 && int64(len(items)) < limit; i++ {
-				items = append(items, map[string]any{"issueKey": fmt.Sprintf("APP-%d", i+1), "summary": "日本語👩‍💻\x1b[31m赤\x1b[0m\x07mock-only-secret", "status": map[string]string{"name": "処理中"}, "assignee": nil, "future": json.Number("12345678901234567890")})
+			for i := offset; i < int64(total) && int64(len(items)) < limit; i++ {
+				summary := "日本語👩‍💻\x1b[31m赤\x1b[0m\x07mock-only-secret"
+				if i%5 == 0 {
+					summary = strings.Repeat("長い日本語👩‍💻", 12) + summary
+				}
+				var assignee any
+				if i%3 != 0 {
+					assignee = map[string]string{"name": "担当者 日本語👩‍💻"}
+				}
+				items = append(items, map[string]any{"issueKey": fmt.Sprintf("APP-%d", i+1), "summary": summary, "status": map[string]string{"name": "処理中"}, "assignee": assignee, "future": json.Number("12345678901234567890")})
 			}
 			_ = json.NewEncoder(w).Encode(items)
 		case r.URL.Path == "/api/v2/projects":
@@ -128,7 +158,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return cli.ExecuteWithInput(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, server.Client())
 }

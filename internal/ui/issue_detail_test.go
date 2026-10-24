@@ -16,7 +16,7 @@ import (
 )
 
 func TestIssueDetailShortBodyWaitsForQWithoutQuittingParent(t *testing.T) {
-	m, err := ui.NewIssueDetail(func(int) (string, error) { return "短い本文👩‍💻", nil })
+	m, err := ui.NewIssueDetail(func(int) (string, error) { return "短い本文👩‍💻", nil }, nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestIssueDetailNavigation(t *testing.T) {
 		{"Home", []tea.KeyMsg{{Type: tea.KeyEnd}, {Type: tea.KeyHome}}, "行00"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := ui.NewIssueDetail(func(int) (string, error) { return strings.Join(lines, "\n"), nil })
+			m, err := ui.NewIssueDetail(func(int) (string, error) { return strings.Join(lines, "\n"), nil }, nil, "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +87,7 @@ func TestIssueDetailResizeReflowsAndClamps(t *testing.T) {
 			lines = append(lines, fmt.Sprintf("行%02d", i))
 		}
 		return strings.Join(lines, "\n"), nil
-	})
+	}, nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestIssueDetailResizeKeepsStyledSecretsRedacted(t *testing.T) {
 				var content bytes.Buffer
 				err = output.WriteIssueDetail(&content, json.RawMessage(`{"issueKey":"APP-12","summary":"Summary"}`), "https://example.test", rendered, true, "mock-only-secret")
 				return ansi.Wrap(content.String(), width, ""), err
-			})
+			}, nil, "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -149,7 +149,7 @@ func TestIssueDetailResizeKeepsStyledSecretsRedacted(t *testing.T) {
 
 func TestIssueDetailReportsCancellationAndRenderErrorsToParent(t *testing.T) {
 	t.Run("ctrl-c", func(t *testing.T) {
-		m, err := ui.NewIssueDetail(func(int) (string, error) { return "本文", nil })
+		m, err := ui.NewIssueDetail(func(int) (string, error) { return "本文", nil }, nil, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +162,7 @@ func TestIssueDetailReportsCancellationAndRenderErrorsToParent(t *testing.T) {
 	})
 	t.Run("initial render", func(t *testing.T) {
 		expected := errors.New("render failed")
-		_, err := ui.NewIssueDetail(func(int) (string, error) { return "", expected })
+		_, err := ui.NewIssueDetail(func(int) (string, error) { return "", expected }, nil, "", false)
 		if !errors.Is(err, expected) {
 			t.Fatalf("err=%v", err)
 		}
@@ -174,7 +174,7 @@ func TestIssueDetailReportsCancellationAndRenderErrorsToParent(t *testing.T) {
 				return "本文", nil
 			}
 			return "", expected
-		})
+		}, nil, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,4 +184,68 @@ func TestIssueDetailReportsCancellationAndRenderErrorsToParent(t *testing.T) {
 			t.Fatalf("closed=%v err=%v", closed, err)
 		}
 	})
+}
+
+func TestIssueDetailRefreshUsesLatestWidthAndPreservesFailurePosition(t *testing.T) {
+	for _, fromList := range []bool{false, true} {
+		t.Run(fmt.Sprint(fromList), func(t *testing.T) {
+			calls := 0
+			var widths []int
+			body := func(prefix string) string {
+				var lines []string
+				for i := range 60 {
+					lines = append(lines, fmt.Sprintf("%s%02d", prefix, i))
+				}
+				return strings.Join(lines, "\n")
+			}
+			m, err := ui.NewIssueDetail(func(int) (string, error) { return body("old"), nil }, func() (func(int) (string, error), error) {
+				calls++
+				return func(width int) (string, error) {
+					widths = append(widths, width)
+					if calls == 1 {
+						return "", fmt.Errorf("failed secret\x1b]52;c;stolen\a")
+					}
+					return body("new"), nil
+				}, nil
+			}, "secret", fromList)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !fromList {
+				m.Update(runeKey('h'))
+				if closed, _ := m.Result(); closed {
+					t.Fatal("standalone h closed")
+				}
+				if strings.Contains(m.View(), "h/q") {
+					t.Fatal(m.View())
+				}
+			}
+			m.Update(runeKey('G'))
+			before := m.View()
+			_, cmd := m.Update(runeKey('R'))
+			if cmd == nil {
+				t.Fatal("R did not refresh")
+			}
+			if _, duplicate := m.Update(runeKey('R')); duplicate != nil {
+				t.Fatal("duplicate refresh")
+			}
+			m.Update(runeKey('g')) // suppressed while busy
+			m.Update(cmd())
+			if !strings.HasPrefix(m.View(), strings.Split(before, "\n")[0]) || !strings.Contains(m.View(), "failed [REDACTED]") || strings.Contains(m.View(), "stolen") {
+				t.Fatal(m.View())
+			}
+			_, cmd = m.Update(runeKey('R'))
+			reply := cmd()
+			m.Update(tea.WindowSizeMsg{Width: 36, Height: 10})
+			m.Update(reply)
+			if fmt.Sprint(widths) != "[80 36]" || !strings.HasPrefix(m.View(), "new00") || strings.Contains(m.View(), "failed") || !strings.Contains(m.View(), "R") {
+				t.Fatalf("widths=%v view=%q", widths, m.View())
+			}
+			m.Update(runeKey('q'))
+			m.Update(reply)
+			if closed, _ := m.Result(); !closed {
+				t.Fatal("late response reopened detail")
+			}
+		})
+	}
 }

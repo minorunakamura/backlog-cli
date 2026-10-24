@@ -1,6 +1,6 @@
 # backlog-cli
 
-Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題の名前/ID条件・self・横断検索による1ページ検索、Markdown/Backlog記法の課題の詳細viewer・固定表示・JSONでの原本取得、非対話での課題作成を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
+Go製のBacklog CLI `bl`。参加プロジェクト・優先度・プロジェクト内の課題種別の一覧と、課題の名前/ID条件・self・横断検索と対話一覧・ページ送り、Markdown/Backlog記法の課題の詳細viewer・固定表示・JSONでの原本取得、非対話での課題作成を実装しています。対象はApple Silicon Mac（darwin/arm64）です。
 
 ```sh
 bl --help
@@ -22,7 +22,7 @@ bl issue create -p MYAPP --issue-type タスク --priority 中 -t "ログイン�
 bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file ticket.md
 ```
 
-対話での課題作成、課題一覧の対話UI（一覧からの詳細遷移・復帰を含む）、editor起動、配布archiveは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
+対話での課題作成、editor起動、配布archiveは後続の範囲です。未対応のコマンド・flagはエラーとし、黙って別条件で実行しません。仕様の全体は [正式Plan](docs/plans/backlog-cli-v1.md) を参照してください。
 
 ## 設定
 
@@ -46,9 +46,9 @@ bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file
 - 両方とも未指定なら、stdin/stdoutがともにTTYで、`--json` / `--no-input` がともにfalseのときだけ参加プロジェクト候補から選びます。他の場合は入力不足エラーです。暗黙の全プロジェクト検索はしません。
 - 選択は上下・Enter、取消はEsc/Ctrl-C（exit 130）。候補のフィルターはありません。長い行はセル幅で省略し、極小端末ではサイズ案内を表示します。選択結果はこの呼出しだけで使い、設定へ保存しません。
 
-## 課題の1ページ検索
+## 課題検索と対話一覧
 
-`bl issue list [keyword]` は任意の1位置引数をそのままkeywordにし、`--project/-p` は上の課題種別一覧と同じ明示 → local → TTY候補選択の順で決定します。未指定を横断検索として扱いません。直接project IDならproject detailは呼びません。
+`bl issue list [keyword]` は任意の1位置引数をそのままkeywordにし、`--project/-p` は上の課題種別一覧と同じ明示 → local → TTY候補選択の順で決定します。未指定を横断検索として扱いません。直接project IDなら検索時のproject detailは呼びません（詳細を開くときは本文記法の確認に使います）。
 
 - `--status-id` / `--assignee-id` / `--milestone-id` は正整数int64。反復すると各項目内でORになり、正規化後の同じIDは重複除去します。カンマ分割はしません。
 - `--limit` は既定20、1〜100。`--offset` は既定0、0以上のint64です。project/limit/offset/profileなど単一値flagの重複は長短名混在も含めエラーです。
@@ -58,8 +58,11 @@ bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file
 - `bl issue mine [keyword]` は `issue list --assignee self` と同じ設定・filter・count/list・表示・JSON・ページ送りを使います。明示の `--assignee/-a` / `--assignee-name` / `--assignee-id` は、self指定も含めすべて拒否します。
 - `--project/-p all` はlist/mineだけで使える横断検索です。空白だけでないkeywordまたはselfが必須（`issue mine -p all` はkeyword不要）。project条件を省略して検索し、参加project一覧を別途取得しません。ローカルproject・検索statusは無視し、明示status（all含む）/status-id/milestone/milestone-id、self以外のassignee、assignee-name、assignee-idはkeywordがあっても拒否します。limit/offsetは利用できます。
 - 確定した同じfilterで最初にcountを1回取得し、成功した場合だけlistを1回取得します。countにlimit/offset/sort/orderは渡さず、listには `count=limit` / `offset` / `sort=updated` / `order=desc` を明示します。count失敗を0件に置き換えません。
-- TTYでも今回の課題一覧は固定1ページのみで、一覧UIや全件自動取得はありません。空ページはtotalにかかわらず終了、非空なら `offset + 実取得count < 開始時total` の場合だけ続きがあります（整数overflowは回避）。固定表示の `Next offset: N` は、その続きのページを `--offset N` で明示取得するための案内です。
-- countとlistは別snapshotです。途中の追加・削除・更新によって重複・取りこぼし・totalとの差が生じ得ます。一貫したsnapshotは保証しません。次のコマンド実行ではcountを取り直します。
+- stdin/stdoutがともにTTYで `--json` / `--no-input` がともにfalseなら、HuhのスクロールSelectで課題キー・件名・状態・担当者を表示します。上下/`j/k`で移動し、Enterで詳細または「前ページ」「次ページ」「終了」を選択します（前/次は可能時だけ、この順で課題行の後ろ）。`l`は課題行だけ詳細、`p/n`は即前/次ページ、`R`（Shift+r）は同じ検索の最新countとoffset=0ページを再取得、`q`は即終了0、Ctrl-C/context cancelは130です。文字フィルターはなく、これらのショートカットは一覧だけで有効です。長い日本語/emoji行をセル幅で省略し、resizeに追従します。20列×5行未満はサイズ案内（`q`で終了）です。
+- 課題選択時はdetail APIを取得し、`issue view`と共通の詳細viewerを開きます。詳細の`h/q`は元のページ・選択・一覧スクロールへ戻り、list/countを再取得しません。詳細は開くたびに取得します。訪問したページは起動中のメモリだけに保持し、前後の再訪でも取得せず各ページの選択（操作項目を含む）・スクロールを復元します。初期`--offset`以前へは戻りません。詳細取得/描画・ページ取得の失敗は一覧に安全に通知し、現在ページ・履歴・位置を保持します（空ページや終了に置き換えません）。
+- 一覧`R`は確定済みfilter・limitを使ってcount→list(offset=0)を取得し、表示データの検証まで成功したらtotal・先頭ページを一括交換して旧履歴を消します。初期offsetが非0でも0へ戻り、空結果も成功です。count/list/表示検証に失敗したら旧total・全履歴・ページ・位置を保ちます。取得中は重複取得・移動を抑止しますが、一覧`q`、詳細`h/q`、中断は有効です。
+- 非TTY/JSON/no-inputではUIを起動せず、従来どおり1ページを出して終了します。全件自動取得はありません。空ページはtotalにかかわらずページ送り終了、非空なら `offset + 実取得count < 開始時total` の場合だけ「次ページ」/`n`が有効です（整数overflowは回避）。次offsetはlimitでなく実取得countを加算し、countは取り直しません。固定表示の `Next offset: N` は、続きのページを `--offset N` で明示取得するための案内です。
+- countとlistは別snapshotです。途中の追加・削除・更新によって重複・取りこぼし・totalとの差が生じ得ます。一貫したsnapshotは保証しません。次のコマンド実行または一覧`R`でcountを取り直します。訪問ページは一覧`R`まで古い内容のままです。メモリ使用量は訪問ページ数に応じて増えます。`R`でも一貫したsnapshotや重複・取りこぼしの解消は保証しません。
 
 ## 課題の詳細viewer・固定表示とJSON取得
 
@@ -68,7 +71,7 @@ bl issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --body-file
 - project指定は不要で、ローカルproject・検索条件・作成既定値は適用しません。設定自体の検証と `--profile` は他コマンドと共通です。
 - JSON取得にproject/本文記法のAPIは呼びません。TTYの有無にかかわらず選択UI・viewer・editorを起動せず、stdinも読みません。
 - `--json` なしでは、取得課題の `projectId` からproject detail APIを取得し、`textFormattingRule`（`markdown` / `backlog`）に応じて変換し、件名・URL・整形済み本文を表示します。**stdin/stdoutがともにTTYで `--no-input` もfalseのときだけ**、Bubbles viewportのCLI内viewerを起動します。短い本文でも自動終了せず、`q`で閉じるとコマンドが終了します。外部pagerや切替設定はありません。
-- viewerは上下 / `j`・`k`、PgUp/PgDn / `b`・Space、先頭 `g`・Home / 末尾 `G`・Endで移動します。Ctrl-Cまたはcontext cancelはexit 130です。幅のresizeでは共通の安全描画を再実行し、スクロール位置を範囲内へ調整します。20列×4行未満ではサイズ案内を表示し、`q`で閉じられます。
+- viewerは上下 / `j`・`k`、PgUp/PgDn / `b`・Space、先頭 `g`・Home / 末尾 `G`・Endで移動します。単独viewの`h`は無操作でヘルプにも表示しません。一覧経由だけ`h/q`で一覧へ戻ります。`R`は両方で同じ課題とproject記法を再取得し、応答時点の最新幅で安全に描画できた場合だけ内容を交換して先頭へ戻します。失敗時は旧内容・スクロール位置を保ち、安全に通知します。詳細`R`は背後の一覧を更新しません。Ctrl-Cまたはcontext cancelはexit 130です。幅のresizeでは共通の安全描画を再実行し、スクロール位置を範囲内へ調整します。20列×4行未満ではサイズ案内を表示し、`q`で閉じられます。
 - `--no-input` または片側でも非TTYならviewerを起動せず、80列基準の整形済み詳細を1回固定出力して即終了します。stdoutが非TTYならANSIなしです。JSONは常に入力待ちなしで原本を返します。
 - Markdown/GFMとBacklog記法の基本書式・通常改行を保持し、detailsは展開、色は本文保持、課題キーは設定originのURL、Wiki/Git/SVN/添付参照は説明text、目次は静的リスト、画像はalt/既知URL/IDだけを表示します。結合表はセル・見出し・captionを落とさず通常表へ簡略化します。外部画像や参照先は取得しません。
 - code block/inline code/escapeを保護し、未知macroは説明表現、未知HTMLはタグを除いて本文を保持します。外部ANSI/危険な制御文字とentity復号による制御文字の復活を防ぎ、描画後もGlamour生成SGR以外の端末操作を除去します。JSON原本文にこの表示処理は適用しません。
@@ -179,7 +182,7 @@ CLIテストは認証/path、JSON原本、固定表示、未知flag/args、API�
 
 ### 実APIなしの実端末受入（人間による確認が別途必要）
 
-次のmock harnessは一時設定・専用TLS serverを自動作成し、終了時に削除します。実設定・実Backlog APIを使わず、25候補と長い日本語/ZWJ emoji・危険文字を返します。本番用debug flagや独自CA受入flagは追加していません。
+次のmock harnessは一時設定・専用TLS serverを自動作成し、終了時に削除します。実設定・実Backlog APIを使わず、25 project候補・既定3課題と長い日本語/ZWJ emoji・危険文字を返します。本番用debug flagや独自CA受入flagは追加していません。
 
 ```sh
 mise exec -- go build -o /tmp/bl-terminal-mock ./internal/cli/testdata/terminal_mock.go
@@ -202,7 +205,53 @@ BL_TERMINAL_MOCK_BODY=styled-secret /tmp/bl-terminal-mock issue view APP-1
 
 issue viewは両記法で、見出し・連続する通常改行・展開されたdetails・参照説明・結合表の全セル/見出し/caption・codeのentity原文字列が読めること、画像を取得しないこと、clipboard/title/画面消去等が起きずsecretが出ないこと、JSON/no-input/片側非TTYでは待機せず固定表示/JSONで終了することを別途確認してください。
 
-詳細viewerは両記法の短い/長い本文で、(1) 短い本文でも画面が残り`q`で終了0、(2) 上下・`j/k`、PgUp/PgDn・`b`/Space、`g`/Home・`G`/Endで移動でき、先頭末尾で行が欠けない、(3) 日本語・👩‍💻・長い行・件名・URLが読める、(4) 幅を80→36→80列などへ変えて再flowし、末尾で高さを増やしても空白へ飛ばない、(5) 10列×3行でサイズ案内、元のサイズへ戻して読み続けられる、(6) `q`/Ctrl-Cで元の画面と端末入力が復元され、`echo $?`が0/130、を人間の実端末で確認してください。**一覧UI・一覧への復帰は今回未実装です。**
+詳細viewerは両記法の短い/長い本文で、(1) 短い本文でも画面が残り`q`で終了0、(2) 上下・`j/k`、PgUp/PgDn・`b`/Space、`g`/Home・`G`/Endで移動でき、先頭末尾で行が欠けない、(3) 日本語・👩‍💻・長い行・件名・URLが読める、(4) 幅を80→36→80列などへ変えて再flowし、末尾で高さを増やしても空白へ飛ばない、(5) 10列×3行でサイズ案内、元のサイズへ戻して読み続けられる、(6) `q`/Ctrl-Cで元の画面と端末入力が復元され、`echo $?`が0/130、を人間の実端末で確認してください。一覧経由では詳細の`q`は一覧へ戻り、一覧の`q`でコマンドを終了します。
+
+### 対話一覧の主手順（1コマンド）
+
+Apple Silicon Macの日本語対応端末で、リポジトリ直下から次の1コマンドで起動します。build済みバイナリ・実設定/API keyは不要です。最初は80列×12行程度にして、25件が画面に収まらない高さで確認してください。
+
+```sh
+BL_TERMINAL_MOCK_ISSUES=55 BL_TERMINAL_MOCK_BODY=long mise exec -- go run ./internal/cli/testdata/terminal_mock.go issue list -p 42 --limit 25
+```
+
+| 操作（順番に実施） | 期待結果 |
+| --- | --- |
+| 起動直後にp | offset 0、APP-1選択のまま。「前ページ」はない |
+| jを23回、kを1回、jを1回 | APP-24が選択され、一覧がスクロール。日本語/emoji・状態・担当者と行幅が崩れない |
+| l | APP-24の長い詳細。hで一覧に戻れる案内とRの更新案内がある |
+| j/k、Space/b、G/g、End/Home | 本文を上下・ページ・先頭末尾へ移動でき、一覧は変化しない |
+| 詳細でR | APP-24を再取得して詳細先頭へ戻る。固定mockは同じ内容だが、表示が残り操作できる。API再取得の回数/新内容は自動テストで別途確認 |
+| h | offset 0のAPP-24選択・一覧スクロールへ戻る |
+| Enter、詳細でq | 同じAPP-24が開き、qでも同じ一覧位置へ戻る。CLIは終了しない |
+| n、jを9回 | offset 25、新規ページ先頭APP-26からAPP-35へ。前/次ページ項目がある |
+| p、n | pでoffset 0のAPP-24位置へ、nでoffset 25のAPP-35位置へ。再取得せず各ページの位置を復元 |
+| G、k、Enter | 「終了」の1つ前の「次ページ」を実行しoffset 50へ。APP-51〜55が表示され、次ページ項目はない |
+| n、p、Enter | nは最終ページで無操作。pでoffset 25の「次ページ」選択へ戻り、Enterで保持済みoffset 50へ戻る |
+| 一覧でR | offset 0・APP-1・一覧先頭に戻る。前ページ履歴は消える |
+| n、p | nで新たにoffset 25を取得しAPP-26先頭へ。pでoffset 0へ戻る（古いAPP-35の位置は復元しない） |
+| APP-24等へ移動しl、80→36→20→80列へresize、h | 詳細は再flowし、戻った一覧も選択が維持され表示可能範囲へ調整される |
+| 10列×3行へ縮小後、元サイズへ戻す | 安全なサイズ案内となり、復元後も選択・操作が保たれる |
+| 一覧でG、l | 「終了」選択のまま。lで終了せず、detail APIも呼ばない |
+| q | CLI終了0、元の画面・端末入力が復元される |
+
+
+同じ起動コマンドで再起動しCtrl-Cも確認してください。終了130と元の画面・端末入力への復元を確認します（正常終了と中断は別プロセスで確認）。人間が各行の期待結果を確認し、受入記録に残す必要があります。自動PTY成功を見やすさ・操作感の受入とは扱いません。
+
+### 一覧の補助検証（主手順とは別）
+
+以下は上の補助build済み `/tmp/bl-terminal-mock` を使います。mock専用環境変数であり本番CLIの設定/flagではありません。
+
+```sh
+BL_TERMINAL_MOCK_ISSUES=55 BL_TERMINAL_MOCK_RULE=backlog /tmp/bl-terminal-mock issue mine -p 42 --limit 25
+BL_TERMINAL_MOCK_ISSUES=55 BL_TERMINAL_MOCK_FAIL_DETAIL=APP-24 /tmp/bl-terminal-mock issue list -p 42 --limit 25
+BL_TERMINAL_MOCK_ISSUES=55 BL_TERMINAL_MOCK_RULE=unknown /tmp/bl-terminal-mock issue list -p 42 --limit 25
+BL_TERMINAL_MOCK_ISSUES=55 BL_TERMINAL_MOCK_FAIL_NEXT=1 /tmp/bl-terminal-mock issue list -p 42 --limit 25
+```
+
+API/記法/次ページ失敗時の安全な通知と保持、単独viewのh無効・R、短い詳細、mine、非0offset、空ページ、非TTY/JSON/no-inputはModel/CLI/HTTPテストと補助PTYでも確認します。一覧/詳細Rの新内容への交換・更新失敗保持は応答切替可能なModel/HTTPテストで確認します。必要ならmock専用 `BL_TERMINAL_MOCK_TRACE=1` を併用してAPI path/offsetをstderrへ記録できます（key/応答dumpなし）。通常移動/詳細復帰ではcountなし、一覧Rごとにcount1回→list(0)、詳細Rごとに同じ課題GET→project取得です。主手順1回で全異常系を確認できるわけではありません。
+
+### project候補の実端末手順
 
 Apple Silicon Macの日本語端末で、(1) 上下で20件を超えて移動しEnter、`ID / NAME` 固定出力に選択projectの番号が現れる、(2) 長い日本語/👩‍💻が崩れず幅内で省略される、(3) resizeと10列×3行程度の極小サイズでpanicせずサイズ案内が出る、(4) EscとCtrl-Cそれぞれで元の端末へ戻り `echo $?` が130、を確認してください。実行し直すと必ず未指定状態から選び直します。`q`は取消キーではありません。
 
@@ -218,7 +267,7 @@ Apple Silicon Macの日本語端末で、(1) 上下で20件を超えて移動し
 /tmp/bl-terminal-mock issue-type list | cat          # stdout非TTY、bl側exit 2（shellのpipe exitに注意）
 /tmp/bl-terminal-mock issue-type list -p APP          # key→ID 42、固定出力
 /tmp/bl-terminal-mock issue-type list -p 42 --json    # 大整数を保持したitems JSON
-/tmp/bl-terminal-mock issue list -p 42 --limit 2       # 固定2件、Next offset: 2（一覧UIなし）
+/tmp/bl-terminal-mock issue list -p 42 --limit 2 --no-input # 固定2件、Next offset: 2
 /tmp/bl-terminal-mock issue list -p APP --offset 2 --json # key解決後、最終1件とpagination
 /tmp/bl-terminal-mock issue list -p 42 --offset 3 --json  # total=3でも空items、終了
 /tmp/bl-terminal-mock issue list -p APP -s 未対応 -s 処理中 -m v1.0 -a self -a 山田 --json
@@ -234,9 +283,9 @@ Apple Silicon Macの日本語端末で、(1) 上下で20件を超えて移動し
 /tmp/bl-terminal-mock issue list "ログイン" -p all -s all --json # exit 2、横断の状態条件拒否
 ```
 
-スクロールの再受入では、↓を1回ずつ押し、表示範囲内では候補を消さずカーソルだけが移動し、下端に達したときだけ表示範囲が1行ずつ動くことを確認してください。末尾でも候補行数が減って空白にならず、↑で先頭まで戻れ、resize後も選択が保持されることを確認します。27行以上の端末では25候補すべてが上下移動中も表示され続けることを確認してください。
+project候補スクロールの再受入では、↓を1回ずつ押し、表示範囲内では候補を消さずカーソルだけが移動し、下端に達したときだけ表示範囲が1行ずつ動くことを確認してください。末尾でも候補行数が減って空白にならず、↑で先頭まで戻れ、resize後も選択が保持されることを確認します。27行以上の端末では25候補すべてが上下移動中も表示され続けることを確認してください。
 
-任意のPython 3標準PTYによる自動smokeも用意しています（Goの正式checkにはPython不要）。両TTY/片側非TTY/両非TTY、json/no-input gate、選択と取消130、resizeに加え、両記法のdetailのq待機・移動キー/幅変更の再描画・極小サイズ・Ctrl-C/context cancel 130・非TTY ANSIなし・JSON原本を検証します。
+任意のPython 3標準PTYによる自動smokeも用意しています（Goの正式checkにはPython不要）。両TTY/片側非TTY/両非TTY、json/no-input gate、選択と取消130、resizeに加え、両記法のdetailのq待機・移動キー/幅変更の再描画・極小サイズ・Ctrl-C/context cancel 130・非TTY ANSIなし・JSON原本を検証します。一覧はlist/mineの20件超の移動・l/Enter詳細再選択とh/q復帰・p/nの訪問ページ復元・offset 0/25/50・一覧Rでcount追加1回と先頭/履歴リセット・詳細RのAPI再取得・最終page停止・detail/描画/next失敗時の継続・resizeを検証します。project選択/一覧/詳細へのOS SIGINT・SIGTERMをそれぞれ3回反復し、終了130、端末モードと代替画面の復元も確認します。
 
 ```sh
 python3 internal/cli/testdata/terminal_check.py /tmp/bl-terminal-mock

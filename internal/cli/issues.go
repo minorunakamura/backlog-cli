@@ -4,13 +4,16 @@ import (
 	"backlog-cli/internal/backlog"
 	"backlog-cli/internal/config"
 	"backlog-cli/internal/output"
+	"backlog-cli/internal/ui"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +33,7 @@ func issueSearchCommand(name string, ctx context.Context, profile *singleValue, 
 	project := &singleValue{}
 	limit, offset := &singleValue{value: "20"}, &singleValue{value: "0"}
 	var statuses, assignees, milestones, statusNames, milestoneNames, assigneeNames, literalAssigneeNames []string
-	list := &cobra.Command{Use: name + " [keyword]", Short: "Search one page of issues", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	list := &cobra.Command{Use: name + " [keyword]", Short: "Search issues", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if ctx.Err() != nil {
 			return output.NewFailure("cancelled", "command cancelled", 0)
 		}
@@ -161,7 +164,32 @@ func issueSearchCommand(name string, ctx context.Context, profile *singleValue, 
 		if err != nil {
 			return err
 		}
-		return output.WriteIssueList(checked, items, output.Pagination{Offset: pageOffset, Limit: pageLimit, Count: int64(len(items)), Total: total}, settings.SpaceURL, *jsonMode, *key)
+		pagination := output.Pagination{Offset: pageOffset, Limit: pageLimit, Count: int64(len(items)), Total: total}
+		if !*jsonMode && !*noInput && isTerminal(stdin) && isTerminal(checked.Writer) {
+			uiCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			model, err := ui.NewIssueList(items, pagination, *key,
+				func(offset int64) ([]json.RawMessage, error) { return api.Issues(uiCtx, filter, pageLimit, offset) },
+				func(issueKey string) (func(int) (string, error), error) {
+					return loadIssueDetail(uiCtx, api, issueKey, settings.SpaceURL, *key)
+				}, func() ([]json.RawMessage, int64, error) {
+					total, err := api.IssueCount(uiCtx, filter)
+					if err != nil {
+						return nil, 0, err
+					}
+					items, err := api.Issues(uiCtx, filter, pageLimit, 0)
+					return items, total, err
+				})
+			if err != nil {
+				return err
+			}
+			var screen io.Writer = checked
+			if file, ok := checked.Writer.(term.File); ok {
+				screen = checkedTerminal{checked, file}
+			}
+			return ui.ShowIssueList(uiCtx, stdin, screen, model)
+		}
+		return output.WriteIssueList(checked, items, pagination, settings.SpaceURL, *jsonMode, *key)
 	}}
 	list.Flags().VarP(project, "project", "p", "Project key, positive integer ID, or all")
 	list.Flags().Var(limit, "limit", "Page size (1-100)")
