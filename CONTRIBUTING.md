@@ -41,6 +41,12 @@ cargo build --locked --release --target aarch64-apple-darwin --bins
 
 `.github/workflows/quality.yml` は `main` へのpushとpull requestで上記4チェックを
 macOS 15のApple Silicon runnerで実行し、同じ版のcargo-auditを導入します。
+CIではcargo-auditのbinaryだけを `actions/cache` で再利用し、cache miss時に上記の固定版を
+ソースからインストールします。cache keyはmacOS版・CPU architecture・cargo-audit版・
+`rust-toolchain.toml` の内容で分け、復元後も `cargo-audit --version` が0.22.2であることを確認します。
+advisory databaseや監査結果はcacheせず、更新と `cargo audit --file Cargo.lock` は毎回実行します。
+初回・cache miss時はコンパイルが必要です。PRのcacheはそのPRにscopeされるため、mainのcacheが
+作成されるまでは、別PRで再びcache missになる場合があります。
 GitHub上で未実行ならその旨を記録し、確認のためだけのpushやPR作成は行いません。
 
 ## テストと今回の範囲
@@ -105,11 +111,6 @@ trustなしで接続が失敗する試験もあります。
 Rust harnessが一時rootを所有し、終了時だけでなくserver起動/生成失敗時も削除します。
 Python側も生成/起動失敗時に `tls/` を削除します。serverをkillする通常の終了では
 Rust側がserverの停止・回収後に鍵・設定・応答・受信記録をまとめて削除します。
-
-fixtureは証明書生成・TLS context準備・server初期化・TLS wrapの秒数をstderrへ出します。
-Rust harnessもPython起動からport受信まで、server停止・回収、一時directory削除を個別に計測します。
-CIのTestは `cargo test --locked --all-targets -- --nocapture` で成功時の計測も表示します。
-ローカルも同じコマンドで確認できます。ログは区間名と秒数だけで、port用stdoutやCLI出力へは混ぜません。
 
 直接release CLIで再現する場合も、親shellが一時rootの削除を担当します。
 上記release build後、リポジトリ直下から実行してください:

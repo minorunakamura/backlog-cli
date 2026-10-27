@@ -47,9 +47,7 @@ with tempfile.TemporaryDirectory(prefix="backlog-no-reverse-dns-") as root:
             connection.close()
     finally:
         child.kill()
-        _, timings = child.communicate(timeout=5)
-    for phase in ["certificate", "tls-context", "server-init", "tls-wrap"]:
-        assert phase + "=" in timings, "missing fixture timing: " + phase
+        child.communicate(timeout=5)
 "#,
         )
         .arg(concat!(
