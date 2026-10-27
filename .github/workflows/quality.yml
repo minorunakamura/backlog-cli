@@ -22,10 +22,22 @@ jobs:
           python3 -c 'import http.server, ssl, pty; print(ssl.OPENSSL_VERSION)'
           openssl version
       - name: Test
-        run: cargo test --locked --all-targets -- --nocapture
+        run: cargo test --locked --all-targets
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Cache cargo-audit
+        id: cargo-audit-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-macos-15-${{ runner.arch }}-0.22.2-${{ hashFiles('rust-toolchain.toml') }}
       - name: Install cargo-audit
+        if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
         run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Check cargo-audit version
+        run: |
+          version=$(cargo-audit --version)
+          printf '%s\n' "$version"
+          test "$version" = 'cargo-audit 0.22.2'
       - name: Audit dependencies
         run: cargo audit --file Cargo.lock

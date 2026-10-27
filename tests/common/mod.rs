@@ -7,7 +7,6 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 pub struct Harness {
@@ -31,7 +30,6 @@ impl Harness {
         };
         fs::create_dir(harness.root.join("backlog")).unwrap();
         fs::write(harness.root.join("response.json"), response.to_string()).unwrap();
-        let started = Instant::now();
         harness.server = Some(
             Command::new("python3")
                 .arg(concat!(
@@ -51,10 +49,6 @@ impl Harness {
             .trim()
             .parse()
             .expect("HTTPS fixture did not report a port; see its stderr for setup errors");
-        eprintln!(
-            "[harness timing] spawn-to-ready={:.3}s",
-            started.elapsed().as_secs_f64()
-        );
         harness.origin = format!("https://localhost:{port}");
         harness.config(
             json!({"profiles":{"default":{"spaceUrl":harness.origin,"apiKeyEnv":"TEST_KEY"}}}),
@@ -91,21 +85,11 @@ impl Harness {
 }
 impl Drop for Harness {
     fn drop(&mut self) {
-        let started = Instant::now();
         if let Some(server) = &mut self.server {
             let _ = server.kill();
             let _ = server.wait();
         }
-        eprintln!(
-            "[harness timing] stop={:.3}s",
-            started.elapsed().as_secs_f64()
-        );
-        let started = Instant::now();
         fs::remove_dir_all(&self.root).unwrap();
-        eprintln!(
-            "[harness timing] cleanup={:.3}s",
-            started.elapsed().as_secs_f64()
-        );
     }
 }
 pub fn success(output: &Output) -> Value {
