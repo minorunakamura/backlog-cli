@@ -12,7 +12,7 @@ Rust製の共通libraryと、人向けTUI `bl`・非対話CLI `bl-cli`を新規�
 
 - 調査時のリポジトリは基本設計書のみで、既存実装・Cargo設定・テスト・CIはない。既存利用者の移行やデータmigrationは不要。
 - 単一Cargo packageに `src/lib.rs`、`src/bin/bl.rs`、`src/bin/bl-cli.rs`を置く。共通処理をTUI/CLIが直接呼び、内部RPC・常駐service・汎用API frameworkを作らない。
-- toolchainはRust **1.99.1**、edition 2024、targetは `aarch64-apple-darwin`。主要依存は下表の版で固定し、`Cargo.lock`を追跡する。正式チェックは `--locked` を使う。
+- toolchainはRust **1.99.1**、edition 2024、targetは `aarch64-apple-darwin`。主要依存は下表の版で固定し、`Cargo.lock`を追跡する。Cargoのtest/clippy/buildとcargo-auditの導入には `--locked` を使い、監査実行は `cargo audit --file Cargo.lock` で追跡対象のlockfileを直接指定する。
 
 | 用途 | 版・設定 |
 | --- | --- |
@@ -28,6 +28,17 @@ Rust製の共通libraryと、人向けTUI `bl`・非対話CLI `bl-cli`を新規�
 本文一時ファイルには `tempfile`を利用する。その他の補助・dev dependencyは、必要性があるものだけ追加してlockfileに固定する。EventStream用の追加依存や独自入力frameworkは不要。
 
 一時ディレクトリで上表の同時ビルドとReqwest設定APIの利用、結合文字・ZWJ emojiのgrapheme単位削除、表示列cursor、大整数・未知fieldのJSON保持をassert確認した。これは製品実装や実IMEの検証ではない。Probeの途中ファイルは残さない。
+
+### Issue #1 再計画：正式監査コマンドの訂正
+
+対象は [Issue #1](https://github.com/minorunakamura/backlog-cli/issues/1) の `REPLAN_REQUIRED`。初回Plan作成後、Cargo設定・lib/2bin・テスト・README/CONTRIBUTING・CIの部分実装が未コミットで存在する。新しいImplementationセッションでは、それらを保持したまま現在のコードと差分を確認して再開する。
+
+- **停止理由・確認済みの原因**：固定済みのcargo-audit 0.22.2で `cargo audit --locked` は `unexpected argument '--locked'` により終了コード2となり、監査されない。同版のhelpに `--locked` はなく、`--file <FILE>` は監査するCargo lockfileの指定として提供されている。
+- **合意した変更と理由**：正式監査コマンドをリポジトリ直下の `cargo audit --file Cargo.lock` に訂正し、cargo-audit **0.22.2** と導入方法 `cargo install cargo-audit --version 0.22.2 --locked` を固定する。導入時の `--locked` と監査対象のlockfile指定は別の契約である。test/clippy/buildの `--locked` は維持する。製品仕様・基本設計「品質・配布」の目的は変更しない。
+- **Probeの観測**：一時ディレクトリに現在の `Cargo.lock` だけをコピーし、旧コマンドの終了2と新コマンドの216依存の監査・終了0を確認した。実行前後でコピーと元lockfileのSHA-256は不変だった。ただしTokio 1.49.0のunsound警告 `RUSTSEC-2026-0386` が1件出ており、終了0を警告なし・安全性保証とは扱わない。advisory databaseの更新で将来の結果は変わる。
+- **適用範囲・タイミング**：今回のPlanningで本Planを同じ正式パスに改訂保存し、既存Issue #1の受入条件・検証手順を整合させる。`CONTRIBUTING.md` の正式品質コマンドと `.github/workflows/quality.yml` の監査stepの訂正・検証は、新しいImplementationセッションでIssue #1の残作業として行う。これらの旧記述より本節と下記の正式チェックを優先する。READMEの利用説明、既存ソース・テスト・Cargo設定・lockfileをこの訂正のためだけに変更しない。
+- **維持する範囲**：警告・失敗・確認不能を隠さず報告し、無条件ignoreを追加しない。新しい `--deny` 方針、依存更新、advisory databaseの固定、独自監査wrapperは今回追加しない。既存の未コミット変更をcommit / stash / 破棄しない。後続Issueの製品要件や依存関係を変更しない。
+- **回帰確認**：コマンド訂正のみなので、この訂正に新規unit testやTDDは追加せず、同じcargo-audit版での実コマンドとlockfile不変確認を回帰検証にする。Implementationでリポジトリ直下から `cargo audit --version` を確認し、`shasum -a 256 Cargo.lock` → `cargo audit --file Cargo.lock` → `shasum -a 256 Cargo.lock` を順に実行する。引数エラーではなく対象lockfileの監査が実行され、ハッシュが変わらないこと、実際の終了コード・警告・失敗を記録することを確認する。監査失敗を成功扱いにせず、対応に要件・固定依存の変更が必要なら停止して再計画する。既存の正式チェックを再実行し、過去のチェック・Review・Code Review Approveを変更後の差分へ流用しない。Plan・Issue #1・ローカル手順・CIの版・導入・監査コマンドを照合し、CIのtrigger等を維持する。GitHub上での実行のためだけのpush/PRは行わない。
 
 ### CLIのflag契約
 
@@ -206,11 +217,11 @@ Apple Silicon Macの実端末で、端末名/版・macOS・IME・対象buildを�
 cargo fmt --all -- --check
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
-cargo audit --locked
+cargo audit --file Cargo.lock
 cargo build --locked --release --target aarch64-apple-darwin --bins
 ```
 
-cargo-audit自体の使用版・導入方法もCONTRIBUTINGとCIで固定する。配布物は `file`・`otool -L`・展開後のhelp/version起動・SHA-256照合でtarget、native依存、両binary、梱包物を確認する。
+cargo-audit自体は **0.22.2**、導入は `cargo install cargo-audit --version 0.22.2 --locked` にCONTRIBUTINGとCIの両方で固定する。監査はリポジトリ直下で `cargo audit --file Cargo.lock` を実行し、対象lockfileを生成・更新しない。advisory databaseは通常どおり更新し、警告・失敗と終了コードを報告する。配布物は `file`・`otool -L`・展開後のhelp/version起動・SHA-256照合でtarget、native依存、両binary、梱包物を確認する。
 
 ## 根拠・残るリスク
 
