@@ -45,7 +45,7 @@ fn decode_json(raw: &RawValue, remaining_depth: u8) -> Result<Value, serde_json:
 
 pub struct Api {
     client: Client,
-    url: reqwest::Url,
+    origin: reqwest::Url,
     key: HeaderValue,
 }
 impl Api {
@@ -59,18 +59,58 @@ impl Api {
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|_| Error::new("network", "Cannot initialize HTTPS client"))?;
-        let url = config
-            .origin
-            .join("/api/v2/projects")
-            .map_err(|_| Error::new("config", "Cannot construct projects URL"))?;
-        Ok(Self { client, url, key })
+        Ok(Self {
+            client,
+            origin: config.origin.clone(),
+            key,
+        })
     }
     pub async fn project_list(&self) -> Result<Value, Error> {
+        let value = self.get(&["projects"]).await?;
+        if !value.as_array().is_some_and(|items| {
+            items.iter().all(|item| {
+                item.is_object()
+                    && item.get("id").is_some_and(|id| {
+                        id.as_number().is_some_and(|n| {
+                            let s = n.to_string();
+                            !s.starts_with('0') && s.bytes().all(|c| c.is_ascii_digit())
+                        })
+                    })
+                    && item.get("projectKey").is_some_and(Value::is_string)
+                    && item.get("name").is_some_and(Value::is_string)
+            })
+        }) {
+            let mut error = Error::new(
+                "invalid_response",
+                "Projects response has invalid required fields",
+            );
+            error.http_status = Some(200);
+            return Err(error);
+        }
+        Ok(value)
+    }
+    pub(crate) async fn get(&self, segments: &[&str]) -> Result<Value, Error> {
+        // Url silently drops dot segments; never let a project change the endpoint.
+        if segments
+            .iter()
+            .any(|segment| matches!(*segment, "" | "." | ".."))
+        {
+            return Err(Error::new(
+                "input",
+                "Project cannot be an empty or dot path segment",
+            ));
+        }
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .map_err(|_| Error::new("config", "Cannot construct API URL"))?
+            .clear()
+            .extend(["api", "v2"])
+            .extend(segments);
         let mut http_status = None;
         let request = async {
             let response = self
                 .client
-                .get(self.url.clone())
+                .get(url)
                 .header("Backlog-API-Key", self.key.clone())
                 .send()
                 .await
@@ -92,7 +132,7 @@ impl Api {
                     429 => "rate_limit",
                     _ => "api",
                 };
-                let mut error = Error::new(kind, "Projects request was rejected");
+                let mut error = Error::new(kind, "API request was rejected");
                 if let Ok(value) = decoded {
                     error.api_errors = value
                         .get("errors")
@@ -102,27 +142,8 @@ impl Api {
                 }
                 return Err(error);
             }
-            let value = decoded.map_err(|_| {
-                Error::new("invalid_response", "Projects response is not valid JSON")
-            })?;
-            if !value.as_array().is_some_and(|items| {
-                items.iter().all(|item| {
-                    item.is_object()
-                        && item.get("id").is_some_and(|id| {
-                            id.as_number().is_some_and(|n| {
-                                let s = n.to_string();
-                                !s.starts_with('0') && s.bytes().all(|c| c.is_ascii_digit())
-                            })
-                        })
-                        && item.get("projectKey").is_some_and(Value::is_string)
-                        && item.get("name").is_some_and(Value::is_string)
-                })
-            }) {
-                return Err(Error::new(
-                    "invalid_response",
-                    "Projects response has invalid required fields",
-                ));
-            }
+            let value = decoded
+                .map_err(|_| Error::new("invalid_response", "API response is not valid JSON"))?;
             Ok(value)
         };
         let result = tokio::select! {
