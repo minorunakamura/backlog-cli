@@ -153,9 +153,14 @@ bl-cli --profile work issue view 123 --json --no-input
 固定表示は課題キー・タイトル・種別・優先度・担当者・状態・完了理由・開始日・期限日・
 複数マイルストーン・created/updated・URLと本文です。未設定の担当者/完了理由/日付は `-`、
 null本文は空本文として表示します。対象課題のprojectIdでprojectを1回取得し、
-`textFormattingRule` を確認します。現在は既知/未知の記法とも安全化した原文fallbackで、
-Markdown・Backlog記法・HTML/entityを解釈せず、改行/TABと内容を保ちます。
-危険な制御文字は可視escape、既知API keyは伏字にします。
+`textFormattingRule` を確認します。Markdownは見出し・強調の記号を外し、箇条書きを `•`、
+checklistを `☑` / `☐`、通常表をTAB区切りで表示します。番号list・引用・code blockは
+読み取り用の記号を保ち、inline codeは内容をそのまま表示します。通常改行・空行・TAB、
+code/escape内の記法は保ちます。link・画像・参照は名前/代替textとURL・題名を可視textで表示し、
+画像や参照先の取得はしません。HTMLのタグ/内容・未知macro/拡張は落とさず、
+列を失う表など難しい構造とBacklog/未知の記法値は安全な原文fallbackです。
+表示用copyだけを変換し、entity等の解釈後にも危険な制御文字は可視escape、既知API keyは伏字にします。
+TTY/非TTY・NO_COLORの有無によらず、本文も常に色装飾なしです。
 
 JSONは元の応答objectへ構築した `url` を追加し、未知field・大整数・通常の文字列値を保持します
 （secret/危険制御文字の安全化は共通契約どおり）。JSONでは課題GETだけで、記法用project GETはしません。
@@ -188,7 +193,9 @@ offsetは任意精度を保つ10進文字列で受け取り、返却値は数値
 返却値はsecret/制御文字を含む原文のままで、表示用コピーとは分離します。
 `project_text_formatting_rule(&Number)` は正整数project IDの記法を取得し、文字列で返します。
 課題取得と分離しているため、表示側が必要な場合だけ呼びます。
-共通 `body::display(raw, text_formatting_rule, secrets)` が本文表示入口で、現在はすべて安全な原文fallbackです。
+共通 `body::display(raw, text_formatting_rule, secrets)` が本文表示入口です。
+Markdownだけをpulldown-cmarkで解析し、原文offsetから表示用copyを作って最後に共通safetyを適用します。
+原文/API JSONは変更しません。Backlog記法・未知の記法値は安全な原文fallbackです。
 
 開発環境・ローカルHTTPS試験・品質確認は [CONTRIBUTING.md](CONTRIBUTING.md)、
 実装方針は [承認済みPlan](docs/plans/backlog-cli-initial.md) を参照してください。
