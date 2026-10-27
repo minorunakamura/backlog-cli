@@ -1,4 +1,10 @@
-use backlog_cli::{Error, api::Api, config::Config, safety};
+use backlog_cli::{
+    Error,
+    api::Api,
+    config::Config,
+    safety,
+    service::{Candidate, Service},
+};
 use clap::{Parser, Subcommand, error::ErrorKind};
 use serde_json::{Value, json};
 use std::io::{self, Write};
@@ -18,6 +24,18 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    IssueType {
+        #[command(subcommand)]
+        command: IssueType,
+    },
+    Resolution {
+        #[command(subcommand)]
+        command: Resolution,
+    },
+    Priority {
+        #[command(subcommand)]
+        command: Priority,
+    },
     Project {
         #[command(subcommand)]
         command: Project,
@@ -26,6 +44,22 @@ enum Command {
 #[derive(Subcommand)]
 enum Project {
     List,
+}
+
+#[derive(Subcommand)]
+enum Priority {
+    List,
+}
+#[derive(Subcommand)]
+enum Resolution {
+    List,
+}
+#[derive(Subcommand)]
+enum IssueType {
+    List {
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+    },
 }
 
 fn write_stdout(value: &str) -> Result<(), Error> {
@@ -55,8 +89,40 @@ fn report(mut error: Error, json_mode: bool, secrets: &[&str]) -> ExitCode {
     ExitCode::from(code)
 }
 async fn run(args: &Args, config: &Config) -> Result<(), Error> {
-    let api = Api::new(config)?;
-    let items = api.project_list().await?;
+    let (items, project_columns) = match &args.command {
+        Command::IssueType {
+            command: IssueType::List { project },
+        } => {
+            let project = project
+                .as_deref()
+                .or(config.settings.project.as_deref())
+                .ok_or_else(|| {
+                    Error::new(
+                        "input",
+                        "Project is required; use --project or cwd settings",
+                    )
+                })?;
+            (
+                Service::new(config)?
+                    .candidates(Candidate::IssueType { project })
+                    .await?,
+                false,
+            )
+        }
+        Command::Project { .. } => (Api::new(config)?.project_list().await?, true),
+        Command::Resolution { .. } => (
+            Service::new(config)?
+                .candidates(Candidate::Resolution)
+                .await?,
+            false,
+        ),
+        Command::Priority { .. } => (
+            Service::new(config)?
+                .candidates(Candidate::Priority)
+                .await?,
+            false,
+        ),
+    };
     let secrets = &[config.api_key.as_str()];
     let output = if args.json {
         let safe = safety::json(&items, secrets).map_err(|mut error| {
@@ -65,14 +131,26 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
         })?;
         format!("{}\n", json!({"items": safe}))
     } else {
-        let mut output = String::from("ID\tKEY\tNAME\n");
-        for item in items.as_array().expect("validated projects array") {
-            output.push_str(&format!(
-                "{}\t{}\t{}\n",
-                safety::text(&item["id"].to_string(), secrets),
-                safety::text(item["projectKey"].as_str().expect("validated key"), secrets),
-                safety::text(item["name"].as_str().expect("validated name"), secrets)
-            ));
+        let mut output = String::from(if project_columns {
+            "ID\tKEY\tNAME\n"
+        } else {
+            "ID\tNAME\n"
+        });
+        for item in items.as_array().expect("validated items array") {
+            if project_columns {
+                output.push_str(&format!(
+                    "{}\t{}\t{}\n",
+                    safety::text(&item["id"].to_string(), secrets),
+                    safety::text(item["projectKey"].as_str().expect("validated key"), secrets),
+                    safety::text(item["name"].as_str().expect("validated name"), secrets)
+                ));
+            } else {
+                output.push_str(&format!(
+                    "{}\t{}\n",
+                    safety::text(&item["id"].to_string(), secrets),
+                    safety::text(item["name"].as_str().expect("validated name"), secrets)
+                ));
+            }
         }
         output
     };

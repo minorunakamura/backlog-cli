@@ -16,8 +16,8 @@ cargo audit --version
 単一Cargo packageに共通library (`src/lib.rs`) と `bl` / `bl-cli` を置きます。
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
-候補であり、まだ依存に追加していません。設定/APIの最小経路として `bl-cli project list` を
-実装しています。その他の操作・TUIの機能は後続Work Itemの範囲です。
+候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
+共通libraryの候補/名前解決を実装しています。課題検索・書込み・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -54,6 +54,12 @@ GitHub上で未実行ならその旨を記録し、確認のためだけのpush�
 `tests/project_list.rs` は実CLIとローカルHTTPS送受信境界で、設定の厳密検証・認証header・
 固定表示/JSON・redirect/retry禁止・body込み30秒timeout・Ctrl+C・出力失敗を確認します。
 PTYでも入力を与えず完了し、NO_COLORと端末制御/secret保護を確認します。
+`tests/candidate_list.rs` は3一覧のflag適用先、project既定値/明示優先、固定表示/JSON、
+空一覧と不正応答、global/profile、不要GETなし、secret保護を実CLIで確認します。
+`tests/service.rs` は公開 `Service::candidates/resolve/myself` から、全候補のpath/header、
+完全一致/曖昧さ/数値名、巨大ID、直接IDと不正ID、resolution 0、self、API失敗伝播、cacheなしを確認します。
+`tests/common/mod.rs` は既存CLI harnessの共有部分です。library試験も個別の子テストprocessで実行し、
+そのprocessだけにTLS trustを渡すため、並列試験で環境変数を書き換えません。
 `tests/safety.rs` は共通libraryの公開安全表示入口で、原文保持・Unicode・scalar/keyの伏字と
 key衝突を検証します。内部private関数の固定テストはありません。
 
@@ -72,6 +78,8 @@ openssl version
 ```sh
 cargo test --locked --test project_list
 cargo test --locked --test safety
+cargo test --locked --test candidate_list
+cargo test --locked --test service
 # 30秒のbody timeoutだけを再確認
 cargo test --locked --test project_list body_reading_is_inside_the_thirty_second_request_timeout -- --exact
 ```
@@ -81,7 +89,7 @@ serverごとに一度、OpenSSLでlocalhostのSANと1日の有効期限を持つ
 秘密鍵を生成し、そのserverへの複数CLI呼出しで共有します。固定の鍵/証明書は保存しません。
 生成先はリポジトリ外の一時root内の `tls/`（directoryは0700、秘密鍵は0600）です。
 Reqwestの `rustls-tls-native-roots` featureを既存のwebpki rootsと併用し、
-子CLIだけの `SSL_CERT_FILE` に `tls/localhost-cert.pem` をtrust anchorとして指定します。
+子CLI/子libraryテストprocessだけの `SSL_CERT_FILE` に `tls/localhost-cert.pem` をtrust anchorとして指定します。
 TLS検証の無効化や製品のHTTP/test flag、システムtrustへの登録はありません。
 trustなしで接続が失敗する試験もあります。
 Rust harnessが一時rootを所有し、終了時だけでなくserver起動/生成失敗時も削除します。
@@ -93,9 +101,10 @@ Rust側がserverの停止・回収後に鍵・設定・応答・受信記録を�
 
 ```sh
 (
+  cli="$PWD/target/aarch64-apple-darwin/release/bl-cli"
   root=$(mktemp -d)
   server=
-  trap 'if [ -n "$server" ]; then kill "$server" 2>/dev/null; wait "$server" 2>/dev/null; fi; rm -rf "$root"' EXIT
+  trap 'if [ -n "$server" ]; then kill "$server" 2>/dev/null || :; wait "$server" 2>/dev/null || :; fi; rm -rf "$root"' EXIT
   printf '%s\n' '{"body":"[]","status":200}' > "$root/response.json"
   python3 tests/fixtures/https_server.py "$root" > "$root/port" &
   server=$!
@@ -105,13 +114,22 @@ Rust側がserverの停止・回収後に鍵・設定・応答・受信記録を�
   done
   mkdir "$root/backlog"
   printf '{"profiles":{"default":{"spaceUrl":"https://localhost:%s","apiKeyEnv":"TEST_KEY"}}}\n' "$(cat "$root/port")" > "$root/backlog/config.json"
-  env -i HOME="$root" XDG_CONFIG_HOME="$root" TEST_KEY=test-secret NO_COLOR=1 \
-    SSL_CERT_FILE="$root/tls/localhost-cert.pem" \
-    "$PWD/target/aarch64-apple-darwin/release/bl-cli" project list --json
+  run_cli() {
+    (cd "$root" && env -i HOME="$root" XDG_CONFIG_HOME="$root" TEST_KEY=test-secret NO_COLOR=1 \
+      SSL_CERT_FILE="$root/tls/localhost-cert.pem" "$cli" "$@")
+  }
+  run_cli issue-type list --project 'a/b%?#' --json
+  run_cli priority list
+  run_cli resolution list --json
+  cat "$root/requests"
 )
 ```
 
-stdoutの最初の行がport、`requests` がHTTP path/headerのJSONL記録です。
+fixtureのstdoutの最初の行がport、`requests` がHTTP method/path/headerのJSONL記録です。
+上の例は順に `{"items":[]}`、`ID`/`NAME` 見出し、`{"items":[]}` を出します。
+記録は3 GETだけで、pathは `/api/v2/projects/a%2Fb%25%3F%23/issueTypes`、
+`/api/v2/priorities`、`/api/v2/resolutions`。myself/project/space取得は発生しません。
+`response.json` のbodyをAPI配列のJSON文字列に置き換えれば非空表示も再現できます。
 生成物はテスト専用で、実サービスに使わないでください。
 `response.json` の `delay` はheaders送信後の秒数、`location` はredirect先、
 `disconnect:true` は応答前の切断を制御します。実API keyは使わないでください。

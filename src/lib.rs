@@ -2,6 +2,7 @@
 pub mod api;
 pub mod config;
 pub mod safety;
+pub mod service;
 
 use serde::Serialize;
 use serde_json::Value;

@@ -18,7 +18,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         with (root / "requests").open("a") as output:
-            output.write(json.dumps({"path": self.path, "headers": dict(self.headers)}) + "\n")
+            output.write(json.dumps({"method": self.command, "path": self.path, "headers": dict(self.headers)}) + "\n")
         response = json.loads((root / "response.json").read_text())
         if response.get("disconnect"):
             self.connection.close()
