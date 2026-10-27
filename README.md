@@ -2,7 +2,7 @@
 
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
-`issue list` / `issue mine` / `issue view` を利用できます。
+`issue list` / `issue mine` / `issue view` / `issue comment list` / `issue comment view` を利用できます。
 その他のCLI操作とTUI画面は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -177,6 +177,33 @@ JSONは元の応答objectへ構築した `url` を追加し、未知field・大�
 不正な入力ID/キーはinput（exit 2）です。取得/検証/表示構築がすべて成功してからstdoutへ書きます。
 出力失敗やredaction key衝突はoutput（exit 1）として扱います。
 
+## コメントの読取り
+
+```sh
+bl-cli issue comment list MYAPP-123
+bl-cli issue comment list MYAPP-123 --limit 20 --max-id 456 --json
+bl-cli issue comment list MYAPP-123 --min-id 100 --max-id 456 --json
+bl-cli --profile work issue comment view MYAPP-123 234 --no-input
+```
+
+課題は `issue view` と同じ正整数IDまたは課題キー、コメントIDと `--min-id` / `--max-id` は
+任意精度の正整数です。両境界指定時はmin < maxが必要です。limitは既定20・1〜100。
+`count` / `order=desc` と指定した `minId` / `maxId` で降順の1ページだけ取得し、境界ID自体を除外します。
+offset・total・コメント件数API・全件自動取得は使いません。`--project` は受け付けず、cwdのprojectで対象を置き換えません。
+
+固定表示は1件ごとにID、COMMENT / CHANGE HISTORYの文字ラベル、投稿者、created/updated、本文と変更履歴を出します。
+`content:null` の履歴も落とさず、本文と履歴の両方があれば同じ1件として両方表示します。
+履歴の `limitDate` は DUE DATE、`assigner` は ASSIGNEEなどの表示名にし、未知fieldは識別子のまま、
+変更前後の値も安全に表示します。空ページは `No comments` を出す成功で、API失敗と区別します。
+固定表示に文字列本文がある場合だけ対象課題のprojectIdとproject記法を取得し、本文は課題詳細と同じMarkdown/Backlog変換・
+安全な原文fallbackを使います。全件 `content:null` の履歴はコメントGETだけで表示します。
+文字列本文が混在する場合は記法取得の失敗を隠しません。画像・参照先は取得しません。
+
+JSONは一覧が `{"items":[...]}`、個別詳細は元のAPI objectです（url追加なし）。
+本文・変更履歴・未知field・大整数は共通のsecret/制御文字保護以外は保持します。
+JSONではコメントGETだけで、記法確認用のissue/project GETは行いません。
+入力エラーはexit 2、取得・応答検証・表示/出力エラーはexit 1で、全構築成功後だけstdoutへ出します。
+
 ## 共通libraryの候補取得・名前解決
 
 CLI/TUIから共通に `service::Service::new(&Config)` を使えます（生成だけでは通信しません）。
@@ -202,6 +229,11 @@ offsetは任意精度を保つ10進文字列で受け取り、返却値は数値
 返却値はsecret/制御文字を含む原文のままで、表示用コピーとは分離します。
 `project_text_formatting_rule(&Number)` は正整数project IDの記法を取得し、文字列で返します。
 課題取得と分離しているため、表示側が必要な場合だけ呼びます。
+`comment_list(&str, limit: u8, min_id: Option<&str>, max_id: Option<&str>)` は上記の1ページの
+`{"items":[...]}`、`comment_view(issue_id_or_key: &str, comment_id: &str)` は元objectを返します。
+入力と表示に必要な応答fieldを検証し、未知fieldや本文・履歴は表示前の原文で保持します。
+`issue_text_formatting_rule(&str)` は対象課題のprojectIdだけを取得・検証し、既存のproject記法取得へ渡します。
+コメントJSON取得と独立しており、cwdのprojectや課題詳細の他fieldを要求しません。
 共通 `body::display(raw, text_formatting_rule, secrets)` が本文表示入口です。
 Markdownはpulldown-cmark、Backlog記法は主要構造の変換と原文fallbackを使い、最後に共通safetyを適用します。
 `body::display_with_origin(raw, text_formatting_rule, &origin, secrets)` は課題link用のHTTPS originも受け取ります。
