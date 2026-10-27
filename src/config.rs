@@ -143,7 +143,7 @@ fn read_config(path: &Path) -> io::Result<Option<Vec<u8>>> {
         Err(error) => Err(error),
     }
 }
-fn origin(value: &str) -> Result<Url, Error> {
+pub(crate) fn origin(value: &str) -> Result<Url, Error> {
     let error = || Error::new("config", "spaceUrl must be an HTTPS origin");
     // URL parsing normalizes dot segments and backslashes; reject them before normalization.
     let (scheme, authority) = value.split_once("://").ok_or_else(error)?;

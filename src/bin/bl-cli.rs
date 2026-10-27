@@ -197,9 +197,10 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
                 ));
             }
             output.push_str("BODY\n");
-            output.push_str(&body::display(
+            output.push_str(&body::display_with_origin(
                 value["description"].as_str().unwrap_or(""),
                 &rule,
+                &config.origin,
                 secrets,
             ));
             output.push('\n');

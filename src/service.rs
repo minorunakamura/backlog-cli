@@ -426,7 +426,7 @@ fn positive_integer(value: &str) -> bool {
         && value.bytes().any(|c| c != b'0')
 }
 
-fn issue_key(value: &str) -> bool {
+pub(crate) fn issue_key(value: &str) -> bool {
     value.rsplit_once('-').is_some_and(|(project, number)| {
         !project.is_empty()
             && project
