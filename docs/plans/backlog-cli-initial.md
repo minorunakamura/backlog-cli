@@ -19,7 +19,7 @@ Rust製の共通libraryと、人向けTUI `bl`・非対話CLI `bl-cli`を新規�
 | Ratatui | 0.30.2、Crossterm 0.29 backendを明示 |
 | Crossterm | 0.29.0 |
 | Clap | 4.5.54、derive |
-| Tokio | 1.49.0、runtime・signal・sync・time・processに必要なfeature |
+| Tokio | 1.53.3、runtime・signal・sync・time・processに必要なfeature |
 | Reqwest | 0.12.28、default-features=false、rustls-tls |
 | Serde / serde_json | 1.0.228 / 1.0.149、derive / arbitrary_precision |
 | pulldown-cmark | 0.13.5 |
@@ -39,6 +39,98 @@ Rust製の共通libraryと、人向けTUI `bl`・非対話CLI `bl-cli`を新規�
 - **適用範囲・タイミング**：今回のPlanningで本Planを同じ正式パスに改訂保存し、既存Issue #1の受入条件・検証手順を整合させる。`CONTRIBUTING.md` の正式品質コマンドと `.github/workflows/quality.yml` の監査stepの訂正・検証は、新しいImplementationセッションでIssue #1の残作業として行う。これらの旧記述より本節と下記の正式チェックを優先する。READMEの利用説明、既存ソース・テスト・Cargo設定・lockfileをこの訂正のためだけに変更しない。
 - **維持する範囲**：警告・失敗・確認不能を隠さず報告し、無条件ignoreを追加しない。新しい `--deny` 方針、依存更新、advisory databaseの固定、独自監査wrapperは今回追加しない。既存の未コミット変更をcommit / stash / 破棄しない。後続Issueの製品要件や依存関係を変更しない。
 - **回帰確認**：コマンド訂正のみなので、この訂正に新規unit testやTDDは追加せず、同じcargo-audit版での実コマンドとlockfile不変確認を回帰検証にする。Implementationでリポジトリ直下から `cargo audit --version` を確認し、`shasum -a 256 Cargo.lock` → `cargo audit --file Cargo.lock` → `shasum -a 256 Cargo.lock` を順に実行する。引数エラーではなく対象lockfileの監査が実行され、ハッシュが変わらないこと、実際の終了コード・警告・失敗を記録することを確認する。監査失敗を成功扱いにせず、対応に要件・固定依存の変更が必要なら停止して再計画する。既存の正式チェックを再実行し、過去のチェック・Review・Code Review Approveを変更後の差分へ流用しない。Plan・Issue #1・ローカル手順・CIの版・導入・監査コマンドを照合し、CIのtrigger等を維持する。GitHub上での実行のためだけのpush/PRは行わない。
+
+### Tokio RUSTSEC-2026-0386：固定依存の保守改訂
+
+#### 目的と採用版
+
+Tokio を **1.53.3** に更新し、追跡対象の `Cargo.lock` に対する `RUSTSEC-2026-0386` の unsound 警告を解消する。本改訂は初版 Plan の固定依存に関する決定の更新であり、製品仕様・基本設計・完全一致版で固定する方針を変更しない。
+
+正式な Approved Plan は本ファイル `docs/plans/backlog-cli-initial.md` の改訂全文とし、別の保守 Plan は作らない。本節と採用版表は Planning の承認後に保存する。依存更新と更新後の実測結果の追記は、別の新しい Implementation セッションで行う。採用版表の改訂を依存更新や検証の完了とは扱わない。
+
+本保守作業の要求・範囲・完了条件・動作確認は本節を用いる。本 Plan の他の製品機能・初版全体の受入をこの保守作業に取り込まず、他節にある TDD・実IME/TUI・配布物の受入を今回の完了条件に追加しない。
+
+#### 確認済みの根拠・更新前の観測
+
+- Planning 時点の `Cargo.toml` は Tokio `=1.49.0`、`Cargo.lock` は Tokio 1.49.0 / tokio-macros 2.6.1。既存 feature は `rt-multi-thread`, `macros`, `signal`, `sync`, `time`, `process`。
+- cargo-audit **0.22.2** でリポジトリ直下の `cargo audit --file Cargo.lock` を実行し、223依存の監査で当該 unsound 警告1件、終了コード **0** を再現した。監査前後の lockfile の SHA-256 はともに `522302749ee772aee2c2405cce1d4f1631cb28c1bab6686604838ea37ef4c7d8`。これは今回の更新前の観測であり、更新後の結果ではない。
+- [RustSec 公式 advisory](https://rustsec.org/advisories/RUSTSEC-2026-0386.html) と [advisory-db 原文](https://raw.githubusercontent.com/RustSec/advisory-db/main/crates/tokio/RUSTSEC-2026-0386.md) の patched 範囲は **`>=1.51.6, <1.52.0` または `>=1.53.3`**、unaffected は `<0.3.2`。1.49.0 は対象、1.53.3 は patched。1.52 系を修正済みとして扱わない。
+- 原因は `AsyncFd` の safe constructor が FD の所有・有効性を保証せず I/O safety に違反すること。修正には旧 constructor の非推奨化と unsafe な `register` / `register_with_interest` の追加が含まれる。patched 判定を製品全体の安全性保証とは扱わない。
+- [Tokio 1.53.3 公式 release](https://github.com/tokio-rs/tokio/releases/tag/tokio-1.53.3)、[公式 Cargo.toml](https://raw.githubusercontent.com/tokio-rs/tokio/tokio-1.53.3/tokio/Cargo.toml)、[crates.io metadata](https://crates.io/api/v1/crates/tokio/1.53.3) で公開済み・調査時点 yanked=false・MSRV Rust 1.71 を確認した。固定 toolchain は Rust 1.99.1 / edition 2024 / `aarch64-apple-darwin`、実行環境も rustc 1.99.1 / Darwin arm64。MSRV の充足だけでビルド互換性を確定しない。
+- Tokio 1.53.3 の `tokio-macros` 要求は `~2.7.0`。既存の `macros` feature を維持するため、tokio-macros 2.6.1 の更新も必要となる。その他の推移依存の実際の差分は依存解決後に確認する。
+- [Issue #1](https://github.com/minorunakamura/backlog-cli/issues/1) は CLOSED を確認済み。今回の作業は新規 Work Item とし、Issue #1 の再オープン・本文変更・今回作業のコメント追記はしない。
+
+#### 改訂範囲・維持する履歴
+
+- 上表の Tokio 採用版を 1.49.0 から **1.53.3** に改訂し、本節を追記する。`Cargo.toml` と `Cargo.lock` は Implementation で整合させる。完全一致指定・既存 feature・他の直接依存の指定は維持する。
+- 直前の「Issue #1 再計画：正式監査コマンドの訂正」節、当時の216依存・終了0・当該警告1件という Probe 観測、および既存の同時ビルド等の Probe 記録は変更しない。直前の節にある「依存更新を追加しない」は当時のコマンド訂正作業の範囲として残し、今回の新規保守作業は本節に従う。
+- 製品側の変更は `Cargo.toml`, `Cargo.lock`, 本ファイルに限定する。`CONTRIBUTING.md`「品質確認」と `.github/workflows/quality.yml` は既存の正式コマンドとの整合確認だけを行い、変更しない。製品ソース・テスト・fixture の仕様変更、他の直接依存更新が必要なら無断で拡大せず再計画する。
+- 無関係な依存の一括更新、feature 変更、fork / patch、警告の ignore、新しい `--deny` 方針、advisory database 固定、監査 wrapper は対象外。
+- toolchain、edition、MSRV 設定、cargo-audit 0.22.2 と導入方法、CI の実行方針・trigger、製品仕様・基本設計は変更しない。実サービスへの接続・書込み、実IME/TUI受入、配布・公開、確認のためだけの push / PR 作成は行わない。
+- 既存の未コミット変更がある場合は保持し、commit / stash / 破棄を独断で行わない。
+
+#### 実装方針
+
+1. 新規 Work Item、本ファイルの本節、現在のコードと差分を確認する。RustSec の patched 判定、cargo-audit 版、固定 toolchain を再確認し、更新前の依存・監査結果を記録する。1.53.3 の patched 判定が変わっていれば、独断で別版を選ばず再計画・必要な再レビューに戻る。
+2. `Cargo.toml` の Tokio を **`=1.53.3`** に変更し、feature 配列を維持する。リポジトリ直下で `cargo update -p tokio --precise 1.53.3` を実行して対象を限定する。無指定の `cargo update` や lockfile の再生成は行わない。
+3. `git diff -- Cargo.toml Cargo.lock` と必要に応じて `cargo tree --locked -i <crate>` で差分を確認する。Tokio の版・checksum、tokio-macros、および新要求の解決に必要な推移依存の変更だけを採用し、変更 crate と必要性を説明する。lockfile の checksum / 依存辺を手編集しない。無関係な更新を分離できない場合は原因を調べてから進める。
+4. 下記の正式チェック・更新後監査を実行する。Reqwest を使う HTTPS / timeout、`tokio::signal::ctrl_c()` による中断、`#[tokio::main]`、library の Runtime 利用を含む既存の全対象テストで回帰を確認する。根拠は `src/api.rs`, `src/bin/bl-cli.rs`, `tests/project_list.rs`, `tests/service.rs` と `CONTRIBUTING.md` の既存テスト説明。
+5. **実測後にのみ**本節へ更新後の検証記録を追記する。監査の日時・cargo-audit 版・終了コード・当該 ID の有無・残る警告と失敗・監査前後の lockfile ハッシュ、および各正式チェックの結果を記録する。未実施・失敗・確認不能はそのまま区別する。過去の結果を解消済みに書き換えない。
+6. 最終差分が今回の範囲内で、採用版・manifest・lockfile が整合し、既存履歴と Issue #1 が維持されていることを確認する。互換性修正のために範囲外の変更が必要なら停止して再計画する。
+
+#### 保守作業の完了条件
+
+- `Cargo.toml` は Tokio `=1.53.3`、`Cargo.lock` の解決版も 1.53.3 で整合し、feature と他の直接依存の完全一致指定を維持している。
+- lockfile 差分は今回の依存解決に必要なものだけで、変更 crate と理由を説明できる。
+- `cargo audit --file Cargo.lock` が対象 lockfile を実際に監査し、**`RUSTSEC-2026-0386` が報告されない**。終了コード0だけを解消の根拠にしない。監査前後で lockfile が不変。
+- `cargo fmt --all -- --check`、`cargo test --locked --all-targets`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo build --locked --release --target aarch64-apple-darwin --bins` がすべて成功する。
+- 本ファイルの採用版とコードが整合し、本節に更新後の監査終了コード・残る警告や失敗・全チェックの実測結果が追記されている。過去の Probe と Issue #1 の履歴が維持されている。
+- 別の警告が残れば内容を記録する。監査の非0終了・実行不能、正式チェックの失敗を成功や完了として扱わず報告し、必要な判断に戻る。無関係な警告解消を無断で同梱しない。
+
+#### 動作確認方法
+
+新しい製品ロジックは追加しないため、今回に新規 unit test や TDD は追加しない。更新前の当該警告の再現と更新後の非報告を同じ正式監査コマンドで比較し、既存の全対象テスト・lint・build を回帰検証とする。
+
+リポジトリ直下で、`CONTRIBUTING.md` の環境要件（Python 3 / OpenSSL を使うローカル HTTPS harness を含む）を満たして実行する。
+
+```sh
+cargo audit --version
+cargo fmt --all -- --check
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+shasum -a 256 Cargo.lock
+cargo audit --file Cargo.lock
+# 直前の監査終了コードを直ちに取得・記録してから次を実行する。
+shasum -a 256 Cargo.lock
+cargo build --locked --release --target aarch64-apple-darwin --bins
+```
+
+各チェックの終了コードを個別に記録し、pipeline / 後続コマンドで監査の終了コードを上書きしない。cargo-audit の導入が必要なら既存の `cargo install cargo-audit --version 0.22.2 --locked` を使う。advisory database は通常どおり更新し、取得失敗を警告解消とみなさない。
+
+GitHub Actions 上の実行は完了条件にしない。未実行ならその旨を残す。Planning 時点では更新後の依存解決・監査・ビルドは未検証であり、過去のチェック・Review の承認を更新後の差分へ流用しない。
+
+#### Planning の受渡し
+
+本ファイルの改訂全文を Plan Review に提出し、明示承認後に同じ正式パスへ保存する。その後 `taskflow-to-ticket` の手順で新規 Work Item の分割、最終本文・保存先の保存公開をそれぞれ承認して作成し、本ファイルの本節を参照できるようにする。Issue #1 は変更しない。新規 Work Item の作成後は停止し、Implementation は別の新しいセッションで行う。
+
+#### Issue #36 Implementation の検証実測（2026-10-27 UTC）
+
+- 実行環境は Darwin arm64、`rustc 1.99.1 (58cf8f9c3 2026-10-13)` / `cargo 1.99.1 (5f94df478 2026-08-27)`。RustSec 公式 advisory 原文を再取得し（終了0）、patched 範囲が `>=1.51.6, <1.52.0` または `>=1.53.3` のままであることを確認した。更新前の比較には、本節の既存観測と、今回の開始時にも一致した lockfile SHA-256 `522302749ee772aee2c2405cce1d4f1631cb28c1bab6686604838ea37ef4c7d8` を用いた。
+- `Cargo.toml` の変更は Tokio `=1.49.0` → `=1.53.3` のみ。既存6 feature と他の直接依存の完全一致指定は維持した。`cargo update -p tokio --precise 1.53.3` は終了0。lockfile の変更 package は Tokio 1.49.0 → 1.53.3 と tokio-macros 2.6.1 → 2.7.2 の2件だけで、それぞれの checksum が更新された。tokio-macros は Tokio の既存 `macros` feature が要求する `~2.7.0` の解決に必要。2.7.2 の `syn = "3.0"` 要求により、その依存辺だけが `syn 2.0.119` → 既存の `syn 3.0.9` に変わり、syn 自体の追加・版更新はない。`cargo tree --locked -i tokio-macros` は終了0。更新時の「8 unchanged dependencies behind latest」は情報表示であり、無関係な更新は行っていない。
+- `CONTRIBUTING.md` と `.github/workflows/quality.yml` の正式コマンド・cargo-audit 固定版・導入方法を照合し、変更しなかった。HTTPS harness の前提確認は `python3 -c 'import http.server, ssl, pty; print(ssl.OPENSSL_VERSION)'` が終了0（OpenSSL 3.6.3）、`openssl version` が終了0（CLI / Library とも OpenSSL 4.0.3）。
+
+| 実行コマンド | 終了コード | 実測結果 |
+| --- | --- | --- |
+| `cargo audit --version` | 0 | 実出力 `cargo-audit-audit 0.22.2` |
+| `cargo fmt --all -- --check` | 0 | 差分・警告なし |
+| `cargo test --locked --all-targets` | 0 | 既存94テスト成功、失敗・無視・filterなし。HTTPS、30秒body timeout、headers前/body読取り中のCtrl+C、CLIの `#[tokio::main]` とlibraryの Runtime 利用を含む |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 | 警告・失敗なし |
+| `shasum -a 256 Cargo.lock`（監査前） | 0 | `b870ac297cd6fdd22f34a0dffb68052f4343620c98816665a4adaf7cd7a2b618` |
+| `cargo audit --file Cargo.lock` | 0 | 2026-10-27T15:13:05Z開始、15:13:06Z終了。通常のDB取得・crates.io index更新成功、1380 advisory・223依存を監査。`RUSTSEC-2026-0386` 非報告、その他の警告・失敗もなし。監査終了コードは直後に取得 |
+| `shasum -a 256 Cargo.lock`（監査後） | 0 | `b870ac297cd6fdd22f34a0dffb68052f4343620c98816665a4adaf7cd7a2b618`（監査前と一致） |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 | 両binaryのrelease build成功、警告・失敗なし |
+
+新規テスト・TDDは本保守節の方針どおり追加していない。GitHub Actionsは未実行で、確認用のpush / PR、配布・公開、実サービス接続・書込み、実IME/TUI受入は行っていない。Issue #1 および他Issueへの変更はなく、既存の未コミットPlan改訂・過去Probe・Issue #1履歴は保持した。今回の監査結果は当該時点の観測であり、将来のDB更新や製品全体の安全性を保証しない。
 
 ### CLIのflag契約
 
