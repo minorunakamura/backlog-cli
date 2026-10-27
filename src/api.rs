@@ -1,4 +1,4 @@
-use crate::{Error, config::Config};
+use crate::{CreateOutcome, Error, config::Config};
 use reqwest::{Client, header::HeaderValue, redirect::Policy};
 use serde::{Deserializer, de::MapAccess, de::Visitor};
 use serde_json::{Value, value::RawValue};
@@ -88,6 +88,91 @@ impl Api {
             return Err(error);
         }
         Ok(value)
+    }
+    pub(crate) async fn create_issue(&self, form: &[(&str, String)]) -> Result<Value, Error> {
+        let request = self
+            .client
+            .post(self.origin.join("api/v2/issues").expect("fixed path"))
+            .header("Backlog-API-Key", self.key.clone())
+            .form(form)
+            .build()
+            .map_err(|_| {
+                Error::new("input", "Cannot construct create request")
+                    .with_create_outcome(CreateOutcome::NotCreated)
+            })?;
+        let state = std::sync::Arc::new(std::sync::Mutex::new((CreateOutcome::NotCreated, None)));
+        let progress = state.clone();
+        let client = self.client.clone();
+        let mut task = tokio::spawn(async move {
+            // Record possible transmission before polling the send, and 201 before reading body.
+            progress.lock().expect("write state").0 = CreateOutcome::Unknown;
+            let response = client.execute(request).await.map_err(|error| {
+                if error.is_connect() {
+                    // Connection establishment failed before the HTTP request could be sent.
+                    progress.lock().expect("write state").0 = CreateOutcome::NotCreated;
+                }
+                Error::new("network", "HTTPS request failed or timed out")
+            })?;
+            let status = response.status().as_u16();
+            *progress.lock().expect("write state") = (
+                if status == 201 {
+                    CreateOutcome::Created
+                } else {
+                    CreateOutcome::Unknown
+                },
+                Some(status),
+            );
+            let body = response
+                .bytes()
+                .await
+                .map_err(|_| Error::new("network", "Response body failed or timed out"))?;
+            let decoded =
+                serde_json::from_slice::<&RawValue>(&body).and_then(|raw| decode_json(raw, 128));
+            if status != 201 {
+                let kind = match status {
+                    401 => "auth",
+                    403 => "permission",
+                    404 => "not_found",
+                    429 => "rate_limit",
+                    _ => "api",
+                };
+                let mut error = Error::new(
+                    kind,
+                    "API request was rejected or returned an unexpected status",
+                );
+                if let Ok(value) = decoded
+                    && let Some(errors) = value.get("errors").and_then(Value::as_array)
+                {
+                    if (400..500).contains(&status)
+                        && !errors.is_empty()
+                        && errors.iter().all(|e| {
+                            e.get("code")
+                                .and_then(Value::as_number)
+                                .is_some_and(|n| n.to_string().bytes().all(|c| c.is_ascii_digit()))
+                                && e.get("message").is_some_and(Value::is_string)
+                        })
+                    {
+                        progress.lock().expect("write state").0 = CreateOutcome::NotCreated;
+                    }
+                    error.api_errors = errors.clone();
+                }
+                return Err(error);
+            }
+            decoded.map_err(|_| Error::new("invalid_response", "API response is not valid JSON"))
+        });
+        let result = tokio::select! {
+            result = &mut task => result.unwrap_or_else(|_| Err(Error::new("network", "Communication task failed"))),
+            signal = tokio::signal::ctrl_c() => {
+                task.abort();
+                let _ = task.await;
+                Err(match signal { Ok(()) => Error::new("interrupted", "Operation interrupted"), Err(_) => Error::new("terminal", "Cannot receive interrupt signals") })
+            }
+        };
+        result.map_err(|mut error| {
+            let (outcome, status) = *state.lock().expect("write state");
+            error.http_status = status;
+            error.with_create_outcome(outcome)
+        })
     }
     pub(crate) fn issue_url(&self, issue_key: &str) -> String {
         issue_url(&self.origin, issue_key)

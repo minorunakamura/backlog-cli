@@ -2,7 +2,7 @@
 
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
-`issue list` / `issue mine` / `issue view` / `issue comment list` / `issue comment view` を利用できます。
+`issue list` / `issue mine` / `issue view` / `issue create` / `issue comment list` / `issue comment view` を利用できます。
 その他のCLI操作とTUI画面は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -42,7 +42,7 @@ editorは文字列配列で、未指定なら `["vim"]`。空配列・空program
 今回のCLIではeditorを起動せず、argvとprogramのfile/実行権限だけを検証します。
 
 cwd直下の `.backlog/settings.json` は省略可能です。親ディレクトリを探索せず、profileも変えません。
-`project` は `issue-type list` と通常の `issue list/mine` の既定値です。
+`project` は `issue-type list`・通常の `issue list/mine`・`issue create` の既定値です。
 `issue.list.status` は通常検索の状態OR条件です。createの既定値は検索へ流用しません。
 `project list` / `priority list` / `resolution list` の取得対象には適用しません。
 
@@ -73,7 +73,7 @@ bl-cli resolution list
 ```
 
 `--profile`（省略時 `default`）・`--json`・`--no-input` はsubcommandの前後で指定できます。
-TTYでも非対話で、stdin・editor・選択UI・確認待ちは使いません。`--no-input` は動作を変えません。
+TTYでも非対話で、明示 `--body-file -` 以外のstdin・editor・選択UI・確認待ちは使いません。`--no-input` は動作を変えません。
 
 `issue-type list` のprojectは明示 `--project/-p`、次にcwd設定 `project` を使い、
 どちらもなければ入力エラーです。projectキー/数値IDはURLの単一path部品として扱います。
@@ -95,7 +95,7 @@ JSON成功はstdoutへ改行終端の1文書 `{"items":[...]}`。未知fieldと�
 選択profileのAPI keyは値・未知key・配列・数値も伏字化し、key衝突は出力エラーとします。
 非TTY/NO_COLOR時を含め、現CLIは色装飾を出しません。
 
-CLIの通信は操作に必要なGETだけです。検索ではcountとlist、必要なproject解決・候補・self取得を行い、
+読取りの通信は操作に必要なGETだけです。検索ではcountとlist、必要なproject解決・候補・self取得を行い、
 space取得・所属確認・成功確認の追加GETはしません。
 API keyは `Backlog-API-Key` headerに送ります。
 redirect・自動retryは禁止、body読取を含め1 requestは30秒でtimeoutします。
@@ -177,6 +177,45 @@ JSONは元の応答objectへ構築した `url` を追加し、未知field・大�
 不正な入力ID/キーはinput（exit 2）です。取得/検証/表示構築がすべて成功してからstdoutへ書きます。
 出力失敗やredaction key衝突はoutput（exit 1）として扱います。
 
+## 課題作成
+
+```sh
+bl-cli issue create -p MYAPP --issue-type タスク --priority 中 -t "修正" -b "修正内容"
+printf '修正内容\n' | bl-cli issue create -p MYAPP --issue-type タスク --priority 中 -t "修正" --body-file - --json
+bl-cli issue create -p 123 --issue-type-id 7 --priority-id 3 -t "修正" --clear-assignee \
+  --start-date 2024-02-29 --due-date 2024-03-01 --milestone-id 8 --milestone-id 9
+```
+
+project・タイトル・種別・優先度が必須です。projectはcwd設定、種別・優先度・担当者は
+`issue.create` の既定値を使え、明示flagを優先します。タイトルは空白のみ不可（送信値はtrimしません）。
+`--assignee/-a self` は選択profileの認証ユーザー、`--clear-assignee` は担当者既定値を適用せず、
+assigneeId自体を送信しません。担当者の値指定と解除は排他です。状態・完了理由はAPIの初期値を使います。
+
+名前flagと `--issue-type-id` / `--priority-id` / `--assignee-id` / `--milestone-id` は項目ごとに排他です。
+名前は完全一致で解決し、不在・複数一致は入力エラー。IDは任意精度の正整数で、候補取得はしません。
+projectキーだけはproject GETでIDへ解決します。`--project all` は作成では使えません。
+`--milestone/-m` または `--milestone-id` は反復可能で、同じIDは一度だけ送ります。
+他の単一flagの反復はエラー。開始日・期限日は実在する `YYYY-MM-DD` を検証し、前後関係の制限は加えません。
+
+`--body/-b` と `--body-file` は空文字指定も含め排他です。UTF-8の本文を空白・改行・記法・制御文字も
+変換せず送信します。空ファイル・空stdinは空本文、未指定ならdescriptionを送信しません。
+`--body-file -` のときだけstdinを読みます。本文省略でeditorを起動せず、TTYでも確認待ちはありません。
+
+POST `/api/v2/issues` をformで一回だけ送信し、milestoneは反復 `milestoneId[]` にします。
+成功確認・表示用の追加GET、自動retry、redirect追従、結果の永続保存はしません。
+成功はHTTP 201のobject・正整数id・安全なissueKeyを検証し、固定表示は `CREATED` / `URL`、
+JSONは元objectへ検証済みorigin/keyからの `url` を追加します。未知field・巨大整数は保持し、表示時だけ安全化します。
+
+識別できる作成エラーは、引数・設定・本文エラーも含め `write` が必須です（読取りエラーでは省略）。
+送信前または具体的なBacklog errorsを伴う信頼できる4xx拒否は `not_created`、送信開始後の切断・timeout・
+不正応答・5xx等は `unknown`、201観測後は本文読取・decode・必要field検証・出力失敗でも `created` を維持します。
+中断時も通信taskを停止・回収して観測済み確度を報告します。固定エラーにも同じ確度を表示します。
+終了コードは確度と独立で、createdでも後続エラーは1、中断は130です。実施済み・結果不明から再送を促しません。
+
+```json
+{"error":{"kind":"network","message":"Response body failed or timed out","httpStatus":201,"apiErrors":[],"write":{"operation":"issue.create","outcome":"created"}}}
+```
+
 ## コメントの読取り
 
 ```sh
@@ -234,6 +273,14 @@ offsetは任意精度を保つ10進文字列で受け取り、返却値は数値
 入力と表示に必要な応答fieldを検証し、未知fieldや本文・履歴は表示前の原文で保持します。
 `issue_text_formatting_rule(&str)` は対象課題のprojectIdだけを取得・検証し、既存のproject記法取得へ渡します。
 コメントJSON取得と独立しており、cwdのprojectや課題詳細の他fieldを要求しません。
+`issue_create(&Settings, IssueCreate)` はCLIと共通の作成入口です。`IssueCreate` は `project: Option<&str>`、
+`title: &str`、`body: Option<&str>`、`issue_type/priority/assignee: Option<Selection>`、
+`milestone: Vec<Selection>`、`clear_assignee: bool`、`start_date/due_date: Option<&str>` を受け取ります。
+`Default` は全項目未指定（titleは空文字）で、必須値は呼出し時に検証します。
+既定値・入力検証・名前解決・重複除去・単一POST・確度判定を共通で行い、元objectとurlの `Value` を返します。
+返却値と送信本文はsecret/制御文字を含む原文のままで、表示の安全化とは分離しています。
+失敗時は `Error::write` の `WriteResult { operation, outcome: CreateOutcome }` で確度を取得できます。
+
 共通 `body::display(raw, text_formatting_rule, secrets)` が本文表示入口です。
 Markdownはpulldown-cmark、Backlog記法は主要構造の変換と原文fallbackを使い、最後に共通safetyを適用します。
 `body::display_with_origin(raw, text_formatting_rule, &origin, secrets)` は課題link用のHTTPS originも受け取ります。

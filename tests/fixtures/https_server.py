@@ -26,9 +26,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def do_POST(self):
+        self.do_GET()
+
     def do_GET(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8")
         with (root / "requests").open("a") as output:
-            output.write(json.dumps({"method": self.command, "path": self.path, "headers": dict(self.headers)}) + "\n")
+            output.write(json.dumps({"method": self.command, "path": self.path, "headers": dict(self.headers), "body": body, "form": urllib.parse.parse_qs(body, keep_blank_values=True)}) + "\n")
         response = json.loads((root / "response.json").read_text())
         if "routes" in response:
             response = response["routes"].get(self.path.split("?", 1)[0], {"status": 404})
@@ -49,7 +53,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if "location" in response:
             self.send_header("Location", response["location"])
         body = response.get("body", "[]").encode()
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(body) + (10 if response.get("truncate") else 0)))
         self.end_headers()
         self.wfile.flush()
         (root / "headers-sent").touch()
