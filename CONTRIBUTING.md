@@ -17,7 +17,7 @@ cargo audit --version
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
-`issue list/mine/view` と共通libraryの候補/名前解決/検索/詳細取得・Markdown本文の安全表示を実装しています。
+`issue list/mine/view` と共通libraryの候補/名前解決/検索/詳細取得・Markdown/Backlog本文の安全表示を実装しています。
 書込み・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
@@ -68,12 +68,14 @@ PTYでも入力を与えず完了し、NO_COLORと端末制御/secret保護を�
 `tests/issue_search.rs` は実CLI/HTTP境界で通常・mine・複数project横断、既定値/解除、
 OR/AND・名前/ID排他・重複除去・巨大ID、count/list同条件と1ページのみ、空ページ/total差、
 失敗/不正応答、JSON原文と安全表示、TTYでの非対話を確認します。
-`tests/issue_view.rs` は実CLI/HTTP境界で全詳細項目・nullable項目・複数milestone・Markdown表示/原文fallback、
+`tests/issue_view.rs` は実CLI/HTTP境界で全詳細項目・nullable項目・複数milestone・Markdown/Backlog表示と原文fallback、
 未知field/巨大整数/通常文字列・secret/key衝突・危険制御、ID/keyと構築URL、JSONのproject GETなし、
 不正応答/API失敗・出力失敗・help/global flags・TTYでの非対話を確認します。
-`tests/body.rs` は公開 `body::display` からMarkdownの見出し/list/強調/引用/code/checklist/通常表、
+`tests/body.rs` は公開 `body::display/display_with_origin` からMarkdown/Backlogの見出し/list/強調/引用/code/checklist/通常表、
 複合記法・通常改行/空行/TAB・code/escapeの保護、可視link/画像/参照、HTML/未知macroの内容保持、
-難しい表とBacklog/未知記法の原文fallbackを確認します。原文非改変、日本語/結合文字/emoji、
+難しい表/未知記法の原文fallbackを確認します。Backlogの課題linkは設定origin/keyの共通検証・URL構築を使い、
+不正origin/key・code/escape内のキーを展開しないこと、Wiki/Git/SVN/添付の名前/revision/ID保持も検証します。
+原文非改変、日本語/結合文字/emoji、
 entityや表示変換で現れるsecret・制御文字への最終safetyも検証します。
 CLI試験では非TTY/NO_COLORとPTYの装飾なし、画像/参照先の追加GETなし、JSON原文とproject GETなしを確認します。
 `tests/service.rs` の公開 `Service::search` 試験では既定値適用・原文/巨大total保持と入力検証も確認します。

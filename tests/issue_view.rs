@@ -475,3 +475,35 @@ fn markdown_view_is_plain_and_safe_while_json_keeps_the_body_without_project_get
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[2]["path"], "/api/v2/issues/P_2-1");
 }
+
+#[test]
+fn backlog_view_uses_configured_origin_without_fetching_references_and_json_stays_raw() {
+    let raw = "* ''日本語'' é 👩‍💻\n- [x] 完了\nBLG-104 [[P_2-87]]\n[[公式>https://example.invalid/help]]\n#image(11) #attach(sample.zip:11) #rev(abc123) [[Wiki ページ]]\n|~項目|値|h\n|a|''test''-secret|\n{code:java}\nBLG-104 ''literal''\n{/code}\n\\BLG-104 \\[[P_2-87]]\n> 引用 %%本文%%\n{code}one{/code} {code}\n* ''literal'' BLG-104\n{/code}\n|a|b|\n|{code}|x|\n* ''literal'' BLG-104\n{/code}\n{quote}#unknown(''raw'' BLG-1){/quote}\n'''literal'' BLG-104\n* ''後続'' BLG-104\n\u{1b}]52;c;bad\u{7}\n";
+    let mut value = issue();
+    value["description"] = json!(raw);
+    let mut response = fixture(&value);
+    response["routes"]["/api/v2/projects/987654321098765432109876543210"]["body"] =
+        json!("{\"textFormattingRule\":\"backlog\"}");
+    let h = Harness::new(response);
+    let output = h.run(&["issue", "view", "P_2-1"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.ends_with(&format!("BODY\n日本語 é 👩‍💻\n• ☑ 完了\nBLG-104 ({0}/view/BLG-104) P_2-87 ({0}/view/P_2-87)\n公式 (https://example.invalid/help)\n#image(11) #attach(sample.zip:11) #rev(abc123) [[Wiki ページ]]\n項目\t値\na\t[REDACTED]\n{{code:java}}\nBLG-104 ''literal''\n{{/code}}\n\\BLG-104 \\[[P_2-87]]\n> 引用 本文\n{{code}}one{{/code}} {{code}}\n* ''literal'' BLG-104\n{{/code}}\n|a|b|\n|{{code}}|x|\n* ''literal'' BLG-104\n{{/code}}\n{{quote}}#unknown(''raw'' BLG-1){{/quote}}\n'''literal'' BLG-104\n後続 BLG-104 ({0}/view/BLG-104)\n\\u{{1b}}]52;c;bad\\u{{7}}\n\n", h.origin)), "{text}");
+    assert!(!text.contains("test-secret"));
+    assert!(!text.contains('\u{1b}'));
+    let returned = success(&h.run(&["issue", "view", "P_2-1", "--json"]));
+    let mut expected = value;
+    expected["url"] = json!(format!("{}/view/P_2-1", h.origin));
+    expected["description"] = json!(raw.replace('\u{1b}', "\\u{1b}").replace('\u{7}', "\\u{7}"));
+    assert_eq!(returned, expected);
+    let requests = h.requests();
+    assert_eq!(requests.len(), 3, "no image, reference, or issue-link GETs");
+    assert_eq!(requests[0]["path"], "/api/v2/issues/P_2-1");
+    assert_eq!(
+        requests[1]["path"],
+        "/api/v2/projects/987654321098765432109876543210"
+    );
+    assert_eq!(requests[2]["path"], "/api/v2/issues/P_2-1");
+    assert!(requests.iter().all(|r| r["method"] == "GET"));
+}

@@ -157,8 +157,17 @@ null本文は空本文として表示します。対象課題のprojectIdでproj
 checklistを `☑` / `☐`、通常表をTAB区切りで表示します。番号list・引用・code blockは
 読み取り用の記号を保ち、inline codeは内容をそのまま表示します。通常改行・空行・TAB、
 code/escape内の記法は保ちます。link・画像・参照は名前/代替textとURL・題名を可視textで表示し、
-画像や参照先の取得はしません。HTMLのタグ/内容・未知macro/拡張は落とさず、
-列を失う表など難しい構造とBacklog/未知の記法値は安全な原文fallbackです。
+画像や参照先の取得はしません。
+
+Backlog記法では `*` / `**` / `***` の見出し、`-` / `--` / `---` の箇条書き、
+`+` の番号list、checklist、`''強調''` / `'''斜体'''` / `%%取消%%`、`>` / `{quote}` の引用、
+通常表（末尾 `h` / cell先頭 `~` の見出しを含む）と `&br;` を表示用に変換します。
+`{code}` / `{code:java}` 等のcode blockは区切りも内容も保持し、backslash escapeも誤変換しません。
+認識できる `BLG-104` / `[[BLG-87]]` はキーと設定済みoriginの可視URLを表示します。
+`[[URL]]` / `[[名前>URL]]` / `[[名前:URL]]` のHTTP(S) linkも可視textです。
+Wiki/Git/SVN・添付/画像参照・目次は、名前・revision・ID等を原文のまま保持し、URLを推測しません。
+HTMLのタグ/内容・未知macro/拡張は落とさず、複雑表や未閉鎖構文など難しい構造と未知の記法値は
+安全な原文fallbackです（未知macro/HTMLを含む行は行全体を保持）。完全な記法互換は保証しません。
 表示用copyだけを変換し、entity等の解釈後にも危険な制御文字は可視escape、既知API keyは伏字にします。
 TTY/非TTY・NO_COLORの有無によらず、本文も常に色装飾なしです。
 
@@ -194,8 +203,10 @@ offsetは任意精度を保つ10進文字列で受け取り、返却値は数値
 `project_text_formatting_rule(&Number)` は正整数project IDの記法を取得し、文字列で返します。
 課題取得と分離しているため、表示側が必要な場合だけ呼びます。
 共通 `body::display(raw, text_formatting_rule, secrets)` が本文表示入口です。
-Markdownだけをpulldown-cmarkで解析し、原文offsetから表示用copyを作って最後に共通safetyを適用します。
-原文/API JSONは変更しません。Backlog記法・未知の記法値は安全な原文fallbackです。
+Markdownはpulldown-cmark、Backlog記法は主要構造の変換と原文fallbackを使い、最後に共通safetyを適用します。
+`body::display_with_origin(raw, text_formatting_rule, &origin, secrets)` は課題link用のHTTPS originも受け取ります。
+CLIは検証済み `Config::origin` を渡します。origin不正時や従来の `display` では課題参照を原文のまま保持します。
+原文/API JSONは変更しません。未知の記法値は安全な原文fallbackです。
 
 開発環境・ローカルHTTPS試験・品質確認は [CONTRIBUTING.md](CONTRIBUTING.md)、
 実装方針は [承認済みPlan](docs/plans/backlog-cli-initial.md) を参照してください。
