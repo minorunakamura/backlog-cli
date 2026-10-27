@@ -69,30 +69,23 @@ fn failure(
 }
 #[test]
 fn create_tcp_connection_refusal_is_not_created() {
-    use std::io::{BufRead, BufReader};
-    use std::process::{Command, Stdio};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
 
     let h = Harness::new(json!({}));
-    // Reserve the port without listening so another process cannot claim it during the test.
-    let mut socket = Command::new("python3")
-        .args([
-            "-c",
-            "import socket, sys; s = socket.socket(); s.bind(('127.0.0.1', 0)); print(s.getsockname()[1], flush=True); sys.stdin.read()",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut port = String::new();
-    BufReader::new(socket.stdout.take().unwrap())
-        .read_line(&mut port)
-        .unwrap();
-    let port: u16 = port.trim().parse().unwrap();
-    h.config(json!({"profiles":{"default":{"spaceUrl":format!("https://127.0.0.1:{port}"),"apiKeyEnv":"TEST_KEY"}}}));
-    let output = h.command(&args()).output();
-    drop(socket.stdin.take());
-    assert!(socket.wait().unwrap().success());
-    failure(&output.unwrap(), 1, "network", "not_created", None);
+    // A bound non-listener can time out; close a listener to obtain a refused connection.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let error = TcpStream::connect_timeout(&address, Duration::from_secs(3))
+        .expect_err("fixture must refuse TCP connections");
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionRefused,
+        "{error}"
+    );
+    h.config(json!({"profiles":{"default":{"spaceUrl":format!("https://{address}"),"apiKeyEnv":"TEST_KEY"}}}));
+    failure(&h.run(&args()), 1, "network", "not_created", None);
     assert!(!h.root.join("requests").exists());
 }
 
