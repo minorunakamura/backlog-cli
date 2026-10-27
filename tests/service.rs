@@ -428,3 +428,41 @@ fn candidate_and_myself_failures_propagate_without_empty_or_input_fallback() {
         }
     });
 }
+
+#[test]
+fn shared_search_applies_defaults_preserves_raw_json_and_validates_inputs() {
+    use backlog_cli::service::IssueSearch;
+    if library_process(
+        "shared_search_applies_defaults_preserves_raw_json_and_validates_inputs",
+        json!({"routes":{
+            "/api/v2/projects/P":{"body":r#"{"id":123456789012345678901234567890}"#},
+            "/api/v2/projects/P/statuses":{"body":r#"[{"id":2,"name":"open"}]"#},
+            "/api/v2/issues/count":{"body":r#"{"count":123456789012345678901234567890}"#},
+            "/api/v2/issues":{"body":r#"[{"id":1,"issueKey":"P-1","summary":"test-secret\u001b[31m","status":{"name":"open"},"extra":123456789012345678901234567890}]"#}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        let settings: Settings = serde_json::from_value(json!({"project":"P","issue":{"list":{"status":["open"]},"create":{"assignee":"never"}}})).unwrap();
+        let page = s.search(&settings, IssueSearch::default()).await.unwrap();
+        assert_eq!(page["pagination"].to_string(), r#"{"count":1,"limit":20,"offset":0,"total":123456789012345678901234567890}"#);
+        assert_eq!(page["items"][0]["summary"], "test-secret\u{1b}[31m");
+        assert_eq!(page["items"][0]["extra"].to_string(), "123456789012345678901234567890");
+        assert_eq!(requests().len(), 4);
+        for search in [
+            IssueSearch { status: vec![Selection::Name("open"), Selection::Id("2")], ..Default::default() },
+            IssueSearch { assignee: vec![Selection::Name("self"), Selection::Id("2")], ..Default::default() },
+            IssueSearch { milestone: vec![Selection::Name("v1"), Selection::Id("2")], ..Default::default() },
+            IssueSearch { mine: true, assignee: vec![Selection::Name("self")], ..Default::default() },
+            IssueSearch { project: Some("all"), status: vec![Selection::Id("2")], keyword: Some("term"), ..Default::default() },
+            IssueSearch { limit: 0, ..Default::default() },
+            IssueSearch { offset: "-1", ..Default::default() },
+        ] {
+            let error = s.search(&settings, search).await.unwrap_err();
+            assert_eq!((error.kind, error.exit_code()), ("input", 2));
+        }
+        assert_eq!(requests().len(), 4);
+    });
+}
