@@ -16,7 +16,8 @@ cargo audit --version
 単一Cargo packageに共通library (`src/lib.rs`) と `bl` / `bl-cli` を置きます。
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
-候補であり、まだ依存に追加していません。設定/API/TUIの機能は後続Work Itemの範囲です。
+候補であり、まだ依存に追加していません。設定/APIの最小経路として `bl-cli project list` を
+実装しています。その他の操作・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -50,5 +51,70 @@ GitHub上で未実行ならその旨を記録し、確認のためだけのpush�
 境界に、環境変数を消し、空のHOME/XDG_CONFIG_HOME/cwdと非TTYでhelp/versionを確認します。
 内部private関数の名前や実装詳細はテストに固定しません。
 
-現段階ではビルド・品質確認・help/versionのみを対象とします。実Backlogへの書込み、
-実IME/TUI受入、配布tar.gz/SHA-256作成や公開は行いません。
+`tests/project_list.rs` は実CLIとローカルHTTPS送受信境界で、設定の厳密検証・認証header・
+固定表示/JSON・redirect/retry禁止・body込み30秒timeout・Ctrl+C・出力失敗を確認します。
+PTYでも入力を与えず完了し、NO_COLORと端末制御/secret保護を確認します。
+`tests/safety.rs` は共通libraryの公開安全表示入口で、原文保持・Unicode・scalar/keyの伏字と
+key衝突を検証します。内部private関数の固定テストはありません。
+
+### ローカルHTTPS harness
+
+テスト実行にはPython 3（標準libraryのhttp.server/ssl/pty）とOpenSSL CLIが必要です。
+CIもTest前に次の利用可否を確認します。追加のPython packageや固定PEMは不要です。
+
+```sh
+python3 -c 'import http.server, ssl, pty; print(ssl.OPENSSL_VERSION)'
+openssl version
+```
+
+再実行はリポジトリ直下から:
+
+```sh
+cargo test --locked --test project_list
+cargo test --locked --test safety
+# 30秒のbody timeoutだけを再確認
+cargo test --locked --test project_list body_reading_is_inside_the_thirty_second_request_timeout -- --exact
+```
+
+harnessは `tests/fixtures/https_server.py` をloopbackの動的portへ起動します。
+serverごとに一度、OpenSSLでlocalhostのSANと1日の有効期限を持つ自己署名証明書と
+秘密鍵を生成し、そのserverへの複数CLI呼出しで共有します。固定の鍵/証明書は保存しません。
+生成先はリポジトリ外の一時root内の `tls/`（directoryは0700、秘密鍵は0600）です。
+Reqwestの `rustls-tls-native-roots` featureを既存のwebpki rootsと併用し、
+子CLIだけの `SSL_CERT_FILE` に `tls/localhost-cert.pem` をtrust anchorとして指定します。
+TLS検証の無効化や製品のHTTP/test flag、システムtrustへの登録はありません。
+trustなしで接続が失敗する試験もあります。
+Rust harnessが一時rootを所有し、終了時だけでなくserver起動/生成失敗時も削除します。
+Python側も生成/起動失敗時に `tls/` を削除します。serverをkillする通常の終了では
+Rust側がserverの停止・回収後に鍵・設定・応答・受信記録をまとめて削除します。
+
+直接release CLIで再現する場合も、親shellが一時rootの削除を担当します。
+上記release build後、リポジトリ直下から実行してください:
+
+```sh
+(
+  root=$(mktemp -d)
+  server=
+  trap 'if [ -n "$server" ]; then kill "$server" 2>/dev/null; wait "$server" 2>/dev/null; fi; rm -rf "$root"' EXIT
+  printf '%s\n' '{"body":"[]","status":200}' > "$root/response.json"
+  python3 tests/fixtures/https_server.py "$root" > "$root/port" &
+  server=$!
+  while [ ! -s "$root/port" ]; do
+    kill -0 "$server" 2>/dev/null || exit 1
+    sleep 0.1
+  done
+  mkdir "$root/backlog"
+  printf '{"profiles":{"default":{"spaceUrl":"https://localhost:%s","apiKeyEnv":"TEST_KEY"}}}\n' "$(cat "$root/port")" > "$root/backlog/config.json"
+  env -i HOME="$root" XDG_CONFIG_HOME="$root" TEST_KEY=test-secret NO_COLOR=1 \
+    SSL_CERT_FILE="$root/tls/localhost-cert.pem" \
+    "$PWD/target/aarch64-apple-darwin/release/bl-cli" project list --json
+)
+```
+
+stdoutの最初の行がport、`requests` がHTTP path/headerのJSONL記録です。
+生成物はテスト専用で、実サービスに使わないでください。
+`response.json` の `delay` はheaders送信後の秒数、`location` はredirect先、
+`disconnect:true` は応答前の切断を制御します。実API keyは使わないでください。
+
+現段階では実Backlogへの接続/書込み、実IME/TUI受入、配布tar.gz/SHA-256作成や公開は行いません。
+editorの権限検査後のfile変更や、将来起動時のOSによる最終実行可否までは保証しません。
