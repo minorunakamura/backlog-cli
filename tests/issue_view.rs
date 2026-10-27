@@ -28,7 +28,7 @@ fn json_view_preserves_original_fields_and_builds_url_without_project_get() {
 }
 
 #[test]
-fn fixed_view_shows_every_detail_and_raw_body_using_the_issue_project() {
+fn fixed_view_shows_every_detail_and_markdown_body_using_the_issue_project() {
     let h = Harness::new(fixture(&issue()));
     std::fs::create_dir(h.root.join(".backlog")).unwrap();
     std::fs::write(
@@ -42,7 +42,7 @@ fn fixed_view_shows_every_detail_and_raw_body_using_the_issue_project() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
-            "KEY\tP_2-1\nTITLE\t修正 é 👩‍💻\nTYPE\tタスク\nPRIORITY\t中\nASSIGNEE\t担当\nSTATUS\t完了\nRESOLUTION\t対応済み\nSTART DATE\t2026-10-01T00:00:00Z\nDUE DATE\t2026-11-01T00:00:00Z\nMILESTONES\tv1, v2\nCREATED\t2026-10-01T01:02:03Z\nUPDATED\t2026-10-02T04:05:06Z\nURL\t{}/view/P_2-1\nBODY\n# 見出し\n<b>&#27;原文</b>\t本文\n",
+            "KEY\tP_2-1\nTITLE\t修正 é 👩‍💻\nTYPE\tタスク\nPRIORITY\t中\nASSIGNEE\t担当\nSTATUS\t完了\nRESOLUTION\t対応済み\nSTART DATE\t2026-10-01T00:00:00Z\nDUE DATE\t2026-11-01T00:00:00Z\nMILESTONES\tv1, v2\nCREATED\t2026-10-01T01:02:03Z\nUPDATED\t2026-10-02T04:05:06Z\nURL\t{}/view/P_2-1\nBODY\n見出し\n<b>\\u{{1b}}原文</b>\t本文\n",
             h.origin
         )
     );
@@ -201,7 +201,7 @@ fn nullable_details_empty_milestones_and_unknown_rules_keep_safe_raw_fallback() 
         " * 原文\n```\n<b>&#27;</b> [[macro]]\n```\t\u{1b}]52;c;clipboard\u{7}\r\u{9b}test-secret"
     );
     value["summary"] = json!("test-secret\u{1b}[31m");
-    for rule in ["markdown", "backlog", "future-rule", ""] {
+    for rule in ["backlog", "future-rule", ""] {
         let mut response = fixture(&value);
         response["routes"]["/api/v2/projects/987654321098765432109876543210"]["body"] =
             json!(json!({"textFormattingRule":rule}).to_string());
@@ -443,8 +443,35 @@ fn view_help_and_flags_preserve_noninteractive_cli_contract() {
         assert!(output.stderr.is_empty());
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(text.starts_with("KEY\tP_2-1"));
-        assert!(text.contains("<b>&#27;原文</b>"));
+        assert!(text.contains("見出し"));
+        assert!(!text.contains("# 見出し"));
+        assert!(text.contains("<b>\\u{1b}原文</b>"));
         assert!(!text.contains('\u{1b}'));
     }
     assert_eq!(h.requests().len(), 6);
+}
+
+#[test]
+fn markdown_view_is_plain_and_safe_while_json_keeps_the_body_without_project_get() {
+    let raw = "# **日本語** é 👩‍💻\n\n- [x] 完了\n\n> 引用 *本文*\n\n[参照](https://example.invalid/test&#45;secret)\n![代替](https://example.invalid/image.png)\n\n| 名前 | 値 |\n| --- | --- |\n| a | `**code**` |\n\n&#27;]52;c;bad&#7; test&#45;secret\n[[unknown]]\n";
+    let mut value = issue();
+    value["description"] = json!(raw);
+    let h = Harness::new(fixture(&value));
+    let output = h.run(&["issue", "view", "P_2-1"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.ends_with("BODY\n日本語 é 👩‍💻\n\n• ☑ 完了\n\n> 引用 本文\n\n参照 (https://example.invalid/[REDACTED])\n代替 (https://example.invalid/image.png)\n\n名前\t値\na\t**code**\n\n\\u{1b}]52;c;bad\\u{7} [REDACTED]\n[[unknown]]\n\n"), "{text}");
+    assert!(!text.contains('\u{1b}'));
+    assert!(!text.contains("test-secret"));
+    assert_eq!(
+        h.requests().len(),
+        2,
+        "images and links must not be fetched"
+    );
+    let returned = success(&h.run(&["issue", "view", "P_2-1", "--json"]));
+    assert_eq!(returned["description"], raw);
+    let requests = h.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[2]["path"], "/api/v2/issues/P_2-1");
 }
