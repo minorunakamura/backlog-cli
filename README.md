@@ -2,7 +2,7 @@
 
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
-`issue list` / `issue mine` を利用できます。
+`issue list` / `issue mine` / `issue view` を利用できます。
 その他のCLI操作とTUI画面は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -139,6 +139,30 @@ JSONは元の課題配列と次のページ情報だけを返します（`hasMor
 countは実取得数、totalはcount APIの値で、両API間の更新による不一致を補正しません。
 count/listいずれの失敗も空一覧にせず、成功stdoutを出しません。
 
+## 課題詳細
+
+```sh
+bl-cli issue view MYAPP-123
+bl-cli --profile work issue view 123 --json --no-input
+```
+
+対象は正整数のIDまたは課題キー（英数字/underscoreのprojectキー + `-` + 正整数）です。
+任意精度のIDを扱い、URLは設定済みHTTPS originと応答の課題キーから構築します。
+`--project` は受け付けず、cwdのproject・検索条件・create既定値も対象を上書きしません。
+
+固定表示は課題キー・タイトル・種別・優先度・担当者・状態・完了理由・開始日・期限日・
+複数マイルストーン・created/updated・URLと本文です。未設定の担当者/完了理由/日付は `-`、
+null本文は空本文として表示します。対象課題のprojectIdでprojectを1回取得し、
+`textFormattingRule` を確認します。現在は既知/未知の記法とも安全化した原文fallbackで、
+Markdown・Backlog記法・HTML/entityを解釈せず、改行/TABと内容を保ちます。
+危険な制御文字は可視escape、既知API keyは伏字にします。
+
+JSONは元の応答objectへ構築した `url` を追加し、未知field・大整数・通常の文字列値を保持します
+（secret/危険制御文字の安全化は共通契約どおり）。JSONでは課題GETだけで、記法用project GETはしません。
+必要fieldの欠落/型不正・不正な応答キーはinvalid_response（HTTP 200、exit 1）、
+不正な入力ID/キーはinput（exit 2）です。取得/検証/表示構築がすべて成功してからstdoutへ書きます。
+出力失敗やredaction key衝突はoutput（exit 1）として扱います。
+
 ## 共通libraryの候補取得・名前解決
 
 CLI/TUIから共通に `service::Service::new(&Config)` を使えます（生成だけでは通信しません）。
@@ -159,6 +183,12 @@ space全体の `Priority` / `Resolution` です。milestoneはversions APIを使
 条件は `Vec<Selection>`（名前とIDは項目ごとに排他）、statusの空Vecは設定を使い、
 `Selection::Name("all")` は設定の状態条件を解除します。mine=trueはassignee入力と排他です。
 offsetは任意精度を保つ10進文字列で受け取り、返却値は数値です。返却データは安全表示前の原文です。
+
+`issue_view(&str)` は課題詳細の必要fieldを検証し、元objectへ `url` を追加した `Value` を返します。
+返却値はsecret/制御文字を含む原文のままで、表示用コピーとは分離します。
+`project_text_formatting_rule(&Number)` は正整数project IDの記法を取得し、文字列で返します。
+課題取得と分離しているため、表示側が必要な場合だけ呼びます。
+共通 `body::display(raw, text_formatting_rule, secrets)` が本文表示入口で、現在はすべて安全な原文fallbackです。
 
 開発環境・ローカルHTTPS試験・品質確認は [CONTRIBUTING.md](CONTRIBUTING.md)、
 実装方針は [承認済みPlan](docs/plans/backlog-cli-initial.md) を参照してください。

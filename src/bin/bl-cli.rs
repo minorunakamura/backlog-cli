@@ -1,6 +1,7 @@
 use backlog_cli::{
     Error,
     api::Api,
+    body,
     config::Config,
     safety,
     service::{Candidate, IssueSearch, Selection, Service},
@@ -49,6 +50,7 @@ enum Command {
 enum Issue {
     List(ListArgs),
     Mine(SearchArgs),
+    View { issue_id_or_key: String },
 }
 #[derive(clap::Args)]
 struct ListArgs {
@@ -134,6 +136,80 @@ fn report(mut error: Error, json_mode: bool, secrets: &[&str]) -> ExitCode {
     ExitCode::from(code)
 }
 async fn run(args: &Args, config: &Config) -> Result<(), Error> {
+    if let Command::Issue {
+        command: Issue::View { issue_id_or_key },
+    } = &args.command
+    {
+        let service = Service::new(config)?;
+        let value = service.issue_view(issue_id_or_key).await?;
+        let secrets = &[config.api_key.as_str()];
+        let output = if args.json {
+            let safe = safety::json(&value, secrets).map_err(|mut error| {
+                error.http_status = Some(200);
+                error
+            })?;
+            format!("{safe}\n")
+        } else {
+            let rule = service
+                .project_text_formatting_rule(
+                    value["projectId"]
+                        .as_number()
+                        .expect("validated project ID"),
+                )
+                .await?;
+            let mut output = String::new();
+            for (label, field) in [
+                ("KEY", "issueKey"),
+                ("TITLE", "summary"),
+                ("TYPE", "issueType"),
+                ("PRIORITY", "priority"),
+                ("ASSIGNEE", "assignee"),
+                ("STATUS", "status"),
+                ("RESOLUTION", "resolution"),
+                ("START DATE", "startDate"),
+                ("DUE DATE", "dueDate"),
+            ] {
+                let text = value[field]
+                    .as_str()
+                    .or_else(|| value[field]["name"].as_str())
+                    .unwrap_or("-");
+                output.push_str(&format!("{label}\t{}\n", safety::text(text, secrets)));
+            }
+            let milestones = value["milestone"]
+                .as_array()
+                .expect("validated milestones")
+                .iter()
+                .map(|item| item["name"].as_str().expect("validated milestone name"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output.push_str(&format!(
+                "MILESTONES\t{}\n",
+                safety::text(&milestones, secrets)
+            ));
+            for (label, field) in [
+                ("CREATED", "created"),
+                ("UPDATED", "updated"),
+                ("URL", "url"),
+            ] {
+                output.push_str(&format!(
+                    "{label}\t{}\n",
+                    safety::text(value[field].as_str().expect("validated field"), secrets)
+                ));
+            }
+            output.push_str("BODY\n");
+            output.push_str(&body::display(
+                value["description"].as_str().unwrap_or(""),
+                &rule,
+                secrets,
+            ));
+            output.push('\n');
+            output
+        };
+        return write_stdout(&output).map_err(|mut error| {
+            error.http_status = Some(200);
+            error
+        });
+    }
     if let Command::Issue { command } = &args.command {
         let (search, assignee, mine) = match command {
             Issue::List(list) => (
@@ -142,6 +218,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
                 false,
             ),
             Issue::Mine(search) => (search, vec![], true),
+            Issue::View { .. } => unreachable!("handled view"),
         };
         let value = Service::new(config)?
             .search(
