@@ -1,12 +1,12 @@
 use backlog_cli::{
-    Error,
+    CreateOutcome, Error,
     api::Api,
     body,
     config::Config,
     safety,
-    service::{Candidate, IssueSearch, Selection, Service},
+    service::{Candidate, IssueCreate, IssueSearch, Selection, Service},
 };
-use clap::{Parser, Subcommand, error::ErrorKind};
+use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use serde_json::{Value, json};
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -48,6 +48,7 @@ enum Command {
 }
 #[derive(Subcommand)]
 enum Issue {
+    Create(Box<CreateArgs>),
     List(ListArgs),
     Mine(SearchArgs),
     View {
@@ -73,6 +74,39 @@ enum Comment {
         #[arg(long)]
         max_id: Option<String>,
     },
+}
+#[derive(clap::Args)]
+struct CreateArgs {
+    #[arg(long, short = 'p')]
+    project: Option<String>,
+    #[arg(long, short = 't')]
+    title: String,
+    #[arg(long, short = 'b', conflicts_with = "body_file")]
+    body: Option<String>,
+    #[arg(long, conflicts_with = "body")]
+    body_file: Option<String>,
+    #[arg(long, conflicts_with = "issue_type_id")]
+    issue_type: Option<String>,
+    #[arg(long, conflicts_with = "issue_type")]
+    issue_type_id: Option<String>,
+    #[arg(long, conflicts_with = "priority_id")]
+    priority: Option<String>,
+    #[arg(long, conflicts_with = "priority")]
+    priority_id: Option<String>,
+    #[arg(long, short = 'a', conflicts_with_all = ["assignee_id", "clear_assignee"])]
+    assignee: Option<String>,
+    #[arg(long, conflicts_with_all = ["assignee", "clear_assignee"])]
+    assignee_id: Option<String>,
+    #[arg(long, conflicts_with_all = ["assignee", "assignee_id"])]
+    clear_assignee: bool,
+    #[arg(long)]
+    start_date: Option<String>,
+    #[arg(long)]
+    due_date: Option<String>,
+    #[arg(long, short = 'm', conflicts_with = "milestone_id")]
+    milestone: Vec<String>,
+    #[arg(long, conflicts_with = "milestone")]
+    milestone_id: Vec<String>,
 }
 #[derive(clap::Args)]
 struct ListArgs {
@@ -215,6 +249,7 @@ fn report(mut error: Error, json_mode: bool, secrets: &[&str]) -> ExitCode {
         Ok(Value::Array(errors)) => error.api_errors = errors,
         Err(mut output_error) => {
             output_error.http_status = error.http_status;
+            output_error.write = error.write;
             output_error.message = safety::text(&output_error.message, secrets);
             error = output_error;
         }
@@ -224,12 +259,107 @@ fn report(mut error: Error, json_mode: bool, secrets: &[&str]) -> ExitCode {
     let message = if json_mode {
         format!("{}\n", json!({"error": error}))
     } else {
-        format!("error: {}\n", error.message)
+        let certainty = error
+            .write
+            .map(|write| {
+                format!(
+                    " [{}: {}]",
+                    write.operation,
+                    match write.outcome {
+                        CreateOutcome::NotCreated => "not_created",
+                        CreateOutcome::Unknown => "unknown",
+                        CreateOutcome::Created => "created",
+                    }
+                )
+            })
+            .unwrap_or_default();
+        format!("error: {}{certainty}\n", error.message)
     };
     let _ = io::stderr().lock().write_all(message.as_bytes());
     ExitCode::from(code)
 }
+async fn read_create_body(create: &CreateArgs) -> Result<Option<String>, Error> {
+    let Some(path) = create.body_file.clone() else {
+        return Ok(create.body.clone());
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    // A detached reader lets Ctrl+C stop explicit stdin input without waiting for EOF.
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let bytes = if path == "-" {
+            let mut bytes = Vec::new();
+            io::stdin().read_to_end(&mut bytes).map(|_| bytes)
+        } else {
+            std::fs::read(path)
+        };
+        let result = bytes
+            .map_err(|_| Error::new("input", "Cannot read body input"))
+            .and_then(|bytes| {
+                String::from_utf8(bytes)
+                    .map_err(|_| Error::new("input", "Body input must be UTF-8"))
+            });
+        let _ = sender.send(result);
+    });
+    tokio::select! {
+        result = receiver => result.map_err(|_| Error::new("input", "Cannot read body input"))?.map(Some),
+        signal = tokio::signal::ctrl_c() => Err(match signal { Ok(()) => Error::new("interrupted", "Operation interrupted"), Err(_) => Error::new("terminal", "Cannot receive interrupt signals") }),
+    }
+}
+
 async fn run(args: &Args, config: &Config) -> Result<(), Error> {
+    if let Command::Issue {
+        command: Issue::Create(create),
+    } = &args.command
+    {
+        let body = read_create_body(create).await?;
+        let value = Service::new(config)?
+            .issue_create(
+                &config.settings,
+                IssueCreate {
+                    project: create.project.as_deref(),
+                    title: &create.title,
+                    body: body.as_deref(),
+                    issue_type: create
+                        .issue_type
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(create.issue_type_id.as_deref().map(Selection::Id)),
+                    priority: create
+                        .priority
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(create.priority_id.as_deref().map(Selection::Id)),
+                    milestone: selections(&create.milestone, &create.milestone_id),
+                    assignee: create
+                        .assignee
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(create.assignee_id.as_deref().map(Selection::Id)),
+                    clear_assignee: create.clear_assignee,
+                    start_date: create.start_date.as_deref(),
+                    due_date: create.due_date.as_deref(),
+                },
+            )
+            .await?;
+        let output = (|| {
+            let secrets = &[config.api_key.as_str()];
+            let output = if args.json {
+                let safe = safety::json(&value, secrets)?;
+                format!("{safe}\n")
+            } else {
+                format!(
+                    "CREATED\t{}\nURL\t{}\n",
+                    safety::text(value["issueKey"].as_str().expect("validated key"), secrets),
+                    safety::text(value["url"].as_str().expect("constructed URL"), secrets)
+                )
+            };
+            write_stdout(&output)
+        })();
+        return output.map_err(|mut error: Error| {
+            error.http_status = Some(201);
+            error.with_create_outcome(CreateOutcome::Created)
+        });
+    }
     if let Command::Issue {
         command: Issue::Comment { command },
     } = &args.command
@@ -387,7 +517,9 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
                 false,
             ),
             Issue::Mine(search) => (search, vec![], true),
-            Issue::View { .. } | Issue::Comment { .. } => unreachable!("handled read"),
+            Issue::Create(..) | Issue::View { .. } | Issue::Comment { .. } => {
+                unreachable!("handled read")
+            }
         };
         let value = Service::new(config)?
             .search(
@@ -511,6 +643,23 @@ async fn main() -> ExitCode {
         .skip(1)
         .take_while(|arg| *arg != "--")
         .any(|arg| arg == "--json" || arg.as_encoded_bytes().starts_with(b"--json="));
+    let identified_create = Args::command()
+        .ignore_errors(true)
+        .try_get_matches_from(&argv)
+        .ok()
+        .and_then(|matches| {
+            matches
+                .subcommand_matches("issue")
+                .map(|issue| issue.subcommand_name() == Some("create"))
+        })
+        .unwrap_or(false);
+    let parse_error = |error: Error| {
+        if identified_create {
+            error.with_create_outcome(CreateOutcome::NotCreated)
+        } else {
+            error
+        }
+    };
     let args = match Args::try_parse_from(&argv) {
         Ok(args) => args,
         Err(error)
@@ -533,7 +682,10 @@ async fn main() -> ExitCode {
         }
         Err(_) => {
             return report(
-                Error::new("input", "Invalid command line arguments; use --help"),
+                parse_error(Error::new(
+                    "input",
+                    "Invalid command line arguments; use --help",
+                )),
                 json_mode,
                 &[],
             );
@@ -551,19 +703,32 @@ async fn main() -> ExitCode {
             > 1
         {
             return report(
-                Error::new("input", "Global options must not be repeated"),
+                parse_error(Error::new("input", "Global options must not be repeated")),
                 args.json,
                 &[],
             );
         }
     }
+    let is_create = matches!(
+        &args.command,
+        Command::Issue {
+            command: Issue::Create(_)
+        }
+    );
+    let create_error = |error: Error| {
+        if is_create {
+            error.with_create_outcome(CreateOutcome::NotCreated)
+        } else {
+            error
+        }
+    };
     let config = match Config::load(&args.profile) {
         Ok(config) => config,
-        Err(error) => return report(error, args.json, &[]),
+        Err(error) => return report(create_error(error), args.json, &[]),
     };
     let result = run(&args, &config).await;
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => report(error, args.json, &[&config.api_key]),
+        Err(error) => report(create_error(error), args.json, &[&config.api_key]),
     }
 }

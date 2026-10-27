@@ -17,8 +17,8 @@ cargo audit --version
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
-`issue list/mine/view` / `issue comment list/view` と共通libraryの候補/名前解決/検索/詳細・コメント取得・Markdown/Backlog本文の安全表示を実装しています。
-書込み・TUIの機能は後続Work Itemの範囲です。
+`issue list/mine/view/create` / `issue comment list/view` と共通libraryの候補/名前解決/検索/詳細・コメント取得・課題作成・Markdown/Backlog本文の安全表示を実装しています。
+他の書込み・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -78,6 +78,14 @@ issue/project GETなし、全件null履歴はissue/projectが403でもコメン�
 `tests/service.rs` の公開 `Service::comment_list/comment_view/issue_text_formatting_rule` 試験でも、
 安全表示前の本文・履歴・未知field/巨大ID保持、入力検証時の通信なし、対象課題のprojectIdだけでの記法取得、
 API失敗の伝播を確認します。
+`tests/issue_create.rs` は実CLI/HTTPS境界で必須入力・既定値/明示優先/担当者解除、名前/self・巨大ID・不要候補なし、
+実在日付・milestoneの重複除去、literal/file/明示stdinのUTF-8・空本文・原文form・排他/単一flag反復を確認します。
+実際のcreate commandだけに引数・設定エラーのwriteを付け、readの値tokenを誤認しないことも検証します。
+単一POST・redirect/retry/確認GETなし、信頼できる4xx拒否と不正拒否/5xx/切断、201後のbody切断/decode/必須field/
+出力失敗・redaction key衝突での確度保持、送信前/送信開始後/201 headers後のCtrl+Cとbody込み30秒timeoutを確認します。
+stdin待ち中断・stdin非明示時の非読取・global/profile・TTY非対話も実processで試験します。
+`tests/service.rs` の公開 `Service::issue_create` 試験は、送信本文と返却object/巨大整数の原文保持・URL追加、
+既定値/直接ID・解除・入力検証前のPOSTなし、201後と名前解決時のエラー確度を確認します。
 `tests/body.rs` は公開 `body::display/display_with_origin` からMarkdown/Backlogの見出し/list/強調/引用/code/checklist/通常表、
 複合記法・通常改行/空行/TAB・code/escapeの保護、可視link/画像/参照、HTML/未知macroの内容保持、
 難しい表/未知記法の原文fallbackを確認します。Backlogの課題linkは設定origin/keyの共通検証・URL構築を使い、
@@ -116,6 +124,7 @@ cargo test --locked --test service
 cargo test --locked --test issue_search
 cargo test --locked --test issue_view
 cargo test --locked --test issue_comment
+cargo test --locked --test issue_create
 cargo test --locked --test body
 cargo test --locked --test https_fixture
 # 30秒のbody timeoutだけを再確認
@@ -163,7 +172,8 @@ Rust側がserverの停止・回収後に鍵・設定・応答・受信記録を�
 )
 ```
 
-fixtureのstdoutの最初の行がport、`requests` がHTTP method/path/headerのJSONL記録です。
+fixtureのstdoutの最初の行がport、`requests` がHTTP method/path/header/body/formのJSONL記録です。
+POSTのformは空値・反復array keyを保持した配列値で記録します。`truncate:true` はContent-Lengthより短いbodyを返します。
 上の例は順に `{"items":[]}`、`ID`/`NAME` 見出し、`{"items":[]}` を出します。
 記録は3 GETだけで、pathは `/api/v2/projects/a%2Fb%25%3F%23/issueTypes`、
 `/api/v2/priorities`、`/api/v2/resolutions`。myself/project/space取得は発生しません。
@@ -190,8 +200,9 @@ fixtureは `routes` があればqueryを除いたpathでdispatchし、不明path
 fixtureはqueryの `minId` / `maxId` を正整数として比較して境界自身を除外し、IDでsortし、`count` 件へ切り詰めます。
 `tests/issue_comment.rs` はID 1〜5の同じ集合からminのみ・maxのみ・両方・空ページの実結果と送信queryを照合します。
 固定bodyを返すだけでは境界除外の検証として扱いません。
-`response.json` の `delay` はheaders送信後の秒数、`location` はredirect先、
-`disconnect:true` は応答前の切断を制御します。実API keyは使わないでください。
+`response.json` の `header_delay` はheaders前、`delay` はheaders送信後の秒数、`location` はredirect先、
+`disconnect:true` は応答前の切断を制御します。`requests` / `headers-sent` markerで中断するphaseを合わせます。
+実API keyは使わないでください。
 
 現段階では実Backlogへの接続/書込み、実IME/TUI受入、配布tar.gz/SHA-256作成や公開は行いません。
 editorの権限検査後のfile変更や、将来起動時のOSによる最終実行可否までは保証しません。

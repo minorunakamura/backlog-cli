@@ -642,3 +642,54 @@ fn comment_formatting_uses_only_target_issue_project_and_keeps_api_failures() {
         }
     });
 }
+
+#[test]
+fn issue_create_preserves_raw_response_and_body_and_validates_before_post() {
+    use backlog_cli::service::IssueCreate;
+    let original: serde_json::Value=serde_json::from_str(r#"{"id":123456789012345678901234567890,"issueKey":"P-1","test-secret":{"body":"  test-secret\u001b\n"},"url":"https://untrusted.invalid"}"#).unwrap();
+    if library_process(
+        "issue_create_preserves_raw_response_and_body_and_validates_before_post",
+        json!({"status":201,"body":original.to_string()}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s=service();
+        let defaults: Settings=serde_json::from_value(json!({"project":"123456789012345678901234567890","issue":{"create":{"issueType":"unused","priority":"unused","assignee":"unused"}}})).unwrap();
+        let make=||IssueCreate {title:" 原文 test-secret\u{1b} ",body:Some(" \n# **test-secret**\u{1b}\t\n "),issue_type:Some(Selection::Id("0007")),priority:Some(Selection::Id("3")),clear_assignee:true,..Default::default()};
+        let mut expected=original;
+        expected["url"]=json!(format!("{}/view/P-1",std::env::var("SERVICE_TEST").unwrap()));
+        let value=s.issue_create(&defaults,make()).await.unwrap();
+        assert_eq!(value,expected);
+        assert_eq!(requests().len(),1);
+        assert_eq!(requests()[0]["form"],json!({"projectId":["123456789012345678901234567890"],"issueTypeId":["7"],"priorityId":["3"],"summary":[" 原文 test-secret\u{1b} "],"description":[" \n# **test-secret**\u{1b}\t\n "]}));
+        for create in [
+            IssueCreate{title:" \n\t",..make()},
+            IssueCreate{assignee:Some(Selection::Name("self")),..make()},
+            IssueCreate{start_date:Some("2100-02-29"),..make()},
+            IssueCreate{due_date:Some("2024-04-31"),..make()},
+            IssueCreate{milestone:vec![Selection::Name("v1"),Selection::Id("1")],..make()},
+            IssueCreate{issue_type:Some(Selection::Id("0")),..make()},
+            IssueCreate{priority:Some(Selection::Id("1e2")),..make()},
+            IssueCreate{milestone:vec![Selection::Id("0")],..make()},
+            IssueCreate{project:Some("all"),..make()},
+        ] {
+            let e=s.issue_create(&defaults,create).await.unwrap_err();
+            assert_eq!((e.kind,e.exit_code(),e.http_status),("input",2,None));
+            assert_eq!(serde_json::to_value(e).unwrap()["write"],json!({"operation":"issue.create","outcome":"not_created"}));
+        }
+        assert_eq!(requests().len(),1);
+        // Gregorian leap-century dates are valid, without enforcing date ordering.
+        let _=s.issue_create(&defaults,IssueCreate{start_date:Some("2400-02-29"),due_date:Some("2000-02-29"),..make()}).await.unwrap();
+        assert_eq!(requests().len(),2);
+        response(json!({"status":201,"body":"not json"}));
+        let e=s.issue_create(&defaults,make()).await.unwrap_err();
+        assert_eq!((e.kind,e.http_status),("invalid_response",Some(201)));
+        assert_eq!(serde_json::to_value(e).unwrap()["write"]["outcome"],"created");
+        response(json!({"status":500}));
+        let e=s.issue_create(&defaults,IssueCreate{priority:Some(Selection::Name("中")),..make()}).await.unwrap_err();
+        assert_eq!((e.kind,e.http_status),("api",Some(500)));
+        assert_eq!(serde_json::to_value(e).unwrap()["write"]["outcome"],"not_created");
+        assert_eq!(requests().last().unwrap()["method"],"GET");
+    });
+}

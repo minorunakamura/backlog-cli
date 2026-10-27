@@ -1,5 +1,5 @@
 use crate::{
-    Error,
+    CreateOutcome, Error,
     api::Api,
     config::{Config, Settings},
 };
@@ -46,6 +46,20 @@ impl Default for IssueSearch<'_> {
     }
 }
 
+#[derive(Default)]
+pub struct IssueCreate<'a> {
+    pub project: Option<&'a str>,
+    pub title: &'a str,
+    pub body: Option<&'a str>,
+    pub issue_type: Option<Selection<'a>>,
+    pub priority: Option<Selection<'a>>,
+    pub milestone: Vec<Selection<'a>>,
+    pub assignee: Option<Selection<'a>>,
+    pub clear_assignee: bool,
+    pub start_date: Option<&'a str>,
+    pub due_date: Option<&'a str>,
+}
+
 pub struct Service {
     api: Api,
 }
@@ -54,6 +68,175 @@ impl Service {
         Ok(Self {
             api: Api::new(config)?,
         })
+    }
+    pub async fn issue_create(
+        &self,
+        settings: &Settings,
+        create: IssueCreate<'_>,
+    ) -> Result<Value, Error> {
+        self.create_issue_inner(settings, create)
+            .await
+            .map_err(|error| error.with_create_outcome(CreateOutcome::NotCreated))
+    }
+    async fn create_issue_inner(
+        &self,
+        settings: &Settings,
+        create: IssueCreate<'_>,
+    ) -> Result<Value, Error> {
+        if create.title.trim().is_empty() {
+            return Err(Error::new("input", "Title must not be blank"));
+        }
+        if create.clear_assignee && create.assignee.is_some() {
+            return Err(Error::new(
+                "input",
+                "Assignee and clear-assignee are mutually exclusive",
+            ));
+        }
+        for date in [create.start_date, create.due_date].into_iter().flatten() {
+            if !valid_date(date) {
+                return Err(Error::new("input", "Date must be a real YYYY-MM-DD date"));
+            }
+        }
+        if create
+            .milestone
+            .iter()
+            .any(|s| matches!(s, Selection::Name(_)))
+            && create
+                .milestone
+                .iter()
+                .any(|s| matches!(s, Selection::Id(_)))
+        {
+            return Err(Error::new(
+                "input",
+                "Milestone names and IDs are mutually exclusive",
+            ));
+        }
+        let project = create
+            .project
+            .or(settings.project.as_deref())
+            .ok_or_else(|| Error::new("input", "Project is required"))?;
+        let issue_type = create
+            .issue_type
+            .or(settings
+                .issue
+                .create
+                .issue_type
+                .as_deref()
+                .map(Selection::Name))
+            .ok_or_else(|| Error::new("input", "Issue type is required"))?;
+        let priority = create
+            .priority
+            .or(settings
+                .issue
+                .create
+                .priority
+                .as_deref()
+                .map(Selection::Name))
+            .ok_or_else(|| Error::new("input", "Priority is required"))?;
+        if matches!(project, "" | "." | ".." | "all") {
+            return Err(Error::new("input", "A concrete project is required"));
+        }
+        // Validate all explicit IDs before any name-resolution request.
+        for (candidate, selection) in [
+            (Candidate::IssueType { project }, Some(issue_type)),
+            (Candidate::Priority, Some(priority)),
+            (Candidate::Assignee { project }, create.assignee),
+        ] {
+            if let Some(Selection::Id(id)) = selection {
+                self.resolve(candidate, Selection::Id(id)).await?;
+            }
+        }
+        for selection in &create.milestone {
+            if let Selection::Id(id) = selection {
+                self.resolve(Candidate::Milestone { project }, Selection::Id(id))
+                    .await?;
+            }
+        }
+        let project_id = if project.bytes().all(|c| c.is_ascii_digit()) {
+            self.resolve(Candidate::IssueType { project }, Selection::Id(project))
+                .await?
+                .to_string()
+        } else {
+            let value = self.api.get(&["projects", project]).await?;
+            value
+                .get("id")
+                .and_then(Value::as_number)
+                .filter(|id| positive_integer(&id.to_string()))
+                .ok_or_else(|| invalid_response("Project response has invalid ID"))?
+                .to_string()
+        };
+        let mut form = vec![
+            ("projectId", project_id),
+            ("summary", create.title.into()),
+            (
+                "issueTypeId",
+                self.resolve(Candidate::IssueType { project }, issue_type)
+                    .await?
+                    .to_string(),
+            ),
+            (
+                "priorityId",
+                self.resolve(Candidate::Priority, priority)
+                    .await?
+                    .to_string(),
+            ),
+        ];
+        let assignee = if create.clear_assignee {
+            None
+        } else {
+            create.assignee.or(settings
+                .issue
+                .create
+                .assignee
+                .as_deref()
+                .map(Selection::Name))
+        };
+        if let Some(assignee) = assignee {
+            form.push((
+                "assigneeId",
+                self.resolve(Candidate::Assignee { project }, assignee)
+                    .await?
+                    .to_string(),
+            ));
+        }
+        for (field, date) in [
+            ("startDate", create.start_date),
+            ("dueDate", create.due_date),
+        ] {
+            if let Some(date) = date {
+                form.push((field, date.into()));
+            }
+        }
+        if let Some(body) = create.body {
+            form.push(("description", body.into()));
+        }
+        for id in self
+            .resolve_search_values(Candidate::Milestone { project }, create.milestone)
+            .await?
+        {
+            form.push(("milestoneId[]", id));
+        }
+        let mut value = self.api.create_issue(&form).await?;
+        let valid_id = value
+            .get("id")
+            .and_then(Value::as_number)
+            .is_some_and(|id| positive_integer(&id.to_string()));
+        let key = value
+            .get("issueKey")
+            .and_then(Value::as_str)
+            .filter(|key| issue_key(key) && valid_id)
+            .ok_or_else(|| {
+                let mut error = Error::new(
+                    "invalid_response",
+                    "Created issue response has invalid required fields",
+                )
+                .with_create_outcome(CreateOutcome::Created);
+                error.http_status = Some(201);
+                error
+            })?;
+        let url = self.api.issue_url(key);
+        value["url"] = Value::String(url);
+        Ok(value)
     }
     /// Fetch one descending comment page; ID boundaries are exclusive at the API.
     pub async fn comment_list(
@@ -553,4 +736,31 @@ pub(crate) fn issue_key(value: &str) -> bool {
                 .all(|c| c.is_ascii_alphanumeric() || c == b'_')
             && positive_integer(number)
     })
+}
+
+fn valid_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes
+            .iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    {
+        return false;
+    }
+    let year: u16 = value[..4].parse().expect("four digits");
+    let month: u8 = value[5..7].parse().expect("two digits");
+    let day: u8 = value[8..].parse().expect("two digits");
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year.is_multiple_of(400) || (year.is_multiple_of(4) && !year.is_multiple_of(100)) => {
+            29
+        }
+        2 => 28,
+        _ => 0,
+    };
+    year != 0 && day != 0 && day <= days
 }
