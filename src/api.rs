@@ -90,6 +90,13 @@ impl Api {
         Ok(value)
     }
     pub(crate) async fn get(&self, segments: &[&str]) -> Result<Value, Error> {
+        self.get_query(segments, &[]).await
+    }
+    pub(crate) async fn get_query(
+        &self,
+        segments: &[&str],
+        query: &[(&str, String)],
+    ) -> Result<Value, Error> {
         // Url silently drops dot segments; never let a project change the endpoint.
         if segments
             .iter()
@@ -111,6 +118,7 @@ impl Api {
             let response = self
                 .client
                 .get(url)
+                .query(query)
                 .header("Backlog-API-Key", self.key.clone())
                 .send()
                 .await

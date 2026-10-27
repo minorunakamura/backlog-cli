@@ -3,7 +3,7 @@ use backlog_cli::{
     api::Api,
     config::Config,
     safety,
-    service::{Candidate, Service},
+    service::{Candidate, IssueSearch, Selection, Service},
 };
 use clap::{Parser, Subcommand, error::ErrorKind};
 use serde_json::{Value, json};
@@ -24,6 +24,10 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    Issue {
+        #[command(subcommand)]
+        command: Issue,
+    },
     IssueType {
         #[command(subcommand)]
         command: IssueType,
@@ -41,6 +45,39 @@ enum Command {
         command: Project,
     },
 }
+#[derive(Subcommand)]
+enum Issue {
+    List(ListArgs),
+    Mine(SearchArgs),
+}
+#[derive(clap::Args)]
+struct ListArgs {
+    #[command(flatten)]
+    search: SearchArgs,
+    #[arg(long, short = 'a', conflicts_with = "assignee_id")]
+    assignee: Vec<String>,
+    #[arg(long, conflicts_with = "assignee")]
+    assignee_id: Vec<String>,
+}
+#[derive(clap::Args)]
+struct SearchArgs {
+    keyword: Option<String>,
+    #[arg(long, short = 'p')]
+    project: Option<String>,
+    #[arg(long, short = 's', conflicts_with = "status_id")]
+    status: Vec<String>,
+    #[arg(long, conflicts_with = "status")]
+    status_id: Vec<String>,
+    #[arg(long, short = 'm', conflicts_with = "milestone_id")]
+    milestone: Vec<String>,
+    #[arg(long, conflicts_with = "milestone")]
+    milestone_id: Vec<String>,
+    #[arg(long, default_value = "20")]
+    limit: u8,
+    #[arg(long, default_value = "0")]
+    offset: String,
+}
+
 #[derive(Subcommand)]
 enum Project {
     List,
@@ -60,6 +97,14 @@ enum IssueType {
         #[arg(long, short = 'p')]
         project: Option<String>,
     },
+}
+
+fn selections<'a>(names: &'a [String], ids: &'a [String]) -> Vec<Selection<'a>> {
+    names
+        .iter()
+        .map(|name| Selection::Name(name))
+        .chain(ids.iter().map(|id| Selection::Id(id)))
+        .collect()
 }
 
 fn write_stdout(value: &str) -> Result<(), Error> {
@@ -89,7 +134,60 @@ fn report(mut error: Error, json_mode: bool, secrets: &[&str]) -> ExitCode {
     ExitCode::from(code)
 }
 async fn run(args: &Args, config: &Config) -> Result<(), Error> {
+    if let Command::Issue { command } = &args.command {
+        let (search, assignee, mine) = match command {
+            Issue::List(list) => (
+                &list.search,
+                selections(&list.assignee, &list.assignee_id),
+                false,
+            ),
+            Issue::Mine(search) => (search, vec![], true),
+        };
+        let value = Service::new(config)?
+            .search(
+                &config.settings,
+                IssueSearch {
+                    project: search.project.as_deref(),
+                    keyword: search.keyword.as_deref(),
+                    status: selections(&search.status, &search.status_id),
+                    assignee,
+                    mine,
+                    milestone: selections(&search.milestone, &search.milestone_id),
+                    limit: search.limit,
+                    offset: &search.offset,
+                },
+            )
+            .await?;
+        let secrets = &[config.api_key.as_str()];
+        let output = if args.json {
+            let safe = safety::json(&value, secrets).map_err(|mut error| {
+                error.http_status = Some(200);
+                error
+            })?;
+            format!("{safe}\n")
+        } else {
+            let mut output = String::from("ID\tKEY\tTITLE\tSTATUS\n");
+            for item in value["items"].as_array().expect("validated items") {
+                output.push_str(&format!(
+                    "{}\t{}\t{}\t{}\n",
+                    safety::text(&item["id"].to_string(), secrets),
+                    safety::text(item["issueKey"].as_str().expect("validated key"), secrets),
+                    safety::text(item["summary"].as_str().expect("validated title"), secrets),
+                    safety::text(
+                        item["status"]["name"].as_str().expect("validated status"),
+                        secrets
+                    )
+                ));
+            }
+            output
+        };
+        return write_stdout(&output).map_err(|mut error| {
+            error.http_status = Some(200);
+            error
+        });
+    }
     let (items, project_columns) = match &args.command {
+        Command::Issue { .. } => unreachable!("handled search"),
         Command::IssueType {
             command: IssueType::List { project },
         } => {

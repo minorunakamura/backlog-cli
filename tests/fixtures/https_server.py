@@ -20,6 +20,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with (root / "requests").open("a") as output:
             output.write(json.dumps({"method": self.command, "path": self.path, "headers": dict(self.headers)}) + "\n")
         response = json.loads((root / "response.json").read_text())
+        if "routes" in response:
+            response = response["routes"].get(self.path.split("?", 1)[0], {"status": 404})
         if response.get("disconnect"):
             self.connection.close()
             return

@@ -1,7 +1,8 @@
 # backlog-cli
 
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
-現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` を利用できます。
+現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
+`issue list` / `issue mine` を利用できます。
 その他のCLI操作とTUI画面は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -41,7 +42,8 @@ editorは文字列配列で、未指定なら `["vim"]`。空配列・空program
 今回のCLIではeditorを起動せず、argvとprogramのfile/実行権限だけを検証します。
 
 cwd直下の `.backlog/settings.json` は省略可能です。親ディレクトリを探索せず、profileも変えません。
-`project` は `issue-type list` の既定値です。その他は後続の課題操作用で、
+`project` は `issue-type list` と通常の `issue list/mine` の既定値です。
+`issue.list.status` は通常検索の状態OR条件です。createの既定値は検索へ流用しません。
 `project list` / `priority list` / `resolution list` の取得対象には適用しません。
 
 ```json
@@ -93,10 +95,49 @@ JSON成功はstdoutへ改行終端の1文書 `{"items":[...]}`。未知fieldと�
 選択profileのAPI keyは値・未知key・配列・数値も伏字化し、key衝突は出力エラーとします。
 非TTY/NO_COLOR時を含め、現CLIは色装飾を出しません。
 
-CLIの通信は必要な一覧GETだけです（projects、projects/:projectIdOrKey/issueTypes、priorities、resolutions）。
+CLIの通信は操作に必要なGETだけです。検索ではcountとlist、必要なproject解決・候補・self取得を行い、
+space取得・所属確認・成功確認の追加GETはしません。
 API keyは `Backlog-API-Key` headerに送ります。
 redirect・自動retryは禁止、body読取を含め1 requestは30秒でtimeoutします。
 raw responseやURL/headerのdebug dumpは出しません。
+
+## 課題検索
+
+```sh
+bl-cli issue list "ログイン" -p MYAPP -s 完了
+bl-cli issue list -p MYAPP -s 未対応 -s 処理中 -a self -m v1.0
+bl-cli issue list -p 123 --status-id 1 --status-id 2 --assignee-id 456 --milestone-id 789 --json
+bl-cli issue list -p MYAPP --status all --limit 20 --offset 20
+bl-cli issue list "ログイン" -p all --json
+bl-cli issue mine -p all --profile work --json
+```
+
+通常検索は明示 `--project/-p` をcwdのprojectより優先し、どちらもなければ入力エラーです。
+projectキーはproject APIでIDへ解決し、数値IDは直接 `projectId[]` へ送ります。
+位置引数keyword、`--status/-s`、`--assignee/-a`、`--milestone/-m` は項目間AND、
+反復した同じ項目内はORです。同一値は重複送信しません。名前は完全一致で、不在・複数一致は入力エラー。
+名前flagと対応する `--status-id` / `--assignee-id` / `--milestone-id` は排他です。
+IDは任意精度の正整数で、直接IDでは候補APIを呼びません。数値の名前も名前として照合します。
+
+明示statusはcwdの検索statusを置き換え、`--status all` は既定の状態条件を解除します。
+`all` と他の状態指定は混在できません。`--assignee self` は選択profileの認証ユーザーです。
+`issue mine` は同じ検索の担当者self固定版で、担当者flagは一切受け付けません。
+
+`--project all` は全参加project横断です。空白のみでないkeywordまたはselfが必須で、
+ローカル検索既定値を一切適用しません。明示status（`all`も含む）・milestone・self以外の担当者は
+ID flagも含め拒否します。project一覧や所属確認のための追加通信はしません。
+
+limitは既定20・1〜100、offsetは既定0・0以上。`sort=updated` / `order=desc` 固定で、
+同じ検索条件のcountと指定した1ページのlistが両方成功した場合だけ出力します。全件自動取得はしません。
+固定表示は `ID` / `KEY` / `TITLE` / `STATUS` のTAB区切り。空一覧も見出しだけを出す成功です。
+JSONは元の課題配列と次のページ情報だけを返します（`hasMore`は付けません）。
+
+```json
+{"items":[],"pagination":{"offset":0,"limit":20,"count":0,"total":43}}
+```
+
+countは実取得数、totalはcount APIの値で、両API間の更新による不一致を補正しません。
+count/listいずれの失敗も空一覧にせず、成功stdoutを出しません。
 
 ## 共通libraryの候補取得・名前解決
 
@@ -112,7 +153,12 @@ space全体の `Priority` / `Resolution` です。milestoneはversions APIを使
 `Assignee` の `Selection::Name("self")` だけは選択profileのmyselfを使い、projectユーザー一覧は取得しません。
 候補やmyselfは呼出し時だけ取得し、永続/メモリcacheは持ちません。API失敗を空候補やinputエラーに置き換えません。
 返却データは表示用に変更せず、表示側で共通 `safety::json/text` に選択profileのkeyを渡して安全化します。
-この公開入口は後続の課題操作でも再利用できますが、今回それらのCLIを追加したものではありません。
+`search(&Settings, IssueSearch)` は通常・横断・mineの共通入口で、CLIと同じ入力検証・既定値・
+名前解決・重複除去・count/listを適用し、上記の課題検索JSONと同じ構造の `Value` を返します。
+`IssueSearch::default()` は未指定project/keyword/各条件、mine=false、limit=20、offset="0"。
+条件は `Vec<Selection>`（名前とIDは項目ごとに排他）、statusの空Vecは設定を使い、
+`Selection::Name("all")` は設定の状態条件を解除します。mine=trueはassignee入力と排他です。
+offsetは任意精度を保つ10進文字列で受け取り、返却値は数値です。返却データは安全表示前の原文です。
 
 開発環境・ローカルHTTPS試験・品質確認は [CONTRIBUTING.md](CONTRIBUTING.md)、
 実装方針は [承認済みPlan](docs/plans/backlog-cli-initial.md) を参照してください。

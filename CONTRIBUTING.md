@@ -17,7 +17,8 @@ cargo audit --version
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
-共通libraryの候補/名前解決を実装しています。課題検索・書込み・TUIの機能は後続Work Itemの範囲です。
+`issue list/mine` と共通libraryの候補/名前解決/検索を実装しています。
+書込み・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -58,6 +59,10 @@ PTYでも入力を与えず完了し、NO_COLORと端末制御/secret保護を�
 空一覧と不正応答、global/profile、不要GETなし、secret保護を実CLIで確認します。
 `tests/service.rs` は公開 `Service::candidates/resolve/myself` から、全候補のpath/header、
 完全一致/曖昧さ/数値名、巨大ID、直接IDと不正ID、resolution 0、self、API失敗伝播、cacheなしを確認します。
+`tests/issue_search.rs` は実CLI/HTTP境界で通常・mine・複数project横断、既定値/解除、
+OR/AND・名前/ID排他・重複除去・巨大ID、count/list同条件と1ページのみ、空ページ/total差、
+失敗/不正応答、JSON原文と安全表示、TTYでの非対話を確認します。
+`tests/service.rs` の公開 `Service::search` 試験では既定値適用・原文/巨大total保持と入力検証も確認します。
 `tests/common/mod.rs` は既存CLI harnessの共有部分です。library試験も個別の子テストprocessで実行し、
 そのprocessだけにTLS trustを渡すため、並列試験で環境変数を書き換えません。
 `tests/safety.rs` は共通libraryの公開安全表示入口で、原文保持・Unicode・scalar/keyの伏字と
@@ -80,6 +85,7 @@ cargo test --locked --test project_list
 cargo test --locked --test safety
 cargo test --locked --test candidate_list
 cargo test --locked --test service
+cargo test --locked --test issue_search
 # 30秒のbody timeoutだけを再確認
 cargo test --locked --test project_list body_reading_is_inside_the_thirty_second_request_timeout -- --exact
 ```
@@ -130,6 +136,23 @@ fixtureのstdoutの最初の行がport、`requests` がHTTP method/path/header�
 記録は3 GETだけで、pathは `/api/v2/projects/a%2Fb%25%3F%23/issueTypes`、
 `/api/v2/priorities`、`/api/v2/resolutions`。myself/project/space取得は発生しません。
 `response.json` のbodyをAPI配列のJSON文字列に置き換えれば非空表示も再現できます。
+検索の成功・失敗を直接確認するには、同じsubshellの `cat "$root/requests"` の前へ次を追加できます。
+
+```sh
+  cat > "$root/response.json" <<'JSON'
+{"routes":{"/api/v2/issues/count":{"body":"{\"count\":43}"},"/api/v2/issues":{"body":"[{\"id\":1,\"issueKey\":\"P-1\",\"summary\":\"修正\",\"status\":{\"name\":\"未対応\"}}]"},"/api/v2/users/myself":{"body":"{\"id\":7}"}}}
+JSON
+  run_cli issue list --project 123 --limit 2 --offset 8 --json
+  run_cli issue mine --project all --json
+  # count失敗: 終了1、stdout空、stderrにpermission JSON。listは取得しない。
+  printf '%s\n' '{"routes":{"/api/v2/issues/count":{"status":403}}}' > "$root/response.json"
+  run_cli issue list --project 123 --json
+```
+
+成功時はそれぞれ1件のitemsと `pagination`（count=1、total=43）を返します。
+`requests` のcount/list両方に同じfilterとsort/orderがあり、listだけcount/offsetを持ちます。
+fixtureは `routes` があればqueryを除いたpathでdispatchし、不明pathは404です。
+`routes` がなければ従来どおり全pathに同じ応答を返します。各routeは通常のresponseと同じ形式です。
 生成物はテスト専用で、実サービスに使わないでください。
 `response.json` の `delay` はheaders送信後の秒数、`location` はredirect先、
 `disconnect:true` は応答前の切断を制御します。実API keyは使わないでください。
