@@ -22,7 +22,7 @@ jobs:
           python3 -c 'import http.server, ssl, pty; print(ssl.OPENSSL_VERSION)'
           openssl version
       - name: Test
-        run: cargo test --locked --all-targets
+        run: cargo test --locked --all-targets -- --nocapture
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Install cargo-audit

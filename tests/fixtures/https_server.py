@@ -4,12 +4,21 @@ import json
 import os
 import pathlib
 import shutil
+import socketserver
 import ssl
 import subprocess
 import sys
 import time
 
 root = pathlib.Path(sys.argv[1])
+
+
+class LoopbackServer(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # The fixture has a fixed local name; HTTPServer's reverse DNS is unnecessary.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "localhost"
+        self.server_port = self.server_address[1]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -60,6 +69,7 @@ extendedKeyUsage = serverAuth
 """)
     certificate = tls / "localhost-cert.pem"
     key = tls / "localhost-key.pem"
+    certificate_started = time.monotonic()
     result = subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
          "-sha256", "-days", "1", "-config", str(config), "-extensions", "server",
@@ -68,10 +78,21 @@ extendedKeyUsage = serverAuth
     )
     if result.returncode:
         raise RuntimeError(f"OpenSSL certificate generation failed: {result.stderr}")
+    tls_started = time.monotonic()
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certificate, key)
-    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+    bind_started = time.monotonic()
+    with LoopbackServer(("127.0.0.1", 0), Handler) as server:
+        wrap_started = time.monotonic()
         server.socket = context.wrap_socket(server.socket, server_side=True)
+        ready = time.monotonic()
+        print(
+            f"[fixture timing] certificate={tls_started - certificate_started:.3f}s "
+            f"tls-context={bind_started - tls_started:.3f}s "
+            f"server-init={wrap_started - bind_started:.3f}s "
+            f"tls-wrap={ready - wrap_started:.3f}s",
+            file=sys.stderr, flush=True,
+        )
         print(server.server_port, flush=True)
         server.serve_forever()
 finally:

@@ -67,6 +67,9 @@ OR/AND・名前/ID排他・重複除去・巨大ID、count/list同条件と1ペ�
 そのprocessだけにTLS trustを渡すため、並列試験で環境変数を書き換えません。
 `tests/safety.rs` は共通libraryの公開安全表示入口で、原文保持・Unicode・scalar/keyの伏字と
 key衝突を検証します。内部private関数の固定テストはありません。
+`tests/https_fixture.rs` はfixtureの逆引きを失敗させた別processから起動し、
+証明書を検証したHTTPSリクエストが成功することを確認します。固定loopback serverの
+初期化では不要な逆引きをせず、CIのresolver待ちに依存させません。
 
 ### ローカルHTTPS harness
 
@@ -86,6 +89,7 @@ cargo test --locked --test safety
 cargo test --locked --test candidate_list
 cargo test --locked --test service
 cargo test --locked --test issue_search
+cargo test --locked --test https_fixture
 # 30秒のbody timeoutだけを再確認
 cargo test --locked --test project_list body_reading_is_inside_the_thirty_second_request_timeout -- --exact
 ```
@@ -101,6 +105,11 @@ trustなしで接続が失敗する試験もあります。
 Rust harnessが一時rootを所有し、終了時だけでなくserver起動/生成失敗時も削除します。
 Python側も生成/起動失敗時に `tls/` を削除します。serverをkillする通常の終了では
 Rust側がserverの停止・回収後に鍵・設定・応答・受信記録をまとめて削除します。
+
+fixtureは証明書生成・TLS context準備・server初期化・TLS wrapの秒数をstderrへ出します。
+Rust harnessもPython起動からport受信まで、server停止・回収、一時directory削除を個別に計測します。
+CIのTestは `cargo test --locked --all-targets -- --nocapture` で成功時の計測も表示します。
+ローカルも同じコマンドで確認できます。ログは区間名と秒数だけで、port用stdoutやCLI出力へは混ぜません。
 
 直接release CLIで再現する場合も、親shellが一時rootの削除を担当します。
 上記release build後、リポジトリ直下から実行してください:
