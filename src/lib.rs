@@ -1,5 +1,6 @@
 //! Shared configuration, API access and safe display for the Backlog CLI and TUI.
 pub mod api;
+pub mod body;
 pub mod config;
 pub mod safety;
 pub mod service;

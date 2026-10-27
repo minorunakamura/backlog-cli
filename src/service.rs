@@ -55,6 +55,66 @@ impl Service {
             api: Api::new(config)?,
         })
     }
+    /// Preserve the API object and add a URL from the configured origin and response key.
+    pub async fn issue_view(&self, issue_id_or_key: &str) -> Result<Value, Error> {
+        if !positive_integer(issue_id_or_key) && !issue_key(issue_id_or_key) {
+            return Err(Error::new(
+                "input",
+                "Issue must be a positive ID or issue key",
+            ));
+        }
+        let mut value = self.api.get(&["issues", issue_id_or_key]).await?;
+        let named = |v: &Value| v.get("name").is_some_and(Value::is_string);
+        let valid = ["id", "projectId"].iter().all(|field| {
+            value
+                .get(field)
+                .and_then(Value::as_number)
+                .is_some_and(|id| positive_integer(&id.to_string()))
+        }) && value
+            .get("issueKey")
+            .and_then(Value::as_str)
+            .is_some_and(issue_key)
+            && ["summary", "created", "updated"]
+                .iter()
+                .all(|field| value.get(field).is_some_and(Value::is_string))
+            && ["description", "startDate", "dueDate"].iter().all(|field| {
+                value
+                    .get(field)
+                    .is_some_and(|v| v.is_null() || v.is_string())
+            })
+            && ["issueType", "priority", "status"]
+                .iter()
+                .all(|field| value.get(field).is_some_and(named))
+            && ["assignee", "resolution"]
+                .iter()
+                .all(|field| value.get(field).is_some_and(|v| v.is_null() || named(v)))
+            && value
+                .get("milestone")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().all(named));
+        if !valid {
+            return Err(invalid_response(
+                "Issue response has invalid required fields",
+            ));
+        }
+        let url = self
+            .api
+            .issue_url(value["issueKey"].as_str().expect("validated issue key"));
+        value["url"] = Value::String(url);
+        Ok(value)
+    }
+    /// Look up the target issue's project rule only when preparing body display.
+    pub async fn project_text_formatting_rule(&self, project_id: &Number) -> Result<String, Error> {
+        if !positive_integer(&project_id.to_string()) {
+            return Err(Error::new("input", "Project ID must be a positive integer"));
+        }
+        let project = self.api.get(&["projects", &project_id.to_string()]).await?;
+        project
+            .get("textFormattingRule")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| invalid_response("Project response has invalid textFormattingRule"))
+    }
     /// Return exactly one page, preserving the original items and arbitrary-precision total.
     pub async fn search(
         &self,
@@ -145,7 +205,7 @@ impl Service {
                     })
                     .cloned()
                     .ok_or_else(|| {
-                        invalid_search_response("Project response has invalid required fields")
+                        invalid_response("Project response has invalid required fields")
                     })?
             };
             query.push(("projectId[]", id.to_string()));
@@ -187,7 +247,7 @@ impl Service {
                 n.as_number()
                     .is_some_and(|n| n.to_string().bytes().all(|c| c.is_ascii_digit()))
             })
-            .ok_or_else(|| invalid_search_response("Count response has invalid required fields"))?;
+            .ok_or_else(|| invalid_response("Count response has invalid required fields"))?;
         query.extend([
             ("count", search.limit.to_string()),
             ("offset", offset.to_string()),
@@ -208,7 +268,7 @@ impl Service {
                             .is_some_and(Value::is_string)
                 })
             })
-            .ok_or_else(|| invalid_search_response("Issues response has invalid required fields"))?
+            .ok_or_else(|| invalid_response("Issues response has invalid required fields"))?
             .len();
         Ok(
             serde_json::json!({"items": items, "pagination": {"offset": offset, "limit": search.limit, "count": length, "total": total}}),
@@ -354,8 +414,24 @@ fn resolve_name(items: &Value, name: &str) -> Result<Number, Error> {
     Ok(matched["id"].as_number().expect("validated ID").clone())
 }
 
-fn invalid_search_response(message: &str) -> Error {
+fn invalid_response(message: &str) -> Error {
     let mut error = Error::new("invalid_response", message);
     error.http_status = Some(200);
     error
+}
+
+fn positive_integer(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|c| c.is_ascii_digit())
+        && value.bytes().any(|c| c != b'0')
+}
+
+fn issue_key(value: &str) -> bool {
+    value.rsplit_once('-').is_some_and(|(project, number)| {
+        !project.is_empty()
+            && project
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            && positive_integer(number)
+    })
 }

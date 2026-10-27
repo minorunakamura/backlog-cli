@@ -89,6 +89,14 @@ impl Api {
         }
         Ok(value)
     }
+    pub(crate) fn issue_url(&self, issue_key: &str) -> String {
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .expect("validated HTTPS origin")
+            .clear()
+            .extend(["view", issue_key]);
+        url.into()
+    }
     pub(crate) async fn get(&self, segments: &[&str]) -> Result<Value, Error> {
         self.get_query(segments, &[]).await
     }

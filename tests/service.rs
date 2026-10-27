@@ -466,3 +466,94 @@ fn shared_search_applies_defaults_preserves_raw_json_and_validates_inputs() {
         assert_eq!(requests().len(), 4);
     });
 }
+
+#[test]
+fn issue_view_preserves_raw_object_and_project_rule_is_separate_and_validated() {
+    let original = json!({
+        "id": "123456789012345678901234567890".parse::<serde_json::Number>().unwrap(),
+        "projectId": "987654321098765432109876543210".parse::<serde_json::Number>().unwrap(),
+        "issueKey":"P-2", "summary":"test-secret\u{1b}[31m", "description":" original\n\t<&> test-secret\u{1b}",
+        "issueType":{"name":"Task"}, "priority":{"name":"中"}, "status":{"name":"完了"},
+        "assignee":null, "resolution":null, "startDate":null, "dueDate":null,
+        "milestone":[], "created":"created", "updated":"updated", "test-secret-field":[true,null]
+    });
+    if library_process(
+        "issue_view_preserves_raw_object_and_project_rule_is_separate_and_validated",
+        json!({"body":original.to_string()}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        let mut expected = original;
+        expected["url"] = json!(format!(
+            "{}/view/P-2",
+            std::env::var("SERVICE_TEST").unwrap()
+        ));
+        let value = s.issue_view("0007").await.unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(requests().len(), 1);
+        assert_eq!(requests()[0]["path"], "/api/v2/issues/0007");
+        let safe = backlog_cli::safety::json(&value, &["test-secret"]).unwrap();
+        assert!(!safe.to_string().contains("test-secret"));
+        assert_eq!(value, expected);
+        let id = value["projectId"].as_number().unwrap();
+        for rule in ["markdown", "backlog", "unknown", ""] {
+            response(json!({"body":json!({"textFormattingRule":rule}).to_string()}));
+            assert_eq!(s.project_text_formatting_rule(id).await.unwrap(), rule);
+        }
+        for body in [
+            "{}",
+            "[]",
+            "null",
+            "{\"textFormattingRule\":null}",
+            "{\"textFormattingRule\":3}",
+            "invalid",
+        ] {
+            response(json!({"body":body}));
+            let error = s.project_text_formatting_rule(id).await.unwrap_err();
+            assert_eq!(
+                (error.kind, error.http_status, error.exit_code()),
+                ("invalid_response", Some(200), 1)
+            );
+        }
+        for (status, kind) in [
+            (401, "auth"),
+            (403, "permission"),
+            (404, "not_found"),
+            (429, "rate_limit"),
+            (500, "api"),
+        ] {
+            response(json!({"status":status}));
+            let error = s.project_text_formatting_rule(id).await.unwrap_err();
+            assert_eq!(
+                (error.kind, error.http_status, error.exit_code()),
+                (kind, Some(status), 1)
+            );
+        }
+        response(json!({"disconnect":true}));
+        let error = s.project_text_formatting_rule(id).await.unwrap_err();
+        assert_eq!(
+            (error.kind, error.http_status, error.exit_code()),
+            ("network", None, 1)
+        );
+        let all = requests();
+        assert_eq!(all.len(), 17);
+        assert!(
+            all[1..]
+                .iter()
+                .all(|r| r["path"] == "/api/v2/projects/987654321098765432109876543210")
+        );
+        for invalid in ["0", "-1", "1.5"] {
+            let error = s
+                .project_text_formatting_rule(&invalid.parse().unwrap())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                (error.kind, error.http_status, error.exit_code()),
+                ("input", None, 2)
+            );
+        }
+        assert_eq!(requests().len(), 17);
+    });
+}

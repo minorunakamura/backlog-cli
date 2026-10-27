@@ -17,7 +17,7 @@ cargo audit --version
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
-`issue list/mine` と共通libraryの候補/名前解決/検索を実装しています。
+`issue list/mine/view` と共通libraryの候補/名前解決/検索/詳細取得・安全な原文本文表示を実装しています。
 書込み・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
@@ -68,7 +68,13 @@ PTYでも入力を与えず完了し、NO_COLORと端末制御/secret保護を�
 `tests/issue_search.rs` は実CLI/HTTP境界で通常・mine・複数project横断、既定値/解除、
 OR/AND・名前/ID排他・重複除去・巨大ID、count/list同条件と1ページのみ、空ページ/total差、
 失敗/不正応答、JSON原文と安全表示、TTYでの非対話を確認します。
+`tests/issue_view.rs` は実CLI/HTTP境界で全詳細項目・nullable項目・複数milestone・原文fallback、
+未知field/巨大整数/通常文字列・secret/key衝突・危険制御、ID/keyと構築URL、JSONのproject GETなし、
+不正応答/API失敗・出力失敗・help/global flags・TTYでの非対話を確認します。
+`tests/body.rs` は公開本文入口の原文非改変・既知/未知記法fallback・安全表示を確認します。
 `tests/service.rs` の公開 `Service::search` 試験では既定値適用・原文/巨大total保持と入力検証も確認します。
+同fileの `Service::issue_view/project_text_formatting_rule` 試験では表示前の原文保持・URL付加、
+記法確認の独立性・巨大project ID・不正記法応答/API失敗のkind/httpStatus/exitを確認します。
 `tests/common/mod.rs` は既存CLI harnessの共有部分です。library試験も個別の子テストprocessで実行し、
 そのprocessだけにTLS trustを渡すため、並列試験で環境変数を書き換えません。
 `tests/safety.rs` は共通libraryの公開安全表示入口で、原文保持・Unicode・scalar/keyの伏字と
@@ -95,6 +101,8 @@ cargo test --locked --test safety
 cargo test --locked --test candidate_list
 cargo test --locked --test service
 cargo test --locked --test issue_search
+cargo test --locked --test issue_view
+cargo test --locked --test body
 cargo test --locked --test https_fixture
 # 30秒のbody timeoutだけを再確認
 cargo test --locked --test project_list body_reading_is_inside_the_thirty_second_request_timeout -- --exact
