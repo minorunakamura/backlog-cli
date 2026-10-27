@@ -50,7 +50,29 @@ enum Command {
 enum Issue {
     List(ListArgs),
     Mine(SearchArgs),
-    View { issue_id_or_key: String },
+    View {
+        issue_id_or_key: String,
+    },
+    Comment {
+        #[command(subcommand)]
+        command: Comment,
+    },
+}
+#[derive(Subcommand)]
+enum Comment {
+    View {
+        issue_id_or_key: String,
+        comment_id: String,
+    },
+    List {
+        issue_id_or_key: String,
+        #[arg(long, default_value = "20")]
+        limit: u8,
+        #[arg(long)]
+        min_id: Option<String>,
+        #[arg(long)]
+        max_id: Option<String>,
+    },
 }
 #[derive(clap::Args)]
 struct ListArgs {
@@ -109,6 +131,78 @@ fn selections<'a>(names: &'a [String], ids: &'a [String]) -> Vec<Selection<'a>> 
         .collect()
 }
 
+fn comment_display(item: &Value, rule: &str, config: &Config) -> Result<String, Error> {
+    let secrets = &[config.api_key.as_str()];
+    let mut output = format!(
+        "ID\t{}\nTYPE\t{}\n",
+        safety::text(&item["id"].to_string(), secrets),
+        if item["content"].is_null() {
+            "CHANGE HISTORY"
+        } else {
+            "COMMENT"
+        }
+    );
+    for (label, value) in [
+        ("AUTHOR", &item["createdUser"]["name"]),
+        ("CREATED", &item["created"]),
+        ("UPDATED", &item["updated"]),
+    ] {
+        output.push_str(&format!(
+            "{label}\t{}\n",
+            safety::text(value.as_str().expect("validated comment field"), secrets)
+        ));
+    }
+    if let Some(content) = item["content"].as_str() {
+        output.push_str("BODY\n");
+        output.push_str(&body::display_with_origin(
+            content,
+            rule,
+            &config.origin,
+            secrets,
+        ));
+        output.push('\n');
+    }
+    if let Some(changes) = item["changeLog"]
+        .as_array()
+        .filter(|changes| !changes.is_empty())
+    {
+        output.push_str("CHANGES\n");
+        for change in changes {
+            let field = change["field"].as_str().expect("validated history field");
+            let label = match field {
+                "summary" => "TITLE",
+                "description" => "BODY",
+                "issueType" => "TYPE",
+                "priority" => "PRIORITY",
+                "status" => "STATUS",
+                "assigner" | "assignee" => "ASSIGNEE",
+                "resolution" => "RESOLUTION",
+                "startDate" => "START DATE",
+                "limitDate" | "dueDate" => "DUE DATE",
+                "milestone" => "MILESTONES",
+                _ => field,
+            };
+            let mut values = Vec::new();
+            for field in ["originalValue", "newValue"] {
+                let safe = safety::json(&change[field], secrets)?;
+                values.push(
+                    safe.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| safe.to_string()),
+                );
+            }
+            output.push_str(&format!(
+                "{}\t{} -> {}\n",
+                safety::text(label, secrets),
+                values[0],
+                values[1]
+            ));
+        }
+    }
+    output.push('\n');
+    Ok(output)
+}
+
 fn write_stdout(value: &str) -> Result<(), Error> {
     io::stdout()
         .lock()
@@ -136,6 +230,80 @@ fn report(mut error: Error, json_mode: bool, secrets: &[&str]) -> ExitCode {
     ExitCode::from(code)
 }
 async fn run(args: &Args, config: &Config) -> Result<(), Error> {
+    if let Command::Issue {
+        command: Issue::Comment { command },
+    } = &args.command
+    {
+        let service = Service::new(config)?;
+        let value = match command {
+            Comment::View {
+                issue_id_or_key,
+                comment_id,
+            } => service.comment_view(issue_id_or_key, comment_id).await?,
+            Comment::List {
+                issue_id_or_key,
+                limit,
+                min_id,
+                max_id,
+            } => {
+                service
+                    .comment_list(
+                        issue_id_or_key,
+                        *limit,
+                        min_id.as_deref(),
+                        max_id.as_deref(),
+                    )
+                    .await?
+            }
+        };
+        let secrets = &[config.api_key.as_str()];
+        let output = if args.json {
+            let safe = safety::json(&value, secrets).map_err(|mut error| {
+                error.http_status = Some(200);
+                error
+            })?;
+            format!("{safe}\n")
+        } else {
+            let issue_id_or_key = match command {
+                Comment::List {
+                    issue_id_or_key, ..
+                }
+                | Comment::View {
+                    issue_id_or_key, ..
+                } => issue_id_or_key,
+            };
+            let mut output = String::new();
+            let items = match command {
+                Comment::List { .. } => value["items"]
+                    .as_array()
+                    .expect("validated comments")
+                    .as_slice(),
+                Comment::View { .. } => std::slice::from_ref(&value),
+            };
+            if items.is_empty() {
+                output.push_str("No comments\n");
+            } else {
+                let rule = if items.iter().any(|item| item["content"].is_string()) {
+                    service.issue_text_formatting_rule(issue_id_or_key).await?
+                } else {
+                    String::new()
+                };
+                for item in items {
+                    output.push_str(&comment_display(item, &rule, config).map_err(
+                        |mut error| {
+                            error.http_status = Some(200);
+                            error
+                        },
+                    )?);
+                }
+            }
+            output
+        };
+        return write_stdout(&output).map_err(|mut error| {
+            error.http_status = Some(200);
+            error
+        });
+    }
     if let Command::Issue {
         command: Issue::View { issue_id_or_key },
     } = &args.command
@@ -219,7 +387,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
                 false,
             ),
             Issue::Mine(search) => (search, vec![], true),
-            Issue::View { .. } => unreachable!("handled view"),
+            Issue::View { .. } | Issue::Comment { .. } => unreachable!("handled read"),
         };
         let value = Service::new(config)?
             .search(

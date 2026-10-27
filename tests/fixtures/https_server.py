@@ -9,6 +9,7 @@ import ssl
 import subprocess
 import sys
 import time
+import urllib.parse
 
 root = pathlib.Path(sys.argv[1])
 
@@ -31,6 +32,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         response = json.loads((root / "response.json").read_text())
         if "routes" in response:
             response = response["routes"].get(self.path.split("?", 1)[0], {"status": 404})
+        if "commentItems" in response:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            items = response["commentItems"]
+            if "minId" in query:
+                items = [item for item in items if item["id"] > int(query["minId"][0])]
+            if "maxId" in query:
+                items = [item for item in items if item["id"] < int(query["maxId"][0])]
+            items = sorted(items, key=lambda item: item["id"], reverse=query.get("order") == ["desc"])
+            response["body"] = json.dumps(items[:int(query.get("count", [20])[0])])
         if response.get("disconnect"):
             self.connection.close()
             return

@@ -557,3 +557,88 @@ fn issue_view_preserves_raw_object_and_project_rule_is_separate_and_validated() 
         assert_eq!(requests().len(), 17);
     });
 }
+
+#[test]
+fn comment_reads_preserve_raw_json_and_validate_inputs_before_requests() {
+    let original: serde_json::Value = serde_json::from_str(r##"{"id":123456789012345678901234567890,"content":"# 原文 test-secret\u001b\n\t","createdUser":{"name":"投稿者"},"created":"created","updated":"updated","changeLog":[{"field":"future","originalValue":{"test-secret":[null,123456789012345678901234567890]},"newValue":"test-secret\u001b"}],"unknown":{"large":123456789012345678901234567890}}"##).unwrap();
+    if library_process(
+        "comment_reads_preserve_raw_json_and_validate_inputs_before_requests",
+        json!({"routes":{
+            "/api/v2/issues/P-1/comments":{"body":json!([original.clone()]).to_string()},
+            "/api/v2/issues/P-1/comments/0007":{"body":original.to_string()}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        for issue in ["", "0", "P-0", "../P-1"] {
+            assert_eq!(s.comment_list(issue,20,None,None).await.unwrap_err().kind,"input");
+            assert_eq!(s.comment_view(issue,"7").await.unwrap_err().kind,"input");
+        }
+        for id in ["", "0", "-1", "1e2"] {
+            assert_eq!(s.comment_list("P-1",20,Some(id),None).await.unwrap_err().kind,"input");
+            assert_eq!(s.comment_list("P-1",20,None,Some(id)).await.unwrap_err().kind,"input");
+            assert_eq!(s.comment_view("P-1",id).await.unwrap_err().kind,"input");
+        }
+        for limit in [0,101] { assert_eq!(s.comment_list("P-1",limit,None,None).await.unwrap_err().kind,"input"); }
+        for (min,max) in [("0002","2"),("10","9"),("123456789012345678901234567891","123456789012345678901234567890")] {
+            assert_eq!(s.comment_list("P-1",20,Some(min),Some(max)).await.unwrap_err().kind,"input");
+        }
+        assert!(requests().is_empty());
+        assert_eq!(s.comment_view("P-1","0007").await.unwrap(),original);
+        assert_eq!(s.comment_list("P-1",20,Some("1"),Some("999999999999999999999999999999")).await.unwrap(),json!({"items":[original]}));
+        assert_eq!(requests().len(),2);
+        assert_eq!(requests()[1]["path"],"/api/v2/issues/P-1/comments?count=20&order=desc&minId=1&maxId=999999999999999999999999999999");
+    });
+}
+
+#[test]
+fn comment_formatting_uses_only_target_issue_project_and_keeps_api_failures() {
+    if library_process(
+        "comment_formatting_uses_only_target_issue_project_and_keeps_api_failures",
+        json!({"routes":{
+            "/api/v2/issues/P-1":{"body":"{\"projectId\":987654321098765432109876543210,\"unknown\":true}"},
+            "/api/v2/projects/987654321098765432109876543210":{"body":"{\"textFormattingRule\":\"future-rule\"}"}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        assert_eq!(
+            s.issue_text_formatting_rule("P-1").await.unwrap(),
+            "future-rule"
+        );
+        assert_eq!(requests().len(), 2);
+        assert_eq!(requests()[0]["path"], "/api/v2/issues/P-1");
+        assert_eq!(
+            requests()[1]["path"],
+            "/api/v2/projects/987654321098765432109876543210"
+        );
+        let response_path =
+            std::path::Path::new(&std::env::var("SERVICE_ROOT").unwrap()).join("response.json");
+        for bad in [
+            json!({}),
+            json!({"projectId":null}),
+            json!({"projectId":0}),
+            json!({"projectId":1.5}),
+            json!({"projectId":"1"}),
+        ] {
+            std::fs::write(&response_path, json!({"body":bad.to_string()}).to_string()).unwrap();
+            let error = s.issue_text_formatting_rule("P-1").await.unwrap_err();
+            assert_eq!(error.kind, "invalid_response");
+            assert_eq!(error.http_status, Some(200));
+        }
+        std::fs::write(&response_path, json!({"status":403}).to_string()).unwrap();
+        for error in [
+            s.comment_list("P-1", 20, None, None).await.unwrap_err(),
+            s.comment_view("P-1", "7").await.unwrap_err(),
+            s.issue_text_formatting_rule("P-1").await.unwrap_err(),
+        ] {
+            assert_eq!(error.kind, "permission");
+            assert_eq!(error.http_status, Some(403));
+            assert_eq!(error.exit_code(), 1);
+        }
+    });
+}

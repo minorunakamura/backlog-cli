@@ -17,7 +17,7 @@ cargo audit --version
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
-`issue list/mine/view` と共通libraryの候補/名前解決/検索/詳細取得・Markdown/Backlog本文の安全表示を実装しています。
+`issue list/mine/view` / `issue comment list/view` と共通libraryの候補/名前解決/検索/詳細・コメント取得・Markdown/Backlog本文の安全表示を実装しています。
 書込み・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
@@ -71,6 +71,13 @@ OR/AND・名前/ID排他・重複除去・巨大ID、count/list同条件と1ペ�
 `tests/issue_view.rs` は実CLI/HTTP境界で全詳細項目・nullable項目・複数milestone・Markdown/Backlog表示と原文fallback、
 未知field/巨大整数/通常文字列・secret/key衝突・危険制御、ID/keyと構築URL、JSONのproject GETなし、
 不正応答/API失敗・出力失敗・help/global flags・TTYでの非対話を確認します。
+`tests/issue_comment.rs` は実CLI/HTTPS境界でlist/view、降順1ページ・exclusive min/max・同時境界・空ページ、
+limit/ID/順序の入力検証、本文なし履歴と本文/履歴同居、既知/未知fieldの前後値、安全表示、JSON原文/大整数と
+issue/project GETなし、全件null履歴はissue/projectが403でもコメントGETだけで安全表示できること、
+文字列本文が混在すれば記法取得の失敗を隠さないこと、API/不正応答・出力失敗・help/global flags・TTY非対話を確認します。
+`tests/service.rs` の公開 `Service::comment_list/comment_view/issue_text_formatting_rule` 試験でも、
+安全表示前の本文・履歴・未知field/巨大ID保持、入力検証時の通信なし、対象課題のprojectIdだけでの記法取得、
+API失敗の伝播を確認します。
 `tests/body.rs` は公開 `body::display/display_with_origin` からMarkdown/Backlogの見出し/list/強調/引用/code/checklist/通常表、
 複合記法・通常改行/空行/TAB・code/escapeの保護、可視link/画像/参照、HTML/未知macroの内容保持、
 難しい表/未知記法の原文fallbackを確認します。Backlogの課題linkは設定origin/keyの共通検証・URL構築を使い、
@@ -108,6 +115,7 @@ cargo test --locked --test candidate_list
 cargo test --locked --test service
 cargo test --locked --test issue_search
 cargo test --locked --test issue_view
+cargo test --locked --test issue_comment
 cargo test --locked --test body
 cargo test --locked --test https_fixture
 # 30秒のbody timeoutだけを再確認
@@ -178,6 +186,10 @@ JSON
 fixtureは `routes` があればqueryを除いたpathでdispatchし、不明pathは404です。
 `routes` がなければ従来どおり全pathに同じ応答を返します。各routeは通常のresponseと同じ形式です。
 生成物はテスト専用で、実サービスに使わないでください。
+コメントpagingはrouteに `"commentItems":[コメントobject,...]` を指定して再現できます。
+fixtureはqueryの `minId` / `maxId` を正整数として比較して境界自身を除外し、IDでsortし、`count` 件へ切り詰めます。
+`tests/issue_comment.rs` はID 1〜5の同じ集合からminのみ・maxのみ・両方・空ページの実結果と送信queryを照合します。
+固定bodyを返すだけでは境界除外の検証として扱いません。
 `response.json` の `delay` はheaders送信後の秒数、`location` はredirect先、
 `disconnect:true` は応答前の切断を制御します。実API keyは使わないでください。
 

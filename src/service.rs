@@ -55,6 +55,77 @@ impl Service {
             api: Api::new(config)?,
         })
     }
+    /// Fetch one descending comment page; ID boundaries are exclusive at the API.
+    pub async fn comment_list(
+        &self,
+        issue_id_or_key: &str,
+        limit: u8,
+        min_id: Option<&str>,
+        max_id: Option<&str>,
+    ) -> Result<Value, Error> {
+        validate_issue_identifier(issue_id_or_key)?;
+        if !(1..=100).contains(&limit) {
+            return Err(Error::new("input", "Limit must be between 1 and 100"));
+        }
+        for id in [min_id, max_id].into_iter().flatten() {
+            if !positive_integer(id) {
+                return Err(Error::new(
+                    "input",
+                    "Comment boundary must be a positive integer",
+                ));
+            }
+        }
+        if let (Some(min), Some(max)) = (min_id, max_id) {
+            let min = min.trim_start_matches('0');
+            let max = max.trim_start_matches('0');
+            if (min.len(), min) >= (max.len(), max) {
+                return Err(Error::new(
+                    "input",
+                    "Comment min ID must be less than max ID",
+                ));
+            }
+        }
+        let mut query = vec![("count", limit.to_string()), ("order", "desc".into())];
+        if let Some(id) = min_id {
+            query.push(("minId", id.into()));
+        }
+        if let Some(id) = max_id {
+            query.push(("maxId", id.into()));
+        }
+        let items = self
+            .api
+            .get_query(&["issues", issue_id_or_key, "comments"], &query)
+            .await?;
+        if !items
+            .as_array()
+            .is_some_and(|items| items.iter().all(valid_comment))
+        {
+            return Err(invalid_response(
+                "Comments response has invalid required fields",
+            ));
+        }
+        Ok(serde_json::json!({"items":items}))
+    }
+    pub async fn comment_view(
+        &self,
+        issue_id_or_key: &str,
+        comment_id: &str,
+    ) -> Result<Value, Error> {
+        validate_issue_identifier(issue_id_or_key)?;
+        if !positive_integer(comment_id) {
+            return Err(Error::new("input", "Comment ID must be a positive integer"));
+        }
+        let value = self
+            .api
+            .get(&["issues", issue_id_or_key, "comments", comment_id])
+            .await?;
+        if !valid_comment(&value) {
+            return Err(invalid_response(
+                "Comment response has invalid required fields",
+            ));
+        }
+        Ok(value)
+    }
     /// Preserve the API object and add a URL from the configured origin and response key.
     pub async fn issue_view(&self, issue_id_or_key: &str) -> Result<Value, Error> {
         if !positive_integer(issue_id_or_key) && !issue_key(issue_id_or_key) {
@@ -102,6 +173,17 @@ impl Service {
             .issue_url(value["issueKey"].as_str().expect("validated issue key"));
         value["url"] = Value::String(url);
         Ok(value)
+    }
+    /// Comments have no project ID; resolve the target issue only for fixed body display.
+    pub async fn issue_text_formatting_rule(&self, issue_id_or_key: &str) -> Result<String, Error> {
+        validate_issue_identifier(issue_id_or_key)?;
+        let issue = self.api.get(&["issues", issue_id_or_key]).await?;
+        let project_id = issue
+            .get("projectId")
+            .and_then(Value::as_number)
+            .filter(|id| positive_integer(&id.to_string()))
+            .ok_or_else(|| invalid_response("Issue response has invalid projectId"))?;
+        self.project_text_formatting_rule(project_id).await
     }
     /// Look up the target issue's project rule only when preparing body display.
     pub async fn project_text_formatting_rule(&self, project_id: &Number) -> Result<String, Error> {
@@ -418,6 +500,43 @@ fn invalid_response(message: &str) -> Error {
     let mut error = Error::new("invalid_response", message);
     error.http_status = Some(200);
     error
+}
+
+fn validate_issue_identifier(value: &str) -> Result<(), Error> {
+    if !positive_integer(value) && !issue_key(value) {
+        return Err(Error::new(
+            "input",
+            "Issue must be a positive ID or issue key",
+        ));
+    }
+    Ok(())
+}
+
+fn valid_comment(value: &Value) -> bool {
+    value
+        .get("id")
+        .and_then(Value::as_number)
+        .is_some_and(|id| positive_integer(&id.to_string()))
+        && value
+            .get("content")
+            .is_some_and(|v| v.is_null() || v.is_string())
+        && value
+            .get("createdUser")
+            .and_then(|v| v.get("name"))
+            .is_some_and(Value::is_string)
+        && ["created", "updated"]
+            .iter()
+            .all(|field| value.get(field).is_some_and(Value::is_string))
+        && value.get("changeLog").is_some_and(|v| {
+            v.is_null()
+                || v.as_array().is_some_and(|items| {
+                    items.iter().all(|item| {
+                        item.get("field").is_some_and(Value::is_string)
+                            && item.get("originalValue").is_some()
+                            && item.get("newValue").is_some()
+                    })
+                })
+        })
 }
 
 fn positive_integer(value: &str) -> bool {
