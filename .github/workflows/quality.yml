@@ -17,6 +17,10 @@ jobs:
         run: rustup show
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Check HTTPS test prerequisites
+        run: |
+          python3 -c 'import http.server, ssl, pty; print(ssl.OPENSSL_VERSION)'
+          openssl version
       - name: Test
         run: cargo test --locked --all-targets
       - name: Clippy
