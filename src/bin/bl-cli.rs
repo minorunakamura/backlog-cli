@@ -4,7 +4,7 @@ use backlog_cli::{
     body,
     config::Config,
     safety,
-    service::{Candidate, IssueCreate, IssueSearch, IssueUpdate, Selection, Service},
+    service::{Candidate, CommentAdd, IssueCreate, IssueSearch, IssueUpdate, Selection, Service},
 };
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use serde_json::{Value, json};
@@ -62,6 +62,7 @@ enum Issue {
 }
 #[derive(Subcommand)]
 enum Comment {
+    Add(Box<CommentAddArgs>),
     View {
         issue_id_or_key: String,
         comment_id: String,
@@ -75,6 +76,30 @@ enum Comment {
         #[arg(long)]
         max_id: Option<String>,
     },
+}
+#[derive(clap::Args)]
+struct CommentAddArgs {
+    issue_id_or_key: String,
+    #[arg(long, short = 'b', conflicts_with = "body_file")]
+    body: Option<String>,
+    #[arg(long, conflicts_with = "body")]
+    body_file: Option<String>,
+    #[arg(long, short = 's', conflicts_with = "status_id")]
+    status: Option<String>,
+    #[arg(long, conflicts_with = "status")]
+    status_id: Option<String>,
+    #[arg(long, short = 'a', conflicts_with_all = ["assignee_id", "clear_assignee"])]
+    assignee: Option<String>,
+    #[arg(long, conflicts_with_all = ["assignee", "clear_assignee"])]
+    assignee_id: Option<String>,
+    #[arg(long, conflicts_with_all = ["assignee", "assignee_id"])]
+    clear_assignee: bool,
+    #[arg(long, conflicts_with_all = ["resolution_id", "clear_resolution"])]
+    resolution: Option<String>,
+    #[arg(long, conflicts_with_all = ["resolution", "clear_resolution"])]
+    resolution_id: Option<String>,
+    #[arg(long, conflicts_with_all = ["resolution", "resolution_id"])]
+    clear_resolution: bool,
 }
 #[derive(clap::Args)]
 struct CreateArgs {
@@ -480,11 +505,74 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
         });
     }
     if let Command::Issue {
+        command: Issue::Comment {
+            command: Comment::Add(add),
+        },
+    } = &args.command
+    {
+        let body = read_body(&add.body, &add.body_file).await?;
+        let value = Service::new(config)?
+            .comment_add(
+                &add.issue_id_or_key,
+                CommentAdd {
+                    body: body.as_deref(),
+                    status: add
+                        .status
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(add.status_id.as_deref().map(Selection::Id)),
+                    assignee: add
+                        .assignee
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(add.assignee_id.as_deref().map(Selection::Id)),
+                    resolution: add
+                        .resolution
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(add.resolution_id.as_deref().map(Selection::Id)),
+                    clear_assignee: add.clear_assignee,
+                    clear_resolution: add.clear_resolution,
+                },
+            )
+            .await?;
+        let (outcome, status) = if value["resource"] == "issue" {
+            (WriteOutcome::Updated, 200)
+        } else {
+            (WriteOutcome::Created, 201)
+        };
+        let output = (|| {
+            let secrets = &[config.api_key.as_str()];
+            let output = if args.json {
+                format!("{}\n", safety::json(&value, secrets)?)
+            } else if value["resource"] == "issue" {
+                format!(
+                    "UPDATED\t{}\n",
+                    safety::text(
+                        value["data"]["issueKey"].as_str().expect("validated key"),
+                        secrets
+                    )
+                )
+            } else {
+                format!(
+                    "CREATED\t{}\n",
+                    safety::text(&value["data"]["id"].to_string(), secrets)
+                )
+            };
+            write_stdout(&output)
+        })();
+        return output.map_err(|mut error: Error| {
+            error.http_status = Some(status);
+            error.with_write_outcome("comment.add", outcome)
+        });
+    }
+    if let Command::Issue {
         command: Issue::Comment { command },
     } = &args.command
     {
         let service = Service::new(config)?;
         let value = match command {
+            Comment::Add(..) => unreachable!("handled write"),
             Comment::View {
                 issue_id_or_key,
                 comment_id,
@@ -514,6 +602,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
             format!("{safe}\n")
         } else {
             let issue_id_or_key = match command {
+                Comment::Add(..) => unreachable!("handled write"),
                 Comment::List {
                     issue_id_or_key, ..
                 }
@@ -523,6 +612,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
             };
             let mut output = String::new();
             let items = match command {
+                Comment::Add(..) => unreachable!("handled write"),
                 Comment::List { .. } => value["items"]
                     .as_array()
                     .expect("validated comments")
@@ -772,12 +862,21 @@ async fn main() -> ExitCode {
                 .and_then(|issue| match issue.subcommand_name() {
                     Some("create") => Some("issue.create"),
                     Some("update") => Some("issue.update"),
+                    Some("comment")
+                        if issue
+                            .subcommand_matches("comment")
+                            .and_then(|comment| comment.subcommand_name())
+                            == Some("add") =>
+                    {
+                        Some("comment.add")
+                    }
                     _ => None,
                 })
         });
     let parse_error = |error: Error| match identified_write {
         Some("issue.create") => error.with_create_outcome(CreateOutcome::NotCreated),
         Some("issue.update") => error.with_update_outcome(WriteOutcome::NotUpdated),
+        Some("comment.add") => error.with_write_outcome("comment.add", WriteOutcome::NotCreated),
         _ => error,
     };
     let args = match Args::try_parse_from(&argv) {
@@ -836,6 +935,11 @@ async fn main() -> ExitCode {
         Command::Issue {
             command: Issue::Update(_),
         } => error.with_update_outcome(WriteOutcome::NotUpdated),
+        Command::Issue {
+            command: Issue::Comment {
+                command: Comment::Add(..),
+            },
+        } => error.with_write_outcome("comment.add", WriteOutcome::NotCreated),
         _ => error,
     };
     let config = match Config::load(&args.profile) {

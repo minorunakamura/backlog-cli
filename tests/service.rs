@@ -820,3 +820,96 @@ fn issue_update_validates_public_inputs_and_only_used_comparison_fields() {
         assert_eq!(requests().last().unwrap()["form"],json!({"startDate":["2400-02-29"],"dueDate":["2000-02-29"]}));
     });
 }
+
+#[test]
+fn comment_add_preserves_raw_data_and_reuses_partial_update_validation() {
+    use backlog_cli::service::CommentAdd;
+    if library_process(
+        "comment_add_preserves_raw_data_and_reuses_partial_update_validation",
+        json!({"routes":{
+            "GET /api/v2/issues/1":{"body":r#"{"projectId":42,"resolution":{"id":0}}"#},
+            "POST /api/v2/issues/1/comments":{"status":201,"body":r#"{"id":123456789012345678901234567890,"content":" 原文 test-secret\n","unknown":123456789012345678901234567890}"#},
+            "PATCH /api/v2/issues/1":{"body":r#"{"id":1,"issueKey":"P-1","unknown":"test-secret"}"#}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        for add in [
+            CommentAdd::default(),
+            CommentAdd {
+                status: Some(Selection::Id("0")),
+                ..Default::default()
+            },
+            CommentAdd {
+                assignee: Some(Selection::Id("0")),
+                ..Default::default()
+            },
+            CommentAdd {
+                resolution: Some(Selection::Id("-1")),
+                ..Default::default()
+            },
+            CommentAdd {
+                assignee: Some(Selection::Id("1")),
+                clear_assignee: true,
+                ..Default::default()
+            },
+            CommentAdd {
+                resolution: Some(Selection::Id("0")),
+                clear_resolution: true,
+                ..Default::default()
+            },
+        ] {
+            let error = s.comment_add("1", add).await.unwrap_err();
+            assert_eq!(error.kind, "input");
+            assert_eq!(
+                serde_json::to_value(error.write).unwrap(),
+                json!({"operation":"comment.add","outcome":"not_created"})
+            );
+        }
+        assert!(requests().is_empty());
+        let value = s
+            .comment_add(
+                "1",
+                CommentAdd {
+                    body: Some(" 原文 test-secret\n"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            value["data"]["id"].to_string(),
+            "123456789012345678901234567890"
+        );
+        assert_eq!(
+            value["data"]["unknown"].to_string(),
+            "123456789012345678901234567890"
+        );
+        assert_eq!(
+            value["data"]["content"], " 原文 test-secret\n",
+            "library preserves raw data; CLI safety is separate"
+        );
+        let value = s
+            .comment_add(
+                "1",
+                CommentAdd {
+                    body: Some(""),
+                    clear_resolution: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            value,
+            json!({"resource":"issue","data":{"id":1,"issueKey":"P-1","unknown":"test-secret"}})
+        );
+        let r = requests();
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0]["form"], json!({"content":[" 原文 test-secret\n"]}));
+        assert_eq!(r[1]["method"], "GET");
+        assert_eq!(r[2]["form"], json!({"resolutionId":[""]}));
+    });
+}

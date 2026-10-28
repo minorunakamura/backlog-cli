@@ -79,6 +79,16 @@ pub struct IssueUpdate<'a> {
     pub clear_milestones: bool,
 }
 
+#[derive(Default)]
+pub struct CommentAdd<'a> {
+    pub body: Option<&'a str>,
+    pub status: Option<Selection<'a>>,
+    pub assignee: Option<Selection<'a>>,
+    pub resolution: Option<Selection<'a>>,
+    pub clear_assignee: bool,
+    pub clear_resolution: bool,
+}
+
 pub struct Service {
     api: Api,
 }
@@ -87,6 +97,62 @@ impl Service {
         Ok(Self {
             api: Api::new(config)?,
         })
+    }
+    pub async fn comment_add(&self, issue: &str, add: CommentAdd<'_>) -> Result<Value, Error> {
+        self.add_comment_inner(issue, add)
+            .await
+            .map_err(|error| error.with_write_outcome("comment.add", WriteOutcome::NotCreated))
+    }
+    async fn add_comment_inner(&self, issue: &str, add: CommentAdd<'_>) -> Result<Value, Error> {
+        validate_issue_identifier(issue)?;
+        let mut form = if add.status.is_some()
+            || add.assignee.is_some()
+            || add.resolution.is_some()
+            || add.clear_assignee
+            || add.clear_resolution
+        {
+            self.issue_update_form(
+                issue,
+                IssueUpdate {
+                    status: add.status,
+                    assignee: add.assignee,
+                    resolution: add.resolution,
+                    clear_assignee: add.clear_assignee,
+                    clear_resolution: add.clear_resolution,
+                    ..Default::default()
+                },
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+        let body = add.body.filter(|body| !body.is_empty());
+        if form.is_empty() {
+            let body = body.ok_or_else(|| Error::new("input", "No body or fields have changed"))?;
+            let value = self.api.add_comment(issue, body).await?;
+            if !value
+                .get("id")
+                .and_then(Value::as_number)
+                .is_some_and(|id| positive_integer(&id.to_string()))
+            {
+                let mut error = Error::new("invalid_response", "Comment response has invalid ID");
+                error.http_status = Some(201);
+                return Err(error.with_write_outcome("comment.add", WriteOutcome::Created));
+            }
+            Ok(serde_json::json!({"resource":"comment","data":value}))
+        } else {
+            if let Some(body) = body {
+                form.push(("comment", body.into()));
+            }
+            let value = self.api.update_issue_for_comment(issue, &form).await?;
+            if !valid_written_issue(&value) {
+                return Err(
+                    invalid_response("Updated issue response has invalid required fields")
+                        .with_write_outcome("comment.add", WriteOutcome::Updated),
+                );
+            }
+            Ok(serde_json::json!({"resource":"issue","data":value}))
+        }
     }
     pub async fn issue_update(&self, issue: &str, update: IssueUpdate<'_>) -> Result<Value, Error> {
         self.update_issue_inner(issue, update)
@@ -98,6 +164,27 @@ impl Service {
         issue: &str,
         update: IssueUpdate<'_>,
     ) -> Result<Value, Error> {
+        let form = self.issue_update_form(issue, update).await?;
+        if form.is_empty() {
+            return Err(Error::new("input", "No fields have changed"));
+        }
+        let mut value = self.api.update_issue(issue, &form).await?;
+        if !valid_written_issue(&value) {
+            return Err(
+                invalid_response("Updated issue response has invalid required fields")
+                    .with_update_outcome(WriteOutcome::Updated),
+            );
+        }
+        let key = value["issueKey"].as_str().expect("validated key");
+        let url = self.api.issue_url(key);
+        value["url"] = Value::String(url);
+        Ok(value)
+    }
+    async fn issue_update_form(
+        &self,
+        issue: &str,
+        update: IssueUpdate<'_>,
+    ) -> Result<Vec<(&'static str, String)>, Error> {
         validate_issue_identifier(issue)?;
         if update.title.is_some_and(|title| title.trim().is_empty()) {
             return Err(Error::new("input", "Title must not be blank"));
@@ -297,27 +384,7 @@ impl Service {
                 }
             }
         }
-        if form.is_empty() {
-            return Err(Error::new("input", "No fields have changed"));
-        }
-        let mut value = self.api.update_issue(issue, &form).await?;
-        let key = value
-            .get("issueKey")
-            .and_then(Value::as_str)
-            .filter(|key| {
-                issue_key(key)
-                    && value
-                        .get("id")
-                        .and_then(Value::as_number)
-                        .is_some_and(|id| positive_integer(&id.to_string()))
-            })
-            .ok_or_else(|| {
-                invalid_response("Updated issue response has invalid required fields")
-                    .with_update_outcome(WriteOutcome::Updated)
-            })?;
-        let url = self.api.issue_url(key);
-        value["url"] = Value::String(url);
-        Ok(value)
+        Ok(form)
     }
     pub async fn issue_create(
         &self,
@@ -909,6 +976,17 @@ impl Service {
         let items = self.candidates(candidate).await?;
         resolve_name(&items, name)
     }
+}
+
+fn valid_written_issue(value: &Value) -> bool {
+    value
+        .get("issueKey")
+        .and_then(Value::as_str)
+        .is_some_and(issue_key)
+        && value
+            .get("id")
+            .and_then(Value::as_number)
+            .is_some_and(|id| positive_integer(&id.to_string()))
 }
 
 fn response_id(value: &Value, zero: bool) -> Result<Number, Error> {
