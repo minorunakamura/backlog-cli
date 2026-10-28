@@ -98,6 +98,52 @@ impl Service {
             api: Api::new(config)?,
         })
     }
+    pub async fn comment_update(
+        &self,
+        issue: &str,
+        comment_id: &str,
+        body: &str,
+    ) -> Result<Value, Error> {
+        self.update_comment_inner(issue, comment_id, body)
+            .await
+            .map_err(|error| error.with_write_outcome("comment.update", WriteOutcome::NotUpdated))
+    }
+    async fn update_comment_inner(
+        &self,
+        issue: &str,
+        comment_id: &str,
+        body: &str,
+    ) -> Result<Value, Error> {
+        if body.is_empty() {
+            return Err(Error::new("input", "Comment body must not be empty"));
+        }
+        let latest = self.comment_view(issue, comment_id).await?;
+        let owner = latest["createdUser"]["id"]
+            .as_number()
+            .filter(|id| positive_integer(&id.to_string()))
+            .ok_or_else(|| invalid_response("Comment response has invalid author ID"))?;
+        let myself = self.myself().await?;
+        if Some(owner) != myself["id"].as_number() {
+            return Err(Error::new(
+                "input",
+                "Only your own comment body can be updated",
+            ));
+        }
+        let current = latest["content"]
+            .as_str()
+            .ok_or_else(|| Error::new("input", "Change history has no editable comment body"))?;
+        if current == body {
+            return Err(Error::new("input", "Comment body has not changed"));
+        }
+        let value = self.api.update_comment(issue, comment_id, body).await?;
+        if !valid_comment(&value) {
+            return Err(
+                invalid_response("Updated comment response has invalid required fields")
+                    .with_write_outcome("comment.update", WriteOutcome::Updated),
+            );
+        }
+        Ok(value)
+    }
     pub async fn comment_add(&self, issue: &str, add: CommentAdd<'_>) -> Result<Value, Error> {
         self.add_comment_inner(issue, add)
             .await

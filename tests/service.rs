@@ -913,3 +913,64 @@ fn comment_add_preserves_raw_data_and_reuses_partial_update_validation() {
         assert_eq!(r[2]["form"], json!({"resolutionId":[""]}));
     });
 }
+
+#[test]
+fn comment_update_validates_input_and_preserves_raw_object_without_extra_fields() {
+    const LARGE: &str = "123456789012345678901234567890";
+    let path = format!("/api/v2/issues/{LARGE}/comments/{LARGE}");
+    let updated = r#"{"id":123456789012345678901234567890,"content":" 原文 test-secret\n","createdUser":{"name":"author"},"created":"created","updated":"updated","changeLog":null,"unknown":123456789012345678901234567890,"url":"original"}"#;
+    if library_process(
+        "comment_update_validates_input_and_preserves_raw_object_without_extra_fields",
+        json!({"routes":{
+            format!("GET {path}"):{"body":r#"{"id":123456789012345678901234567890,"content":"old","createdUser":{"id":123456789012345678901234567890,"name":"author"},"created":"created","updated":"updated","changeLog":null}"#},
+            "GET /api/v2/users/myself":{"body":r#"{"id":123456789012345678901234567890}"#},
+            format!("PATCH {path}"):{"body":updated}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        for (issue, comment, body) in [
+            (LARGE, LARGE, ""),
+            ("0", LARGE, "new"),
+            ("../P-1", LARGE, "new"),
+            (LARGE, "0", "new"),
+            (LARGE, "1.5", "new"),
+        ] {
+            let error = s.comment_update(issue, comment, body).await.unwrap_err();
+            assert_eq!(error.kind, "input");
+            assert_eq!(error.exit_code(), 2);
+            assert_eq!(
+                serde_json::to_value(error.write).unwrap(),
+                json!({"operation":"comment.update","outcome":"not_updated"})
+            );
+        }
+        assert!(requests().is_empty());
+        let value = s
+            .comment_update(LARGE, LARGE, " 原文 test-secret\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            value,
+            serde_json::from_str::<serde_json::Value>(updated).unwrap()
+        );
+        assert_eq!(value["id"].to_string(), LARGE);
+        assert_eq!(value["unknown"].to_string(), LARGE);
+        assert_eq!(
+            value["content"], " 原文 test-secret\n",
+            "library keeps raw secrets and body"
+        );
+        assert_eq!(value["url"], "original");
+        assert!(
+            value["createdUser"].get("id").is_none(),
+            "no extra post-write ownership requirement"
+        );
+        let r = requests();
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0]["path"], path);
+        assert_eq!(r[2]["path"], path);
+        assert_eq!(r[2]["method"], "PATCH");
+        assert_eq!(r[2]["form"], json!({"content":[" 原文 test-secret\n"]}));
+    });
+}

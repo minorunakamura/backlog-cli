@@ -17,8 +17,8 @@ cargo audit --version
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
-`issue list/mine/view/create/update` / `issue comment list/view/add` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
-既存コメント本文の更新・TUIの機能は後続Work Itemの範囲です。
+`issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
+TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -103,6 +103,14 @@ create既定値非流用・状態に伴う完了理由の自動変更なし、�
 Ctrl+Cでも確度を保持し、retry/権限fallback/二重書込み/コメントID補完GETがないことをmethod/path/formと件数で照合します。
 `tests/service.rs` の公開 `Service::comment_add` 試験でも原文/secret・巨大整数、未使用field非要求、ID0の解除、
 入力検証時の通信なしと確度、返却dataのurl非追加を確認します。
+`tests/comment_update.rs` は実CLI/HTTPS境界で最新コメント・認証ユーザー取得、任意精度の投稿者ID検証と所有者確認、
+他者コメント/content:null履歴/同値の非書込み、必須かつ排他的な本文入力、課題項目flag拒否を確認します。
+literal/file/明示stdinのUTF-8・空入力拒否・空白改行原文保持、非明示stdinの非読取、設定非流用、global/profile/help・TTY非対話、
+contentだけの単一PATCH、元object/未知field/巨大整数と安全表示、引数/config/事前GET/権限拒否時の確度を検証します。
+200後のbody切断/decode/必要field/出力失敗・key衝突・30秒timeout、stdin/事前GET/送信後/200 headers後のCtrl+Cでも確度を保持し、
+retry/redirect/fallback/余分なGETがないことを照合します。既存のwrite確度処理とfixtureをそのまま使います。
+`tests/service.rs` の公開 `Service::comment_update` 試験でも入力検証時の通信なし、巨大対象ID、原文/secret・未知field/巨大整数保持、
+返却objectのurl非変更・追加の事後所有者field非要求を確認します。
 `tests/body.rs` は公開 `body::display/display_with_origin` からMarkdown/Backlogの見出し/list/強調/引用/code/checklist/通常表、
 複合記法・通常改行/空行/TAB・code/escapeの保護、可視link/画像/参照、HTML/未知macroの内容保持、
 難しい表/未知記法の原文fallbackを確認します。Backlogの課題linkは設定origin/keyの共通検証・URL構築を使い、
@@ -144,6 +152,7 @@ cargo test --locked --test issue_comment
 cargo test --locked --test issue_create
 cargo test --locked --test issue_update
 cargo test --locked --test comment_add
+cargo test --locked --test comment_update
 cargo test --locked --test body
 cargo test --locked --test https_fixture
 # 30秒のbody timeoutだけを再確認
