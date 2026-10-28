@@ -65,6 +65,19 @@ impl Api {
             key,
         })
     }
+    /// Fetch the formal workspace name without changing or discarding unknown fields.
+    pub async fn space(&self) -> Result<Value, Error> {
+        let value = self.get(&["space"]).await?;
+        if !value.is_object() || !value.get("name").is_some_and(Value::is_string) {
+            let mut error = Error::new(
+                "invalid_response",
+                "Space response has invalid required fields",
+            );
+            error.http_status = Some(200);
+            return Err(error);
+        }
+        Ok(value)
+    }
     pub async fn project_list(&self) -> Result<Value, Error> {
         let value = self.get(&["projects"]).await?;
         if !value.as_array().is_some_and(|items| {

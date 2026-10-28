@@ -18,7 +18,8 @@ cargo audit --version
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
-TUIの機能は後続Work Itemの範囲です。
+`bl` の基本shell（初期space/projects取得・focus・layout・端末復元）も実装しています。
+候補選択/確定・課題操作・入力・editorは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -128,6 +129,23 @@ key衝突を検証します。内部private関数の固定テストはありま�
 `tests/https_fixture.rs` はfixtureの逆引きを失敗させた別processから起動し、
 証明書を検証したHTTPSリクエストが成功することを確認します。固定loopback serverの
 初期化では不要な逆引きをせず、CIのresolver待ちに依存させません。
+
+`tests/tui_shell.rs` は公開TUI入力→描画境界とTestBackendで100x24/99x24/100x23/40x12/極小・0サイズ、
+左右focus/Enter/Esc、非実装キーの保護、NO_COLORを確認します。
+`tests/tui_process.rs` と `tests/fixtures/tty_shell.py` は実 `bl` をPTYで起動し、片側だけTTYの拒否、
+profile/help、正式な初期データと空一覧、初期API/不正応答エラー、secret/ANSI安全化、
+headers前/body待ちのq・raw Ctrl+C・SIGINT終了、termios/alternate screen/cursor復元を確認します。
+macOSの一時的なPENDIN（再表示待ち）ビットだけはtermios比較から除外します。
+`src/tui.rs` のPTY試験はtest binaryのWrite境界に描画エラー/panic/復元失敗を注入し、
+復元の継続・属性reset・秘匿済みエラーを検証します。同じ境界で初回描画前のSIGINTと
+開始済みblocking処理を再現し、端末復元とprocessの応答性も確認します。製品のdebug flagはありません。
+実端末の目視/IME確認をこれらで代替しません。shellの手動手順とpending記録は
+[docs/testing/manual-acceptance.md](docs/testing/manual-acceptance.md) を参照してください。
+
+```sh
+cargo test --locked --test tui_shell --test tui_process
+cargo test --locked --lib tui::tests::shell_ -- --nocapture
+```
 
 ### ローカルHTTPS harness
 
