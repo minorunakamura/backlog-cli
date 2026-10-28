@@ -266,6 +266,7 @@ main taskが状態と端末を単独所有する。Tokioの短いinterval（目�
 - CLIはTTY/非TTYとも対話せず、JSONと終了コード契約、原文/未知field/大整数保持とsecret保護を満たす。
 - TUIは通信中の操作・中断、古い応答の無視、ページ再訪、更新失敗時の保持、確認前の非送信、重複送信防止を満たす。
 - 早期の入力部品確認と、完成後の実端末受入を両方実施し、環境・手順・結果を記録する。実IME未確認は自動試験合格で完了に置き換えない。
+- Issue #17・#18・#20〜#23は、下記「実Backlogの段階的な受入」に従い、担当機能を実Backlogで確認してから完了とする。実環境確認の未実施・失敗をIssue #24へ先送りして完了扱いにしない。Issue #24は完成版の最終的な全体受入とする。
 - ローカルでtest/rustfmt/Clippy/cargo-auditを実行し、失敗や確認不能を隠さない。既知脆弱性の無条件ignoreを追加しない。
 - main pushとpull_requestを対象にGitHub Actionsの品質workflowを作成して設定確認する。GitHub上で未実行ならその旨を報告するだけで、実行のためのpush/PRを要求しない。
 - 利用説明をREADME、開発/品質/CI/配布手順をCONTRIBUTINGへ分離して記載する。
@@ -302,7 +303,28 @@ Apple Silicon Macの実端末で、端末名/版・macOS・IME・対象buildを�
 
 早期の単行入力確認に加え、完成後に100x24以上/40x12以上/それ未満で操作、長い日本語・結合文字・emoji・変換候補、editor中resizeからの即時再描画、editor非0/起動失敗/中断、終了後に通常のshell操作ができることを確認する。状態・入力保持と伏字も目視する。自動試験で代替できない操作は実装担当と利用者で実施し、未実施のまま完了にしない。記録先は `docs/testing/manual-acceptance.md`とする。
 
-実サービスへの書込み許可がなければローカルharnessで書込み経路を確認し、実サービスE2E未実施を記録する。既存の設計検証用課題を無断で変更しない。
+### 実Backlogの段階的な受入（Issue #17以降の改訂）
+
+実Backlogとの接続・権限・実データの差異をIssue #24で初めて発見しないよう、Issue #17以降の該当機能で実環境確認を必須にする。従来の「接続先の指定と、実サービスE2E未実施の記録」だけの扱いから、以下の担当Issueごとの完了条件へ改訂する。製品仕様・基本設計の責務・API範囲は変更しない。
+
+接続先は **`https://lazybl.backlog.com/`** とし、実施前に使用profileの `spaceUrl` がこのoriginを指すことを確認する。製品の既定接続先や接続先制限にはしない。
+
+| Work Item | そのIssueで行う確認 |
+| --- | --- |
+| [Issue #17](https://github.com/minorunakamura/backlog-cli/issues/17)：検索dialog | 実装したTUIから実際の候補を取得し、通常検索の条件適用・クリア・結果表示と横断検索の基本動作を確認する。複数project間の実検証は既存の環境制約により対象外とし、自動試験で確認する。 |
+| [Issue #18](https://github.com/minorunakamura/backlog-cli/issues/18)：コメント閲覧 | 実装したTUIで実際のコメント・本文なし変更履歴を表示し、前後・最新・最古への移動と再読込みを確認する。 |
+| [Issue #19](https://github.com/minorunakamura/backlog-cli/issues/19)：editor連携 | 実Backlogへの接続は必須にしない。既存のPTY・実端末によるeditor往復・resize・失敗/中断・端末復元の確認は維持する。 |
+| [Issue #20](https://github.com/minorunakamura/backlog-cli/issues/20)：課題作成 | 許可済みのproject・内容で、TUIの入力・確認・独立送信を通して検証用課題を作成し、Backlog上の登録内容とTUIの結果表示を確認する。 |
+| [Issue #21](https://github.com/minorunakamura/backlog-cli/issues/21)：課題更新 | 許可済みの検証用課題で、TUIから変更・解除を実施し、変更内容・未指定項目の保持と結果表示を確認する。 |
+| [Issue #22](https://github.com/minorunakamura/backlog-cli/issues/22)：コメント追加 | 許可済みの検証用課題で、TUIから本文のみの追加と課題項目変更を伴う追加を確認し、登録内容と成功後のコメント表示を確認する。 |
+| [Issue #23](https://github.com/minorunakamura/backlog-cli/issues/23)：コメント本文更新 | 許可済みの自分の検証用コメントをTUIから更新し、本文の反映と同じコメントを表示し続けることを確認する。 |
+| [Issue #24](https://github.com/minorunakamura/backlog-cli/issues/24)：全体受入 | 各Issueの実環境確認記録を照合したうえで、完成版の検索・閲覧・作成・更新を通した最終の全体受入を実施する。ここを初回の実接続確認にしない。既存の全体品質確認・実端末受入も維持する。 |
+
+- 各機能の自動試験・ローカルHTTPS harness・実端末確認を置き換えず、実装したTUIと実API・権限・実データの結合確認を追加する。通信障害・応答逆転・rate limit等は従来どおりharnessで再現し、実サービスへ意図的に障害や過大な負荷を発生させない。
+- 実Backlogへの書込みは、接続先・対象project/課題/コメント・作成/変更内容を確認した別の明示許可がある場合だけ行う。本PlanやIssueの承認、接続先の指定をその許可にしない。既存の設計検証用課題を無断で変更せず、検証データの準備や復元も許可された範囲だけで行う。削除APIや自動cleanupは追加しない。
+- 書込み許可がない場合もharnessで書込み経路を確認できるが、必須の実環境確認の代替にはしない。認証・権限・検証データの不足、接続不能、確認の失敗があれば、そのIssueを未完了として理由・再開条件を報告する。未実施を成功として扱わず、Issue #24へ先送りして完了にしない。
+- 記録先は既存の `docs/testing/manual-acceptance.md` とする。Issue番号・対象build・接続先・対象データの識別子・手順・結果・未確認事項を記録し、API keyや機密本文を記載しない。基本設計時のAPI Probeや別Issueの結果だけを、その担当機能の製品確認の代わりにしない。
+- 新規Issueや依存関係は増やさず、上記の既存Issueの受入条件・検証手順を本節と整合させる。Issue #19、完了済みIssue、Tokio保守作業の要求・検証履歴は変更しない。Plan Review・保存後に、既存Issueの再利用範囲と最終本文の公開をそれぞれ確認して反映する。
 
 正式チェック:
 ```sh
