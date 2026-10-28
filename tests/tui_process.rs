@@ -18,6 +18,8 @@ fn shell_waiting(h: &Harness, mode: &str, args: &[&str], marker: &str) -> Value 
         .args(args)
         .env_clear()
         .envs(configured.get_envs().map(|(k, v)| (k, v.unwrap())))
+        .env("SHELL_STEPS_FILE", h.root.join("shell-steps.json"))
+        .env("SHELL_REQUESTS_FILE", h.root.join("requests"))
         .env(
             "SHELL_WAIT_MARKER",
             if marker.is_empty() {
@@ -278,4 +280,484 @@ fn bl_help_with_profile_bypasses_config_and_missing_profiles_do_not_fallback() {
     assert!(help["stdout"].as_str().unwrap().contains("--profile"));
     assert_eq!(help["stderr"], "");
     assert!(h.requests().is_empty());
+}
+
+fn scripted(h: &Harness, steps: Value) -> Value {
+    std::fs::write(h.root.join("shell-steps.json"), steps.to_string()).unwrap();
+    let result = shell(h, "scripted", &[]);
+    assert_eq!(result["code"], 0, "{result}");
+    assert_eq!(result["restored"], true, "{result}");
+    assert_eq!(result["stderr"], "", "{result}");
+    result
+}
+fn browsing_routes() -> Value {
+    json!({"routes": {
+        "/api/v2/space":{"body":"{\"name\":\"Actual space\"}"},
+        "/api/v2/projects":{"body":json!([
+            {"id":123456789012345678901234567890_u128.to_string().parse::<serde_json::Number>().unwrap(),"projectKey":"A","name":"Alpha"},
+            {"id":2,"projectKey":"B","name":"Beta"}
+        ]).to_string()},
+        "/api/v2/issues/count":{"body":"{\"count\":1}"},
+        "/api/v2/issues":{"body":"[{\"id\":1,\"issueKey\":\"B-1\",\"summary\":\"Selected project issue\",\"status\":{\"name\":\"open\"}}]"}
+    }})
+}
+#[test]
+fn project_candidate_movement_is_local_and_enter_confirms_without_moving_focus() {
+    let h = Harness::new(browsing_routes());
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Select a project", "keys":"j"},
+            {"wait":"> B  Beta", "keys":"\r"},
+            {"wait":"Selected project issue", "keys":"\r"},
+            {"wait":"Selected project issue", "keys":"q"}
+        ]),
+    );
+    assert_eq!(result["request_counts"], json!([2, 2, 4, 4]), "{result}");
+    let snapshots = result["snapshots"].as_array().unwrap();
+    assert!(snapshots[0].as_str().unwrap().contains("> Project List"));
+    assert!(snapshots[2].as_str().unwrap().contains("> Project List"));
+    let requests = h.requests();
+    assert_eq!(
+        requests.len(),
+        4,
+        "movement and same-project confirmation must not request: {requests:?}"
+    );
+    assert!(
+        requests[2]["path"]
+            .as_str()
+            .unwrap()
+            .contains("projectId%5B%5D=2")
+    );
+}
+
+fn settings(h: &Harness, project: &str) {
+    std::fs::create_dir_all(h.root.join(".backlog")).unwrap();
+    std::fs::write(
+        h.root.join(".backlog/settings.json"),
+        json!({"project":project}).to_string(),
+    )
+    .unwrap();
+}
+#[test]
+fn startup_browse_keys_preserve_initial_success_and_errors() {
+    for path in ["/api/v2/space", "/api/v2/projects"] {
+        for cancel in [false, true] {
+            for status in [200, 401, 403] {
+                let mut routes = browsing_routes();
+                routes["routes"][path]["header_delay"] = json!(1.2);
+                routes["routes"][path]["status"] = json!(status);
+                let h = Harness::new(routes);
+                settings(&h, "B");
+                let mut steps = vec![json!({
+                    "wait":"Loading projects...", "pause":0.2,
+                    "keys":if cancel { "\u{1b}" } else { "R" }
+                })];
+                if cancel {
+                    steps.push(json!({"pause":0.4,"keys":"R"}));
+                }
+                steps.push(json!({"pause":1.4,"keys":"q"}));
+                std::fs::write(h.root.join("shell-steps.json"), json!(steps).to_string()).unwrap();
+                let result = shell(&h, "scripted", &[]);
+                let context = format!("{path}/Esc={cancel}/status={status}: {result}");
+                assert_eq!(result["restored"], true, "{context}");
+                let initial_requests = if path.ends_with("space") { 1 } else { 2 };
+                assert_eq!(result["request_counts"][0], initial_requests, "{context}");
+                if cancel {
+                    assert_eq!(result["request_counts"][1], initial_requests, "{context}");
+                }
+                let requests = h.requests();
+                if status == 200 {
+                    assert_eq!(result["code"], 0, "{context}");
+                    assert_eq!(result["stderr"], "", "{context}");
+                    let screen = result["screen"].as_str().unwrap();
+                    for text in ["Actual space", "Project: B", "Selected project issue"] {
+                        assert!(screen.contains(text), "missing {text}: {context}");
+                    }
+                    assert!(!screen.contains("Loading"), "{context}");
+                    assert!(!screen.contains("Cancelled"), "{context}");
+                    assert_eq!(requests.len(), 4, "{context}");
+                    assert_eq!(requests[0]["path"], "/api/v2/space");
+                    assert_eq!(requests[1]["path"], "/api/v2/projects");
+                    for request in &requests[2..] {
+                        assert!(
+                            request["path"]
+                                .as_str()
+                                .unwrap()
+                                .contains("projectId%5B%5D=2"),
+                            "{context}"
+                        );
+                    }
+                } else {
+                    assert_eq!(result["code"], 1, "{context}");
+                    let stderr = result["stderr"].as_str().unwrap();
+                    assert!(
+                        stderr.contains(if status == 401 { "auth" } else { "permission" }),
+                        "{context}"
+                    );
+                    assert!(
+                        stderr.contains(if path.ends_with("space") {
+                            "Initial space"
+                        } else {
+                            "Initial projects"
+                        }),
+                        "{context}"
+                    );
+                    assert_eq!(requests.len(), initial_requests, "{context}");
+                }
+            }
+        }
+    }
+}
+
+fn issue_items(start: usize, count: usize) -> String {
+    Value::Array((start..start+count).map(|n| json!({"id":n,"issueKey":format!("B-{n}"),"summary":format!("Issue {n:02}"),"status":{"name":"open"}})).collect()).to_string()
+}
+#[test]
+fn issue_pages_use_actual_lengths_and_revisit_without_requests_preserving_selection_and_scroll() {
+    let mut routes = browsing_routes();
+    routes["routes"]["/api/v2/issues/count"] = json!({"body":"{\"count\":25}"});
+    routes["routes"]["/api/v2/issues"] = json!({"offsets": {
+        "0":{"body":issue_items(1,20)}, "20":{"body":issue_items(21,3)}, "23":{"body":"[]"}
+    }});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01", "keys":"l jjjjjjjjjjjjjjjjjjn".replace(' ',"")},
+            {"wait":"Issue 21", "keys":"jjp"},
+            {"wait":"> B-19", "keys":"n"},
+            {"wait":"> B-23", "keys":"n"},
+            {"wait":"No issues", "keys":"n"},
+            {"wait":"No issues", "keys":"pp"},
+            {"wait":"> B-19", "keys":"q"}
+        ]),
+    );
+    assert_eq!(
+        result["request_counts"],
+        json!([4, 5, 5, 5, 6, 6, 6]),
+        "{result}"
+    );
+    let requests = h.requests();
+    assert_eq!(requests.len(), 6, "{requests:?}");
+    for (index, offset) in [(3, 0), (4, 20), (5, 23)] {
+        let path = requests[index]["path"].as_str().unwrap();
+        assert!(
+            path.contains(&format!("offset={offset}")) && path.contains("count=20"),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn configured_project_ids_are_matched_without_narrowing_and_missing_projects_need_confirmation() {
+    for project in ["B", "0002", "123456789012345678901234567890", "missing"] {
+        let h = Harness::new(browsing_routes());
+        settings(&h, project);
+        if project == "missing" {
+            let result = scripted(
+                &h,
+                json!([
+                    {"wait":"Select a project", "keys":"j"},
+                    {"wait":"> B  Beta", "keys":"q"}
+                ]),
+            );
+            assert_eq!(result["request_counts"], json!([2, 2]));
+        } else {
+            let result = scripted(&h, json!([{ "wait":"Selected project issue", "keys":"q" }]));
+            assert_eq!(result["request_counts"], json!([4]));
+            let path = h.requests()[2]["path"].as_str().unwrap().to_owned();
+            let id = if project == "123456789012345678901234567890" {
+                project
+            } else {
+                "2"
+            };
+            assert!(path.contains(&format!("projectId%5B%5D={id}")), "{path}");
+        }
+    }
+}
+
+#[test]
+fn project_refresh_failure_preserves_candidate_scroll_and_success_does_not_rewrite_issue_project() {
+    let mut routes = browsing_routes();
+    let mut projects: Vec<Value> = serde_json::from_str(
+        routes["routes"]["/api/v2/projects"]["body"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    projects.extend(
+        (2..12)
+            .map(|n| json!({"id":n+1,"projectKey":format!("P{n}"),"name":format!("Project {n}")})),
+    );
+    routes["routes"]["/api/v2/projects"] = json!({"sequence":[
+        {"body":Value::Array(projects).to_string()}, {"status":500},
+        {"body":"[{\"id\":7,\"projectKey\":\"ONLY\",\"name\":\"Refreshed projects\"}]"}
+    ]});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Selected project issue","keys":"jjjjjjjjjj"},
+            {"wait":"> P11  Project 11","keys":"R"},
+            {"wait":"Failed:","keys":"R"},
+            {"wait":"Refreshed projects","keys":"q"}
+        ]),
+    );
+    let snapshots = result["snapshots"].as_array().unwrap();
+    assert!(
+        snapshots[2].as_str().unwrap().contains("> P11  Project 11"),
+        "{result}"
+    );
+    for snapshot in snapshots {
+        assert!(
+            snapshot
+                .as_str()
+                .unwrap()
+                .contains("Selected project issue"),
+            "{result}"
+        );
+    }
+    assert_eq!(result["request_counts"], json!([4, 4, 5, 6]));
+    for request in h.requests().iter().skip(4) {
+        assert_eq!(request["path"], "/api/v2/projects");
+    }
+}
+
+#[test]
+fn issue_refresh_is_atomic_and_success_discards_history_only_after_count_and_list_succeed() {
+    let mut routes = browsing_routes();
+    routes["routes"]["/api/v2/issues/count"] = json!({"sequence":[{"body":"{\"count\":25}"},{"body":"{\"count\":888}"},{"body":"{\"count\":999}"}]});
+    routes["routes"]["/api/v2/issues"] = json!({"sequence":[
+        {"body":issue_items(1,20)}, {"body":issue_items(21,3)}, {"status":500},
+        {"body":issue_items(50,1)}, {"body":"[]"}
+    ]});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"ln"},
+            {"wait":"Issue 21","keys":"jjR"},
+            {"wait":"Failed:","keys":"pn"},
+            {"wait":"> B-23","keys":"R"},
+            {"wait":"Issue 50","keys":"p"},
+            {"wait":"Issue 50","keys":"n"},
+            {"wait":"No issues","keys":"q"}
+        ]),
+    );
+    let snapshots = result["snapshots"].as_array().unwrap();
+    assert!(
+        snapshots[2].as_str().unwrap().contains("> B-23"),
+        "{result}"
+    );
+    assert!(
+        snapshots[2].as_str().unwrap().contains("total 25"),
+        "{result}"
+    );
+    assert!(
+        snapshots[4]
+            .as_str()
+            .unwrap()
+            .contains("total 999 | page 1"),
+        "{result}"
+    );
+    assert_eq!(
+        result["request_counts"],
+        json!([4, 5, 7, 7, 9, 9, 10]),
+        "{result}"
+    );
+    assert!(
+        h.requests()[9]["path"]
+            .as_str()
+            .unwrap()
+            .contains("offset=1")
+    );
+}
+
+#[test]
+fn superseded_failures_cannot_clear_new_busy_and_escape_cancels_reads_without_replacing_the_display()
+ {
+    let mut routes = browsing_routes();
+    routes["routes"]["/api/v2/issues"] = json!({"sequence":[
+        {"body":issue_items(1,1)}, {"status":500,"header_delay":0.35},
+        {"body":issue_items(50,1),"header_delay":0.75},
+        {"body":issue_items(99,1),"delay":0.5}
+    ]});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"lR"},
+            {"wait":"Loading... Esc: cancel","keys":"R"},
+            {"wait":"Loading... Esc: cancel","pause":0.45,"keys":""},
+            {"wait":"Issue 50","keys":"R"},
+            {"wait":"Loading... Esc: cancel","keys":"\u{1b}"},
+            {"wait":"Cancelled; display retained","pause":0.7,"keys":"q"}
+        ]),
+    );
+    let snapshots = result["snapshots"].as_array().unwrap();
+    assert!(
+        snapshots[2]
+            .as_str()
+            .unwrap()
+            .contains("Loading... Esc: cancel"),
+        "{result}"
+    );
+    assert!(
+        snapshots[5].as_str().unwrap().contains("Issue 50"),
+        "{result}"
+    );
+    assert!(
+        !snapshots[5].as_str().unwrap().contains("Issue 99"),
+        "{result}"
+    );
+    assert_eq!(
+        result["request_counts"],
+        json!([4, 6, 8, 8, 10, 10]),
+        "{result}"
+    );
+}
+
+#[test]
+fn empty_pages_stop_even_with_huge_totals_and_nonempty_pages_stop_at_or_beyond_total() {
+    for (count, items, text) in [
+        (
+            "123456789012345678901234567890",
+            "[]".to_owned(),
+            "No issues",
+        ),
+        ("0", issue_items(1, 2), "Issue 01"),
+        ("2", issue_items(1, 2), "Issue 01"),
+    ] {
+        let mut routes = browsing_routes();
+        routes["routes"]["/api/v2/issues/count"] = json!({"body":format!("{{\"count\":{count}}}")});
+        routes["routes"]["/api/v2/issues"] = json!({"body":items});
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":text,"keys":"lnnn"}, {"wait":text,"keys":"q"}
+            ]),
+        );
+        assert_eq!(result["request_counts"], json!([4, 4]), "{result}");
+    }
+}
+
+#[test]
+fn failed_issue_refresh_keeps_the_scrolled_selection_visible() {
+    let mut routes = browsing_routes();
+    routes["routes"]["/api/v2/issues/count"] = json!({"body":"{\"count\":25}"});
+    routes["routes"]["/api/v2/issues"] =
+        json!({"sequence":[{"body":issue_items(1,20)},{"status":500}]});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"ljjjjjjjjjjjjjjjjjjR"},
+            {"wait":"Failed:","keys":"q"}
+        ]),
+    );
+    assert!(
+        result["snapshots"][1].as_str().unwrap().contains("> B-19"),
+        "{result}"
+    );
+}
+
+#[test]
+fn same_project_confirmation_retains_conditions_and_history_but_different_project_success_replaces_them()
+ {
+    let mut routes = browsing_routes();
+    let huge_id = "123456789012345678901234567890";
+    routes["routes"]["/api/v2/projects/2/statuses"] =
+        json!({"body":"[{\"id\":4,\"name\":\"open\"}]"});
+    routes["routes"][format!("/api/v2/projects/{huge_id}/statuses")] =
+        json!({"body":"[{\"id\":8,\"name\":\"open\"}]"});
+    routes["routes"]["/api/v2/issues/count"] = json!({"body":"{\"count\":25}"});
+    routes["routes"]["/api/v2/issues"] = json!({"sequence":[
+        {"body":issue_items(1,20)}, {"body":issue_items(21,3)},
+        {"body":issue_items(50,1),"delay":0.4}, {"body":issue_items(60,1)}
+    ]});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    std::fs::write(
+        h.root.join(".backlog/settings.json"),
+        json!({"project":"B","issue":{"list":{"status":["open"]}}}).to_string(),
+    )
+    .unwrap();
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"ln"},
+            {"wait":"Issue 21","keys":"jjh\r"},
+            {"wait":"> B-23","keys":"k\r"},
+            {"wait":"Loading... Esc: cancel","keys":"j\r"},
+            {"wait":"> B-23","pause":0.5,"keys":"k\r"},
+            {"wait":"Issue 60","keys":"lpn"},
+            {"wait":"Issue 60","keys":"q"}
+        ]),
+    );
+    let snapshots = result["snapshots"].as_array().unwrap();
+    assert!(
+        snapshots[4]
+            .as_str()
+            .unwrap()
+            .contains("Project: B | total 25 | page 2"),
+        "{result}"
+    );
+    assert!(
+        !snapshots[4].as_str().unwrap().contains("Issue 50"),
+        "{result}"
+    );
+    assert!(
+        snapshots[5]
+            .as_str()
+            .unwrap()
+            .contains("Project: A | total 25 | page 1"),
+        "{result}"
+    );
+    // Last n fetches a new page, never the old project's retained page.
+    assert_eq!(
+        result["request_counts"],
+        json!([5, 6, 6, 9, 9, 12, 13]),
+        "{result}"
+    );
+    let requests = h.requests();
+    assert!(
+        requests[11]["path"]
+            .as_str()
+            .unwrap()
+            .contains("statusId%5B%5D=8")
+    );
+    assert!(requests[12]["path"].as_str().unwrap().contains("offset=1"));
+}
+
+#[test]
+fn huge_total_allows_list_only_next_page_and_issue_display_is_sanitized() {
+    let mut routes = browsing_routes();
+    routes["routes"]["/api/v2/issues/count"] =
+        json!({"body":"{\"count\":123456789012345678901234567890}"});
+    let items = json!([{"id":123456789012345678901234567890_u128.to_string().parse::<serde_json::Number>().unwrap(),"issueKey":"B-1","summary":"Safe issue test-secret\u{1b}]52;c;clipboard\u{7}","status":{"name":"open"}}]);
+    routes["routes"]["/api/v2/issues"] =
+        json!({"offsets":{"0":{"body":items.to_string()},"1":{"body":"[]"}}});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Safe issue","keys":"ln"}, {"wait":"No issues","keys":"nq"}
+        ]),
+    );
+    let output = result["stdout"].as_str().unwrap();
+    assert!(
+        !output.contains("test-secret") && !output.contains("\u{1b}]52"),
+        "{result}"
+    );
+    assert!(output.contains("[REDACTED]"), "{result}");
+    assert_eq!(result["request_counts"], json!([4, 5]), "{result}");
 }

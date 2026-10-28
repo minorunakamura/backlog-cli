@@ -1,6 +1,7 @@
-//! Basic read-only shell. Issue operations and settings editing are not implemented here.
+//! Read-only project selection and issue-list browsing; detail and editing are not implemented.
+mod browse;
 mod input;
-use crate::{Error, api::Api, config::Config, safety};
+use crate::{Error, config::Config, safety};
 use crossterm::{
     cursor::{Hide, Show},
     event::{
@@ -19,13 +20,13 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
-use serde_json::Value;
 use std::{
     io::{self, Write},
     panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
     time::Duration,
 };
-use tokio::{runtime::Builder, task::JoinHandle};
+use tokio::runtime::Builder;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Focus {
@@ -38,8 +39,7 @@ enum Focus {
 /// Input and rendering boundary, independent of the terminal and network.
 pub struct Shell {
     focus: Focus,
-    space: Option<String>,
-    projects: Vec<String>,
+    browse: browse::Browse,
     no_color: bool,
     #[cfg(test)]
     input_check: Option<tests::InputCheck>,
@@ -48,30 +48,11 @@ impl Shell {
     pub fn new(no_color: bool) -> Self {
         Self {
             focus: Focus::Project,
-            space: None,
-            projects: vec![],
+            browse: browse::Browse::default(),
             no_color,
             #[cfg(test)]
             input_check: None,
         }
-    }
-    fn loaded(&mut self, space: Value, projects: Value, secret: &str) {
-        self.space = Some(safety::text(space["name"].as_str().unwrap(), &[secret]));
-        self.projects = projects
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|p| {
-                safety::text(
-                    &format!(
-                        "{}  {}",
-                        p["projectKey"].as_str().unwrap(),
-                        p["name"].as_str().unwrap()
-                    ),
-                    &[secret],
-                )
-            })
-            .collect();
     }
     /// Return the requested process exit code; tiny terminals accept only safe exits.
     pub fn key(&mut self, key: KeyEvent, area: Rect) -> Option<u8> {
@@ -94,6 +75,8 @@ impl Shell {
         if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
             return None;
         }
+        let rows = self.panel_area(area, self.focus).height.saturating_sub(2) as usize;
+        self.browse.key(key.code, self.focus, rows);
         match key.code {
             KeyCode::Char('h' | 'l') | KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = match self.focus {
@@ -144,8 +127,8 @@ impl Shell {
         ])
         .split(area);
         let (navigation, action) = match self.focus {
-            Focus::Project => ("h/l Tab/Shift+Tab: Issue", ""),
-            Focus::Issue => ("h/l Tab/Shift+Tab: Project", "Enter: Detail"),
+            Focus::Project => ("h/l Tab: Issue", "j/k: move Enter: select R: reload"),
+            Focus::Issue => ("h/l Tab: Project", "j/k: move p/n: page R: reload"),
             Focus::Detail => ("h/l Tab/Shift+Tab: Comment", "Esc: Issue"),
             Focus::Comment => ("h/l Tab/Shift+Tab: Detail", "Esc: Issue"),
         };
@@ -165,26 +148,39 @@ impl Shell {
         let main = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(rows[0]);
         let workspace = format!(
             "{}  | * settings: not implemented",
-            self.space.as_deref().unwrap_or("Loading space...")
+            self.browse.space.as_deref().unwrap_or("Loading space...")
         );
         frame.render_widget(
             Paragraph::new(workspace)
                 .block(Block::default().borders(Borders::ALL).title("Workspace")),
             main[0],
         );
+        for focus in [Focus::Project, Focus::Issue, Focus::Detail, Focus::Comment] {
+            self.panel(frame, self.panel_area(area, focus), focus);
+        }
+    }
+    fn panel_area(&self, area: Rect, focus: Focus) -> Rect {
+        let compact = area.width < 100 || area.height < 24;
+        let rows = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(if compact { 3 } else { 1 }),
+        ])
+        .split(area);
+        if compact {
+            return rows[0];
+        }
+        let main = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(rows[0]);
         let columns = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(main[1]);
-        let left =
-            Layout::vertical([Constraint::Percentage(35), Constraint::Min(0)]).split(columns[0]);
-        let right =
-            Layout::vertical([Constraint::Percentage(80), Constraint::Min(0)]).split(columns[1]);
-        for (rect, focus) in [
-            (left[0], Focus::Project),
-            (left[1], Focus::Issue),
-            (right[0], Focus::Detail),
-            (right[1], Focus::Comment),
-        ] {
-            self.panel(frame, rect, focus);
+        match focus {
+            Focus::Project | Focus::Issue => {
+                Layout::vertical([Constraint::Percentage(35), Constraint::Min(0)]).split(columns[0])
+                    [if focus == Focus::Project { 0 } else { 1 }]
+            }
+            Focus::Detail | Focus::Comment => {
+                Layout::vertical([Constraint::Percentage(80), Constraint::Min(0)]).split(columns[1])
+                    [if focus == Focus::Detail { 0 } else { 1 }]
+            }
         }
     }
     fn panel(&self, frame: &mut Frame<'_>, area: Rect, focus: Focus) {
@@ -207,18 +203,10 @@ impl Shell {
             }
             block = block.border_type(BorderType::Double).border_style(style);
         }
-        let content = match focus {
-            Focus::Project if self.space.is_none() => "Loading projects...".into(),
-            Focus::Project if self.projects.is_empty() => "No projects".into(),
-            Focus::Project => self.projects.join("\n"),
-            _ => "Not implemented (shell only)".into(),
-        };
-        frame.render_widget(
-            Paragraph::new(content)
-                .wrap(Wrap { trim: false })
-                .block(block),
-            area,
-        );
+        let content = self
+            .browse
+            .content(focus, area.height.saturating_sub(2) as usize);
+        frame.render_widget(Paragraph::new(content).block(block), area);
     }
 }
 
@@ -275,7 +263,6 @@ impl<W: Write> Drop for TerminalGuard<W> {
         }
     }
 }
-type Startup = JoinHandle<Result<(Value, Value), Error>>;
 
 /// Own the terminal and state on the calling task; communication never blocks input.
 pub fn run(config: Config) -> Result<(), Error> {
@@ -297,7 +284,8 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         output,
         active: false,
     };
-    let mut pending: Option<Startup> = None;
+    let config = Arc::new(config);
+    let mut pending = Vec::new();
     let result = catch_unwind(AssertUnwindSafe(|| runtime.block_on(async {
         // Register eagerly: raw-mode entry must never precede the SIGINT handler.
         let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
@@ -308,18 +296,7 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         #[cfg(test)]
         let load_initial = shell.input_check.is_none();
         if load_initial {
-            let api = Api::new(&config)?;
-            pending = Some(tokio::spawn(async move {
-                let space = api.space().await.map_err(|mut error| {
-                    error.message = format!("Initial space retrieval failed: {}", error.message);
-                    error
-                })?;
-                let projects = api.project_list().await.map_err(|mut error| {
-                    error.message = format!("Initial projects retrieval failed: {}", error.message);
-                    error
-                })?;
-                Ok((space, projects))
-            }));
+            shell.browse.start(&config.api_key);
         }
         let mut terminal = Terminal::new(CrosstermBackend::new(&mut guard.output))
             .map_err(|_| Error::new("terminal", "Cannot initialize terminal"))?;
@@ -334,10 +311,18 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                 _ = interval.tick() => {
                     terminal.draw(|frame| shell.draw(frame))
                         .map_err(|_| Error::new("terminal", "Cannot draw terminal"))?;
-                    if pending.as_ref().is_some_and(JoinHandle::is_finished) {
-                        let (space, projects) = pending.take().unwrap().await
-                            .map_err(|_| Error::new("terminal", "Startup task failed"))??;
-                        shell.loaded(space, projects, &config.api_key);
+                    let mut index = 0;
+                    while index < pending.len() {
+                        let (id, task): &mut (_, tokio::task::JoinHandle<browse::Response>) = &mut pending[index];
+                        if !shell.browse.is_current(*id) {
+                            task.abort();
+                            let (_, task) = pending.swap_remove(index);
+                            let _ = task.await;
+                        } else if task.is_finished() {
+                            let (_, task) = pending.swap_remove(index);
+                            let response = task.await.map_err(|_| Error::new("terminal", "Read task failed"))?;
+                            shell.browse.complete(response, config.settings.project.as_deref())?;
+                        } else { index += 1; }
                     }
                     // Bound work per tick even during a stream of paste/resize events.
                     for _ in 0..32 {
@@ -348,11 +333,16 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             return if code == 0 { Ok(()) } else { Err(Error::new("interrupted", "Operation interrupted")) };
                         }
                     }
+                    for request in std::mem::take(&mut shell.browse.requests) {
+                        let id = request.id();
+                        let config = Arc::clone(&config);
+                        pending.push((id, tokio::spawn(request.run(config))));
+                    }
                 }
             }
         }
     }))).unwrap_or_else(|_| Err(Error::new("terminal", "TUI stopped after an internal panic")));
-    if let Some(task) = pending {
+    for (_, task) in pending {
         task.abort();
         let _ = runtime.block_on(task);
     }

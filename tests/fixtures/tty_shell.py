@@ -50,6 +50,11 @@ child = subprocess.Popen([binary, *args],
 action_sent = False
 paste_sent = False
 input_left = False
+steps_path = os.environ.get("SHELL_STEPS_FILE")
+steps = json.load(open(steps_path)) if steps_path and os.path.exists(steps_path) else []
+snapshots = []
+request_counts = []
+step_ready_at = None
 try:
     while child.poll() is None:
         if time.monotonic() - started > 8:
@@ -71,6 +76,19 @@ try:
             if not action_sent and b"unfocused" in output:
                 os.write(master, b"q")
                 action_sent = True
+        if mode == "scripted" and steps:
+            step = steps[0]
+            screen = screen_text(output.decode("utf-8", "replace"))
+            if step.get("wait", "") in screen:
+                if step_ready_at is None:
+                    step_ready_at = time.monotonic() + step.get("pause", 0.08)
+                if time.monotonic() >= step_ready_at:
+                    snapshots.append(screen)
+                    requests_path = os.environ.get("SHELL_REQUESTS_FILE")
+                    request_counts.append(len(open(requests_path).readlines()) if requests_path and os.path.exists(requests_path) else 0)
+                    os.write(master, step.get("keys", "").encode())
+                    steps.pop(0)
+                    step_ready_at = None
         # Other actions wait for a rendered screen, not merely raw-mode entry.
         marker = os.environ.get("SHELL_WAIT_MARKER")
         ready = not marker or os.path.exists(marker)
@@ -93,7 +111,7 @@ try:
     # macOS sets transient PENDIN when restoring cooked input without a subsequent read.
     before[3] &= ~getattr(termios, "PENDIN", 0)
     after[3] &= ~getattr(termios, "PENDIN", 0)
-    print(json.dumps({"code": child.returncode,
+    print(json.dumps({"code": child.returncode, "snapshots": snapshots, "request_counts": request_counts,
                       "stdout": output.decode("utf-8", "replace"),
                       "screen": screen_text(output.decode("utf-8", "replace")),
                       "stderr": stderr.decode("utf-8", "replace"),

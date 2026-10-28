@@ -974,3 +974,36 @@ fn comment_update_validates_input_and_preserves_raw_object_without_extra_fields(
         assert_eq!(r[2]["form"], json!({"content":[" 原文 test-secret\n"]}));
     });
 }
+
+#[test]
+fn resolved_search_pages_reuse_conditions_without_count_or_name_resolution() {
+    use backlog_cli::service::IssueSearch;
+    if library_process(
+        "resolved_search_pages_reuse_conditions_without_count_or_name_resolution",
+        json!({"routes":{
+            "/api/v2/projects/P":{"body":"{\"id\":123456789012345678901234567890}"},
+            "/api/v2/projects/P/statuses":{"body":"[{\"id\":2,\"name\":\"open\"}]"},
+            "/api/v2/issues/count":{"body":"{\"count\":123456789012345678901234567890}"},
+            "/api/v2/issues":{"body":"[{\"id\":1,\"issueKey\":\"P-1\",\"summary\":\"raw\",\"status\":{\"name\":\"open\"},\"unknown\":123456789012345678901234567890}]"}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        let settings: Settings = serde_json::from_value(json!({"project":"P","issue":{"list":{"status":["open"]}}})).unwrap();
+        let resolved = s.resolve_search(&settings, IssueSearch::default()).await.unwrap();
+        let first = s.search_resolved(&resolved).await.unwrap();
+        let items = s.search_page(&resolved, "1").await.unwrap();
+        assert_eq!(items, first["items"]);
+        assert_eq!(first["pagination"]["total"].to_string(), "123456789012345678901234567890");
+        let requests = requests();
+        assert_eq!(requests.len(), 5);
+        let path = requests[4]["path"].as_str().unwrap();
+        for part in ["projectId%5B%5D=123456789012345678901234567890", "statusId%5B%5D=2", "sort=updated", "order=desc", "count=20", "offset=1"] { assert!(path.contains(part), "{path}"); }
+        assert!(s.search_page(&resolved, "-1").await.is_err());
+        response(json!({"routes": {"/api/v2/issues/count":{"status":500}, "/api/v2/issues":{"body":"[]"}}}));
+        assert_eq!(s.search_resolved(&resolved).await.unwrap_err().kind, "api");
+        assert_eq!(self::requests().len(), 6, "count failure must not become an empty page");
+    });
+}
