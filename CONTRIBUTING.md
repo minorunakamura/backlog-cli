@@ -18,9 +18,9 @@ cargo audit --version
 RatatuiはCrossterm 0.29 backendを明示しています。共有単行入力はtui-input **=0.15.5**の
 Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語入力で早期実端末受入を行い、採用しました。全端末/IMEでの一致を保証するものではありません。`bl-cli project list` と候補一覧3コマンド、
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
-`bl` の基本shell（初期space/projects取得・focus・layout・端末復元）も実装しています。
+`bl` のプロジェクト選択・課題一覧ページ巡回/再取得・focus・layout・端末復元も実装しています。
 共有単行入力部品と開発専用の実端末確認経路を実装していますが、製品shellには入力欄を追加していません。
-候補選択/確定・課題操作・検索/フォームへの入力組込み・editorは後続Work Itemの範囲です。
+TUIの詳細/コメント取得・書込み・検索/フォームへの入力組込み・editorは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -136,6 +136,11 @@ key衝突を検証します。内部private関数の固定テストはありま�
 `tests/tui_process.rs` と `tests/fixtures/tty_shell.py` は実 `bl` をPTYで起動し、片側だけTTYの拒否、
 profile/help、正式な初期データと空一覧、初期API/不正応答エラー、secret/ANSI安全化、
 headers前/body待ちのq・raw Ctrl+C・SIGINT終了、termios/alternate screen/cursor復元を確認します。
+プロジェクトの移動/確定・設定project不在/巨大ID・実取得数offset/空/total境界・訪問済みページの
+選択/scrollと再通信なし・Project/Issue R成功/失敗・同project再確定/別project切替・
+遅延した成功/失敗と新busy・Esc取消も、実キー入力と描画/HTTPS記録から検証します。
+共通serviceの公開resolve_search/search_resolved/search_page境界では、条件の再解決なし・
+list-only取得・count失敗非隠蔽・JSON原文/巨大数保持を検証します。
 macOSの一時的なPENDIN（再表示待ち）ビットだけはtermios比較から除外します。
 `src/tui.rs` のPTY試験はtest binaryのWrite境界に描画エラー/panic/復元失敗を注入し、
 復元の継続・属性reset・秘匿済みエラーを検証します。同じ境界で初回描画前のSIGINTと
@@ -289,6 +294,45 @@ fixtureは `routes` があれば `"PATCH /api/v2/issues/P-1"` のようなmethod
 次に従来のpathだけのrouteでdispatchします。不明pathは404です。
 `routes` がなければ従来どおり全pathに同じ応答を返します。各routeは通常のresponseと同じ形式です。
 生成物はテスト専用で、実サービスに使わないでください。
+
+### release `bl` の直接PTY確認 (#15)
+
+上の一時root/serverを作るsubshellの `cat "$root/requests"` の前に、以下を入れて再利用できます。
+実Backlogへは接続せず、同じ検証TLS/設定でrelease `bl` を直接起動します（test binaryではありません）。
+
+```sh
+  tui="$(dirname "$cli")/bl"
+  driver="$PWD/tests/fixtures/tty_shell.py"
+  mkdir -p "$root/.backlog"
+  printf '%s\n' '{"project":"B"}' > "$root/.backlog/settings.json"
+  cat > "$root/response.json" <<'JSON'
+{"routes":{
+  "/api/v2/space":{"body":"{\"name\":\"Actual space\"}"},
+  "/api/v2/projects":{"body":"[{\"id\":2,\"projectKey\":\"B\",\"name\":\"Beta\"}]"},
+  "/api/v2/issues/count":{"sequence":[{"body":"{\"count\":3}"},{"body":"{\"count\":2}"}]},
+  "/api/v2/issues":{"offsets":{
+    "0":{"body":"[{\"id\":1,\"issueKey\":\"B-1\",\"summary\":\"First page\",\"status\":{\"name\":\"open\"}}]"},
+    "1":{"body":"[{\"id\":2,\"issueKey\":\"B-2\",\"summary\":\"Second page\",\"status\":{\"name\":\"open\"}}]"}
+  }}
+}}
+JSON
+  cat > "$root/steps.json" <<'JSON'
+[{"wait":"First page","keys":"ln"},{"wait":"Second page","keys":"p"},
+ {"wait":"First page","keys":"R"},{"wait":"total 2","keys":"q"}]
+JSON
+  (cd "$root" && env -i HOME="$root" XDG_CONFIG_HOME="$root" TEST_KEY=test-secret NO_COLOR=1 \
+    SSL_CERT_FILE="$root/tls/localhost-cert.pem" SHELL_STEPS_FILE="$root/steps.json" \
+    SHELL_REQUESTS_FILE="$root/requests" python3 "$driver" scripted "$tui")
+```
+
+出力JSONの `code:0`、`restored:true`、空 `stderr`、`request_counts:[4,5,5,7]` と各 `snapshots` を確認します。
+`screen` は終了前の100x24描画、`stdout` はraw端末出力です。driverの簡易描画復元はcursor-addressed出力のみが対象で、
+実端末の目視/IME受入を代替しません。対話操作を直接確認するなら同じ環境変数で `"$tui"` をTTY上で起動します。
+stepsの `wait` は現在画面の部分一致、`keys` は送信文字列（Enterは `\r`、Escは `\u001b`）、
+`pause` は一致後の待機秒数（既定0.08）です。routeの `sequence` は同じpathの応答を順番に返し末尾を反復、
+`offsets` はlistのoffset文字列から応答を選び、不在なら空一覧です。`header_delay`/`delay` と組み合わせて
+R失敗/取消/応答逆転を再現できます。各自動試験の具体的な組合せは `tests/tui_process.rs` を参照してください。
+
 コメントpagingはrouteに `"commentItems":[コメントobject,...]` を指定して再現できます。
 fixtureはqueryの `minId` / `maxId` を正整数として比較して境界自身を除外し、IDでsortし、`count` 件へ切り詰めます。
 `tests/issue_comment.rs` はID 1〜5の同じ集合からminのみ・maxのみ・両方・空ページの実結果と送信queryを照合します。

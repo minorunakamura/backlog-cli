@@ -46,6 +46,14 @@ impl Default for IssueSearch<'_> {
     }
 }
 
+/// Validated, resolved conditions reusable for a search refresh or list-only page.
+#[derive(Clone)]
+pub struct ResolvedIssueSearch {
+    query: Vec<(&'static str, String)>,
+    limit: u8,
+    offset: Number,
+}
+
 #[derive(Default)]
 pub struct IssueCreate<'a> {
     pub project: Option<&'a str>,
@@ -749,18 +757,18 @@ impl Service {
         settings: &Settings,
         search: IssueSearch<'_>,
     ) -> Result<Value, Error> {
+        let resolved = self.resolve_search(settings, search).await?;
+        self.search_resolved(&resolved).await
+    }
+    pub async fn resolve_search(
+        &self,
+        settings: &Settings,
+        search: IssueSearch<'_>,
+    ) -> Result<ResolvedIssueSearch, Error> {
         if !(1..=100).contains(&search.limit) {
             return Err(Error::new("input", "Limit must be between 1 and 100"));
         }
-        if search.offset.is_empty() || !search.offset.bytes().all(|c| c.is_ascii_digit()) {
-            return Err(Error::new("input", "Offset must be a nonnegative integer"));
-        }
-        let offset: Number = match search.offset.trim_start_matches('0') {
-            "" => "0",
-            n => n,
-        }
-        .parse()
-        .map_err(|_| Error::new("input", "Invalid offset"))?;
+        let offset = search_offset(search.offset)?;
         let project = search
             .project
             .or(settings.project.as_deref())
@@ -868,7 +876,19 @@ impl Service {
             }
         }
         query.extend([("sort", "updated".into()), ("order", "desc".into())]);
-        let count = self.api.get_query(&["issues", "count"], &query).await?;
+        Ok(ResolvedIssueSearch {
+            query,
+            limit: search.limit,
+            offset,
+        })
+    }
+    /// Count and list must both succeed before the caller exchanges the visible search.
+    pub async fn search_resolved(&self, search: &ResolvedIssueSearch) -> Result<Value, Error> {
+        let count = self
+            .api
+            .get_query(&["issues", "count"], &search.query)
+            .await?;
+
         let total = count
             .get("count")
             .filter(|n| {
@@ -876,12 +896,25 @@ impl Service {
                     .is_some_and(|n| n.to_string().bytes().all(|c| c.is_ascii_digit()))
             })
             .ok_or_else(|| invalid_response("Count response has invalid required fields"))?;
+        let items = self.search_page(search, &search.offset.to_string()).await?;
+        Ok(
+            serde_json::json!({"items": items, "pagination": {"offset": search.offset, "limit": search.limit, "count": items.as_array().unwrap().len(), "total": total}}),
+        )
+    }
+    /// Fetch a single page without recounting or resolving names again; preserve API JSON.
+    pub async fn search_page(
+        &self,
+        search: &ResolvedIssueSearch,
+        offset: &str,
+    ) -> Result<Value, Error> {
+        let offset = search_offset(offset)?;
+        let mut query = search.query.clone();
         query.extend([
             ("count", search.limit.to_string()),
             ("offset", offset.to_string()),
         ]);
         let items = self.api.get_query(&["issues"], &query).await?;
-        let length = items
+        items
             .as_array()
             .filter(|items| {
                 items.iter().all(|item| {
@@ -896,11 +929,8 @@ impl Service {
                             .is_some_and(Value::is_string)
                 })
             })
-            .ok_or_else(|| invalid_response("Issues response has invalid required fields"))?
-            .len();
-        Ok(
-            serde_json::json!({"items": items, "pagination": {"offset": offset, "limit": search.limit, "count": length, "total": total}}),
-        )
+            .ok_or_else(|| invalid_response("Issues response has invalid required fields"))?;
+        Ok(items)
     }
     async fn resolve_search_values(
         &self,
@@ -1148,4 +1178,16 @@ fn valid_date(value: &str) -> bool {
         _ => 0,
     };
     year != 0 && day != 0 && day <= days
+}
+
+fn search_offset(offset: &str) -> Result<Number, Error> {
+    if offset.is_empty() || !offset.bytes().all(|c| c.is_ascii_digit()) {
+        return Err(Error::new("input", "Offset must be a nonnegative integer"));
+    }
+    match offset.trim_start_matches('0') {
+        "" => "0",
+        n => n,
+    }
+    .parse()
+    .map_err(|_| Error::new("input", "Invalid offset"))
 }

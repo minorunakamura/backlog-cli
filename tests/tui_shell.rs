@@ -86,7 +86,11 @@ fn shell_focus_reaches_empty_right_panels_and_returns_without_claiming_issue_sel
     assert!(screen(&shell, 40, 12).contains("> Comment"));
     key(&mut shell, KeyCode::Esc, KeyModifiers::NONE, 40, 12);
     let issue = screen(&shell, 40, 12);
-    assert!(issue.contains("> Issue List") && issue.contains("Not implemented"));
+    assert!(issue.contains("> Issue List") && issue.contains("Select a project"));
+    assert!(
+        !issue.contains("Cancelled"),
+        "Esc without a read is navigation only"
+    );
     for unimplemented in ["search", "create", "refresh", "editor", "Ctrl+O", "Ctrl+A"] {
         assert!(!issue.contains(unimplemented));
     }

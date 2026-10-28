@@ -3,8 +3,8 @@
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
-`bl` は初期space/projects取得・パネル配置・focus移動・端末復元の基本shellを利用できます。
-TUIのプロジェクト候補選択・確定、課題/コメント操作・検索・入力・editor連携は未実装です。
+`bl` はプロジェクト選択、課題一覧のページ巡回と再取得、端末復元を利用できます。
+TUIの検索ダイアログ・横断検索・プレビュー/詳細/コメント取得・書込み・入力・editor連携は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
 ```sh
@@ -12,7 +12,7 @@ cargo run --locked --bin bl -- --help
 cargo run --locked --bin bl-cli -- project list --json
 ```
 
-## TUI基本shell
+## TUIプロジェクト・課題一覧
 
 ```sh
 bl                  # default profile、stdin/stdoutの両方がTTY必須
@@ -21,9 +21,19 @@ NO_COLOR=1 bl        # 色なしでも二重枠・太字・>でfocusを表示
 ```
 
 起動時に正式なspace名と参加プロジェクトを取得します。取得中もfocus移動・終了・中断ができ、
-失敗はstderrに明示して非0で終了します。空projectsの成功と取得失敗を区別します。
-プロジェクトは表示のみ・未確定で、設定projectからの自動選択や課題取得は行いません。
-Workspaceの `*` は未実装の設定入口マーカーで、editorは開きません。
+失敗はstderrに明示して非0で終了します。初期space/projects取得が完了するまで、Esc/Rや候補の移動・確定は受け付けません。
+空projectsの成功と取得失敗を区別します。
+設定project（キー/ID）が候補にあれば初期対象として課題を取得します。設定なし/候補に不在なら
+明示選択を案内し、先頭候補を勝手に確定しません。Workspaceの `*` は未実装の設定入口マーカーです。
+
+- Project List: j/k・上下は候補移動だけ（通信なし）。Enterで確定し、focusはProjectに維持します。
+  別projectは設定の検索statusを適用して新しい一覧へ切替。同projectの再確定は現在の条件/履歴を保持します。
+- Issue List: j/k・上下で選択、p/nでページ移動。既定20件・更新日時降順で、実取得数から次offsetを求めます。
+  訪問済みページの内容/選択/scrollはメモリ保持し、再訪では通信しません。全件自動取得はしません。
+- R: Projectではprojectsだけを再取得。確定projectが候補から消えても課題一覧や条件は変更しません。
+  Issueでは現在の解決済み条件でcountと先頭listを取得し、両方の成功後だけ履歴を置換します。
+- 取得失敗は画面に通知し、以前の内容/選択/scroll/履歴を保持。Escは実行中の読取りを取消して表示を保持します。
+  取消/切替前の古い応答は新しい表示やbusyを変更しません。通信中もfocus移動・終了・中断ができます。
 
 - 100列×24行以上: Workspace / Project List / Issue List / Issue Detail / Comment。
 - 40列×12行以上: focus中パネルのみ。h/l・Tab/Shift+Tabは左2パネル内または右2パネル内を切替。

@@ -9,6 +9,7 @@ import ssl
 import subprocess
 import sys
 import time
+import threading
 import urllib.parse
 
 root = pathlib.Path(sys.argv[1])
@@ -23,6 +24,8 @@ class LoopbackServer(http.server.ThreadingHTTPServer):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    sequences = {}
+    sequence_lock = threading.Lock()
     def log_message(self, *_):
         pass
 
@@ -41,6 +44,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             path = self.path.split("?", 1)[0]
             routes = response["routes"]
             response = routes.get(f"{self.command} {path}", routes.get(path, {"status": 404}))
+        if "sequence" in response:
+            key = (self.path.split("?", 1)[0], json.dumps(response))
+            with self.sequence_lock:
+                index = self.sequences.get(key, 0)
+                self.sequences[key] = index + 1
+            response = response["sequence"][min(index, len(response["sequence"]) - 1)]
+        if "offsets" in response:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            response = response["offsets"].get(query.get("offset", ["0"])[0], {"body": "[]"})
         if "commentItems" in response:
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             items = response["commentItems"]
