@@ -15,11 +15,12 @@ cargo audit --version
 
 単一Cargo packageに共通library (`src/lib.rs`) と `bl` / `bl-cli` を置きます。
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
-RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
-候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
+RatatuiはCrossterm 0.29 backendを明示しています。共有単行入力はtui-input **=0.15.5**の
+Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語入力で早期実端末受入を行い、採用しました。全端末/IMEでの一致を保証するものではありません。`bl-cli project list` と候補一覧3コマンド、
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
 `bl` の基本shell（初期space/projects取得・focus・layout・端末復元）も実装しています。
-候補選択/確定・課題操作・入力・editorは後続Work Itemの範囲です。
+共有単行入力部品と開発専用の実端末確認経路を実装していますが、製品shellには入力欄を追加していません。
+候補選択/確定・課題操作・検索/フォームへの入力組込み・editorは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -146,6 +147,36 @@ macOSの一時的なPENDIN（再表示待ち）ビットだけはtermios比較�
 cargo test --locked --test tui_shell --test tui_process
 cargo test --locked --lib tui::tests::shell_ -- --nocapture
 ```
+
+### 単行入力部品 (#14)
+
+`tests/tui_input.rs` は公開 `tui::SingleLineInput` のevent→value/draw境界で、
+日本語/結合文字/ZWJ emojiのgrapheme編集・実cursor位置・長文水平scroll（u16列上限超も含む）、
+resize/focusでの原文保持、貼付けCRLF/CR/LF/TABのspace正規化、表示範囲外のsecret/制御文字による
+全欄伏字と固定cursor、極小時の編集/cursor保護を確認します。空secretは伏字判定から除外します。
+`src/tui.rs` の入力shell試験は、通常文字/編集キーとglobal操作の衝突、Ctrl+C優先、focus/resize、
+実Crossterm bracketed paste→安全表示→終了/復元を同じ入力部品とloop/guardで検証します。
+通常shellのキーと端末復元試験も維持します。
+
+```sh
+cargo test --locked --test tui_input --test tui_shell --test tui_process
+cargo test --locked --lib tui::tests:: -- --nocapture
+```
+
+実IME/目視は通常の自動テストでは実行せず、明示起動するignored testを実端末で使用します。
+実API・設定file・実keyは不要で、製品CLIへのdebug flag/commandや永続状態はありません。
+
+```sh
+cargo test --locked --lib tui::tests::manual_single_line_input_terminal -- --ignored --exact --nocapture --test-threads=1
+```
+
+stdin/stdoutの両方がTTYである必要があります（pipeやリダイレクト不可）。
+入力中はq/h/l/j/kも文字で、Tab/Shift+Tabでfocus切替、Escで編集を離れた後qで終了、Ctrl+Cは常に中断です。
+40x12未満では編集せずq/Ctrl+Cだけを受け付けます。bracketed pasteはguardが開始/解除します。
+手動testは製品と同じ端末loop/guardを使いますが、初期API取得だけを省き、入力原文をdebug出力しません。
+再実施手順・環境・**実IMEのユーザー確認結果と未実施の個別操作**は
+[manual-acceptance.md](docs/testing/manual-acceptance.md#単行入力部品-14-早期実端末確認)を参照してください。
+自動PTY成功と実IMEのユーザー確認を区別して記録します。
 
 ### ローカルHTTPS harness
 

@@ -48,6 +48,8 @@ child = subprocess.Popen([binary, *args],
                          stdout=subprocess.PIPE if mode == "stdin-only" else slave,
                          stderr=subprocess.PIPE)
 action_sent = False
+paste_sent = False
+input_left = False
 try:
     while child.poll() is None:
         if time.monotonic() - started > 8:
@@ -58,6 +60,17 @@ try:
             child.send_signal(signal.SIGINT)
             os.write(master, b"\x00")
             action_sent = True
+        if mode.startswith("input-"):
+            if not paste_sent and b"Input" in output:
+                os.write(master, b"qhljk\x1b[200~test-secret\r\n\t\x1b]52;c;clipboard\x07\x1b[201~")
+                paste_sent = True
+            if not input_left and b"[REDACTED]" in output:
+                os.write(master, b"\x03" if mode == "input-interrupt" else b"\x1b")
+                input_left = True
+                action_sent = mode == "input-interrupt"
+            if not action_sent and b"unfocused" in output:
+                os.write(master, b"q")
+                action_sent = True
         # Other actions wait for a rendered screen, not merely raw-mode entry.
         marker = os.environ.get("SHELL_WAIT_MARKER")
         ready = not marker or os.path.exists(marker)

@@ -1,12 +1,17 @@
 //! Basic read-only shell. Issue operations and settings editing are not implemented here.
+mod input;
 use crate::{Error, api::Api, config::Config, safety};
 use crossterm::{
     cursor::{Hide, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers,
+    },
     execute,
     style::{Attribute, SetAttribute},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+pub use input::SingleLineInput;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -36,6 +41,8 @@ pub struct Shell {
     space: Option<String>,
     projects: Vec<String>,
     no_color: bool,
+    #[cfg(test)]
+    input_check: Option<tests::InputCheck>,
 }
 impl Shell {
     pub fn new(no_color: bool) -> Self {
@@ -44,6 +51,8 @@ impl Shell {
             space: None,
             projects: vec![],
             no_color,
+            #[cfg(test)]
+            input_check: None,
         }
     }
     fn loaded(&mut self, space: Value, projects: Value, secret: &str) {
@@ -72,6 +81,10 @@ impl Shell {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Some(130);
         }
+        #[cfg(test)]
+        if let Some(input) = &mut self.input_check {
+            return input.key(key, area);
+        }
         if key.modifiers.is_empty() && key.code == KeyCode::Char('q') {
             return Some(0);
         }
@@ -98,6 +111,17 @@ impl Shell {
         }
         None
     }
+    fn event(&mut self, event: Event, area: Rect) -> Option<u8> {
+        match event {
+            Event::Key(key) => self.key(key, area),
+            #[cfg(test)]
+            Event::Paste(_) if self.input_check.as_ref().is_some_and(|input| input.focused) => {
+                self.input_check.as_mut().unwrap().field.event(&event, area);
+                None
+            }
+            _ => None,
+        }
+    }
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let area = frame.area();
         if area.width < 40 || area.height < 12 {
@@ -106,6 +130,11 @@ impl Shell {
                     .wrap(Wrap { trim: false }),
                 area,
             );
+            return;
+        }
+        #[cfg(test)]
+        if let Some(input) = &self.input_check {
+            input.draw(frame);
             return;
         }
         let compact = area.width < 100 || area.height < 24;
@@ -204,7 +233,9 @@ impl<W: Write> TerminalGuard<W> {
         enable_raw_mode().map_err(|_| Error::new("terminal", "Cannot enable raw mode"))?;
         execute!(self.output, EnterAlternateScreen)
             .map_err(|_| Error::new("terminal", "Cannot enter alternate screen"))?;
-        execute!(self.output, Hide).map_err(|_| Error::new("terminal", "Cannot hide cursor"))
+        execute!(self.output, Hide).map_err(|_| Error::new("terminal", "Cannot hide cursor"))?;
+        execute!(self.output, EnableBracketedPaste)
+            .map_err(|_| Error::new("terminal", "Cannot enable bracketed paste"))
     }
     fn restore(&mut self) -> Result<(), Error> {
         if !self.active {
@@ -214,6 +245,9 @@ impl<W: Write> TerminalGuard<W> {
         let mut failed = vec![];
         if disable_raw_mode().is_err() {
             failed.push("raw mode");
+        }
+        if execute!(self.output, DisableBracketedPaste).is_err() {
+            failed.push("bracketed paste");
         }
         if execute!(self.output, SetAttribute(Attribute::Reset)).is_err() {
             failed.push("style");
@@ -248,6 +282,13 @@ pub fn run(config: Config) -> Result<(), Error> {
     run_on(config, io::stdout())
 }
 fn run_on<W: Write>(config: Config, output: W) -> Result<(), Error> {
+    run_shell_on(
+        config,
+        output,
+        Shell::new(std::env::var_os("NO_COLOR").is_some()),
+    )
+}
+fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result<(), Error> {
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -262,21 +303,26 @@ fn run_on<W: Write>(config: Config, output: W) -> Result<(), Error> {
         let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
             .map_err(|_| Error::new("terminal", "Cannot receive interrupt signals"))?;
         guard.enter()?;
-        let api = Api::new(&config)?;
-        pending = Some(tokio::spawn(async move {
-            let space = api.space().await.map_err(|mut error| {
-                error.message = format!("Initial space retrieval failed: {}", error.message);
-                error
-            })?;
-            let projects = api.project_list().await.map_err(|mut error| {
-                error.message = format!("Initial projects retrieval failed: {}", error.message);
-                error
-            })?;
-            Ok((space, projects))
-        }));
+        #[cfg(not(test))]
+        let load_initial = true;
+        #[cfg(test)]
+        let load_initial = shell.input_check.is_none();
+        if load_initial {
+            let api = Api::new(&config)?;
+            pending = Some(tokio::spawn(async move {
+                let space = api.space().await.map_err(|mut error| {
+                    error.message = format!("Initial space retrieval failed: {}", error.message);
+                    error
+                })?;
+                let projects = api.project_list().await.map_err(|mut error| {
+                    error.message = format!("Initial projects retrieval failed: {}", error.message);
+                    error
+                })?;
+                Ok((space, projects))
+            }));
+        }
         let mut terminal = Terminal::new(CrosstermBackend::new(&mut guard.output))
             .map_err(|_| Error::new("terminal", "Cannot initialize terminal"))?;
-        let mut shell = Shell::new(std::env::var_os("NO_COLOR").is_some());
         let mut interval = tokio::time::interval(Duration::from_millis(16));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -296,11 +342,10 @@ fn run_on<W: Write>(config: Config, output: W) -> Result<(), Error> {
                     // Bound work per tick even during a stream of paste/resize events.
                     for _ in 0..32 {
                         if !event::poll(Duration::ZERO).map_err(|_| Error::new("terminal", "Cannot poll terminal input"))? { break; }
-                        if let Event::Key(key) = event::read().map_err(|_| Error::new("terminal", "Cannot read terminal input"))? {
-                            let size = terminal.size().map_err(|_| Error::new("terminal", "Cannot read terminal size"))?;
-                            if let Some(code) = shell.key(key, Rect::new(0, 0, size.width, size.height)) {
-                                return if code == 0 { Ok(()) } else { Err(Error::new("interrupted", "Operation interrupted")) };
-                            }
+                        let event = event::read().map_err(|_| Error::new("terminal", "Cannot read terminal input"))?;
+                        let size = terminal.size().map_err(|_| Error::new("terminal", "Cannot read terminal size"))?;
+                        if let Some(code) = shell.event(event, Rect::new(0, 0, size.width, size.height)) {
+                            return if code == 0 { Ok(()) } else { Err(Error::new("interrupted", "Operation interrupted")) };
                         }
                     }
                 }
@@ -333,6 +378,171 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::{io::Read, process::Command};
+
+    pub(super) struct InputCheck {
+        pub(super) field: SingleLineInput,
+        pub(super) focused: bool,
+    }
+    impl InputCheck {
+        fn new() -> Self {
+            Self {
+                field: SingleLineInput::new(String::new()),
+                focused: true,
+            }
+        }
+        pub(super) fn key(&mut self, key: KeyEvent, area: Rect) -> Option<u8> {
+            if area.width < 40 || area.height < 12 {
+                return (key.code == KeyCode::Char('q') && key.modifiers.is_empty()).then_some(0);
+            }
+            match key.code {
+                KeyCode::Tab | KeyCode::BackTab
+                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    self.focused = !self.focused;
+                }
+                KeyCode::Esc if key.modifiers.is_empty() => self.focused = false,
+                _ if self.focused => self.field.event(&Event::Key(key), area),
+                KeyCode::Char('q') if key.modifiers.is_empty() => return Some(0),
+                _ => {}
+            }
+            None
+        }
+        pub(super) fn draw(&self, frame: &mut Frame<'_>) {
+            frame.render_widget(Paragraph::new("Input check (no network)\nTab/Shift+Tab: focus | Esc: leave input\nOutside input: q: quit | Ctrl+C: interrupt"), Rect::new(0, 0, frame.area().width, 3));
+            let field = Rect::new(1, 4, frame.area().width.saturating_sub(2), 1);
+            self.field
+                .draw(frame, field, self.focused, &["test-secret"]);
+            frame.render_widget(
+                Paragraph::new(if self.focused {
+                    "> Input"
+                } else {
+                    "Input (unfocused)"
+                }),
+                Rect::new(0, 3, frame.area().width, 1),
+            );
+        }
+    }
+
+    /// Run directly in a real terminal; never enabled by the normal test suite.
+    #[test]
+    #[ignore = "manual real-terminal/IME acceptance; see docs/testing/manual-acceptance.md"]
+    fn manual_single_line_input_terminal() {
+        use std::io::IsTerminal;
+        assert!(
+            io::stdin().is_terminal() && io::stdout().is_terminal(),
+            "stdin and stdout must both be TTYs"
+        );
+        let mut shell = Shell::new(std::env::var_os("NO_COLOR").is_some());
+        shell.input_check = Some(InputCheck::new());
+        let config = Config {
+            origin: "https://localhost:9".parse().unwrap(),
+            api_key: "test-secret".into(),
+            settings: Default::default(),
+            editor: vec!["vim".into()],
+        };
+        if let Err(error) = run_shell_on(config, io::stdout(), shell) {
+            eprintln!("{}", error.message);
+            std::process::exit(error.exit_code().into());
+        }
+    }
+
+    #[test]
+    fn input_shell_routes_editing_keys_before_global_keys_and_retains_values_on_focus_and_resize() {
+        use ratatui::backend::TestBackend;
+        let mut shell = Shell::new(true);
+        shell.input_check = Some(InputCheck::new());
+        let area = Rect::new(0, 0, 40, 12);
+        for c in "qhljk".chars() {
+            assert_eq!(
+                shell.event(
+                    Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                    area
+                ),
+                None
+            );
+        }
+        assert_eq!(shell.input_check.as_ref().unwrap().field.value(), "qhljk");
+        for code in [KeyCode::Left, KeyCode::Backspace] {
+            shell.event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), area);
+        }
+        assert_eq!(shell.input_check.as_ref().unwrap().field.value(), "qhlk");
+        for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Esc] {
+            shell.event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), area);
+        }
+        assert_eq!(shell.input_check.as_ref().unwrap().field.value(), "qhlk");
+        shell.event(Event::Paste("ignored".into()), area);
+        assert_eq!(shell.input_check.as_ref().unwrap().field.value(), "qhlk");
+        shell.event(
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            area,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
+        assert!(terminal.backend().cursor_visible());
+        let tiny = Rect::new(0, 0, 39, 12);
+        for code in [KeyCode::Backspace, KeyCode::Esc, KeyCode::Tab] {
+            shell.event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), tiny);
+        }
+        shell.event(Event::Paste("ignored".into()), tiny);
+        assert_eq!(shell.input_check.as_ref().unwrap().field.value(), "qhlk");
+        assert!(shell.input_check.as_ref().unwrap().focused);
+        assert_eq!(
+            shell.event(
+                Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+                area
+            ),
+            Some(130)
+        );
+        assert_eq!(
+            shell.event(
+                Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                tiny
+            ),
+            Some(0)
+        );
+        shell.event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            area,
+        );
+        assert_eq!(
+            shell.event(
+                Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                area
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn input_shell_pty_normalizes_and_masks_paste_and_restores_the_terminal() {
+        for (mode, code) in [("input-quit", 0), ("input-interrupt", 130)] {
+            let output = Command::new("python3")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/tty_shell.py"
+                ))
+                .arg(mode)
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tui::tests::manual_single_line_input_terminal",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["code"], code, "{result}");
+            assert_eq!(result["restored"], true, "{result}");
+            let screen = result["stdout"].as_str().unwrap();
+            assert!(screen.contains("[REDACTED]"), "{result}");
+            assert!(screen.contains("\x1b[?2004h") && screen.contains("\x1b[?2004l"));
+            assert!(!result.to_string().contains("test-secret"));
+            assert!(!screen.contains("\x1b]52"));
+        }
+    }
 
     // Inject faults at the terminal Write boundary, never through a product debug flag.
     struct FaultOutput {
@@ -537,6 +747,14 @@ mod tests {
             assert_eq!(result["code"], 0, "{fault}: {result}");
             assert_eq!(result["restored"], true, "{fault}: {result}");
             let screen = result["stdout"].as_str().unwrap();
+            assert!(
+                screen.contains("\x1b[?2004h"),
+                "paste not enabled: {result}"
+            );
+            assert!(
+                screen.contains("\x1b[?2004l"),
+                "paste not restored: {result}"
+            );
             assert!(
                 screen.contains("\x1b[0m\x1b[?1049l\x1b[?25h"),
                 "{fault}: {result}"
