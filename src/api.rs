@@ -90,56 +90,70 @@ impl Api {
         Ok(value)
     }
     pub(crate) async fn create_issue(&self, form: &[(&str, String)]) -> Result<Value, Error> {
-        self.write_issue(None, form).await
+        self.write(&["issues"], reqwest::Method::POST, "issue.create", form)
+            .await
     }
     pub(crate) async fn update_issue(
         &self,
         issue: &str,
         form: &[(&str, String)],
     ) -> Result<Value, Error> {
-        self.write_issue(Some(issue), form).await
+        self.write(
+            &["issues", issue],
+            reqwest::Method::PATCH,
+            "issue.update",
+            form,
+        )
+        .await
     }
-    async fn write_issue(
+    pub(crate) async fn add_comment(&self, issue: &str, body: &str) -> Result<Value, Error> {
+        self.write(
+            &["issues", issue, "comments"],
+            reqwest::Method::POST,
+            "comment.add",
+            &[("content", body.into())],
+        )
+        .await
+    }
+    pub(crate) async fn update_issue_for_comment(
         &self,
-        issue: Option<&str>,
+        issue: &str,
         form: &[(&str, String)],
     ) -> Result<Value, Error> {
-        let (operation, not_written, written, expected_status) = if issue.is_some() {
-            (
-                "issue.update",
-                WriteOutcome::NotUpdated,
-                WriteOutcome::Updated,
-                200,
-            )
+        self.write(
+            &["issues", issue],
+            reqwest::Method::PATCH,
+            "comment.add",
+            form,
+        )
+        .await
+    }
+    async fn write(
+        &self,
+        segments: &[&str],
+        method: reqwest::Method,
+        operation: &'static str,
+        form: &[(&str, String)],
+    ) -> Result<Value, Error> {
+        let (not_written, written, expected_status) = if method == reqwest::Method::POST {
+            (WriteOutcome::NotCreated, WriteOutcome::Created, 201)
         } else {
-            (
-                "issue.create",
-                WriteOutcome::NotCreated,
-                WriteOutcome::Created,
-                201,
-            )
+            (WriteOutcome::NotUpdated, WriteOutcome::Updated, 200)
         };
-        let mut url = self.origin.join("api/v2/issues").expect("fixed path");
-        if let Some(issue) = issue {
-            url.path_segments_mut()
-                .expect("validated origin")
-                .push(issue);
-        }
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .expect("validated origin")
+            .clear()
+            .extend(["api", "v2"])
+            .extend(segments);
         let request = self
             .client
-            .request(
-                if issue.is_some() {
-                    reqwest::Method::PATCH
-                } else {
-                    reqwest::Method::POST
-                },
-                url,
-            )
+            .request(method, url)
             .header("Backlog-API-Key", self.key.clone())
             .form(form)
             .build()
             .map_err(|_| {
-                Error::new("input", "Cannot construct issue write request")
+                Error::new("input", "Cannot construct write request")
                     .with_write_outcome(operation, not_written)
             })?;
         let state = std::sync::Arc::new(std::sync::Mutex::new((not_written, None)));

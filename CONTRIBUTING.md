@@ -17,8 +17,8 @@ cargo audit --version
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
-`issue list/mine/view/create/update` / `issue comment list/view` と共通libraryの候補/名前解決/検索/詳細・コメント取得・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
-コメントの書込み・TUIの機能は後続Work Itemの範囲です。
+`issue list/mine/view/create/update` / `issue comment list/view/add` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
+既存コメント本文の更新・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -95,6 +95,14 @@ stdin/事前GET/送信後/200 headers後のCtrl+Cでも確度を保持し、retr
 200後の中断は `patch-headers-sent` markerを待ち、事前GETの200 markerとは区別します。
 `tests/service.rs` の公開 `Service::issue_update` 試験でも原文/巨大ID・URL、比較に使うIDの検証と未使用field非要求、
 直接ID/部分更新・no-op・入力検証時の通信なし・日付順序の独自制限なし・確度を確認します。
+`tests/comment_add.rs` は実CLI/HTTPS境界で本文のみ/同値指定時の単一POST、実変更時の最新GET+単一PATCHを検証します。
+UTF-8原文のliteral/file/明示stdin・空/未指定本文、名前/ID/解除の排他と単一指定、resolution ID 0、対象projectでの名前解決とself、
+create既定値非流用・状態に伴う完了理由の自動変更なし、同値/変更なしの非書込み、raw data/未知field/巨大整数とurl非追加を確認します。
+引数/config/本文/事前GET/名前解決失敗時はcomment.add/not_created、実方式選択後はPOST/PATCHそれぞれの確度語彙を確認します。
+4xx拒否・切断/5xx/redirect・201/200後のbody/decode/必須field/出力失敗・key衝突・30秒timeoutと、stdin待ち/GET/送信後/成功headers後の
+Ctrl+Cでも確度を保持し、retry/権限fallback/二重書込み/コメントID補完GETがないことをmethod/path/formと件数で照合します。
+`tests/service.rs` の公開 `Service::comment_add` 試験でも原文/secret・巨大整数、未使用field非要求、ID0の解除、
+入力検証時の通信なしと確度、返却dataのurl非追加を確認します。
 `tests/body.rs` は公開 `body::display/display_with_origin` からMarkdown/Backlogの見出し/list/強調/引用/code/checklist/通常表、
 複合記法・通常改行/空行/TAB・code/escapeの保護、可視link/画像/参照、HTML/未知macroの内容保持、
 難しい表/未知記法の原文fallbackを確認します。Backlogの課題linkは設定origin/keyの共通検証・URL構築を使い、
@@ -135,6 +143,7 @@ cargo test --locked --test issue_view
 cargo test --locked --test issue_comment
 cargo test --locked --test issue_create
 cargo test --locked --test issue_update
+cargo test --locked --test comment_add
 cargo test --locked --test body
 cargo test --locked --test https_fixture
 # 30秒のbody timeoutだけを再確認

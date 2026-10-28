@@ -2,7 +2,7 @@
 
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
-`issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` を利用できます。
+`issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` を利用できます。
 その他のCLI操作とTUI画面は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -286,6 +286,41 @@ JSONは一覧が `{"items":[...]}`、個別詳細は元のAPI objectです（url
 JSONではコメントGETだけで、記法確認用のissue/project GETは行いません。
 入力エラーはexit 2、取得・応答検証・表示/出力エラーはexit 1で、全構築成功後だけstdoutへ出します。
 
+## コメント追加・課題項目の変更
+
+```sh
+bl-cli issue comment add MYAPP-123 -b "確認しました"
+printf '対応内容\n' | bl-cli issue comment add MYAPP-123 --body-file - -s 完了 --resolution-id 0 --json
+bl-cli issue comment add MYAPP-123 --assignee self --clear-resolution
+```
+
+`--body/-b` または `--body-file`、`--status/-s` / `--status-id`、`--assignee/-a` / `--assignee-id`、
+`--resolution` / `--resolution-id`、`--clear-assignee` / `--clear-resolution` だけを受け付けます。
+名前/ID/解除は項目ごとに排他、すべて単一指定です。IDは正整数、完了理由だけ0も有効です。
+名前は完全一致（不在・複数一致は入力エラー）、`--assignee self` は選択profileの認証ユーザーです。
+課題項目を指定した場合は対象課題の最新値と比較し、実変更だけ送ります。
+名前解決には対象課題のprojectを使い、cwdのprojectやcreate既定値は適用しません。
+状態変更に応じた完了理由の自動設定・解除も行いません。
+
+本文はUTF-8原文の空白・改行・記法・制御文字をtrim/変換せず送ります。本文入力の両flagは空文字も含め排他、
+空文字・空ファイル・空stdinは本文なしです。`--body-file -` のときだけstdinを読み、本文省略でeditorや確認待ちを起動しません。
+本文も課題項目の実変更もなければinput（exit 2）として書き込みません。
+
+- 課題項目の実変更なし（同値指定も含む）: POST `/api/v2/issues/:issueIdOrKey/comments` に `content=<本文>`。
+  本文だけの場合は事前GETも行いません。成功は201と正整数コメントIDを検証し、固定表示は `CREATED` とID、
+  JSONは `{"resource":"comment","data":<元のコメントobject>}` です。
+- 実変更あり: PATCH `/api/v2/issues/:issueIdOrKey` に変更項目と、非空本文があれば `comment=<本文>`。
+  解除値は空文字で送信します。成功は200と正整数課題ID・有効なissueKeyを検証し、固定表示は `UPDATED` と課題キー、
+  JSONは `{"resource":"issue","data":<元の課題object>}` です。課題objectにurlを追加・上書きしません。
+
+未知field・大整数・通常文字列は保持し、出力時に共通safetyを適用します。
+書込みは一回だけで、二重書込み、権限不足時の本文POSTへのfallback、コメントID補完/成功確認の追加GET、retryはしません。
+エラーは引数・設定・本文・事前GET・名前解決を含め `write.operation: "comment.add"` を持ちます。
+方式未確定の送信前エラーは `not_created`、POST選択後は `not_created/unknown/created`、
+PATCH選択後は `not_updated/unknown/updated` です。具体的な4xx拒否・不明応答の判定は課題作成/更新と同じです。
+201/200観測後は本文読取・decode・必須field検証・出力失敗・中断でも `created/updated` を保持します。
+終了コードは確度と独立し、成功0、入力エラー2、実行エラー1、中断130です。
+
 ## 共通libraryの候補取得・名前解決
 
 CLI/TUIから共通に `service::Service::new(&Config)` を使えます（生成だけでは通信しません）。
@@ -329,6 +364,11 @@ offsetは任意精度を保つ10進文字列で受け取り、返却値は数値
 `Default` は全項目未指定です。設定引数は持たず、名前解決に使うprojectは対象課題から取得します。
 比較に使うID・本文・日付などを検証し、使用しない表示名や未指定項目は要求しません。
 返却値は作成同様に原文objectと構築urlの `Value` です。
+`comment_add(issue_id_or_key: &str, CommentAdd)` は上記の追加操作の共通入口です。
+`CommentAdd` は `body: Option<&str>`、`status/assignee/resolution: Option<Selection>` と
+`clear_assignee/clear_resolution: bool` を受け取り、`Default` は全項目未指定です。
+設定引数は持たず、必要な最新値取得・名前解決・差分比較と単一POST/PATCH・確度判定を行います。
+返却 `Value` は `resource/data` の形で、dataは安全化前の元object（url追加なし）です。
 失敗時は `Error::write` の `WriteResult { operation, outcome: WriteOutcome }` で確度を取得できます。
 `WriteOutcome` は `NotCreated/Unknown/Created/NotUpdated/Updated`、従来の `CreateOutcome` 名は同じenumの再exportです。
 作成エラーのJSON語彙・`with_create_outcome` の動作は維持しています。
