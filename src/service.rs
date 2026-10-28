@@ -1,5 +1,5 @@
 use crate::{
-    CreateOutcome, Error,
+    CreateOutcome, Error, WriteOutcome,
     api::Api,
     config::{Config, Settings},
 };
@@ -60,6 +60,25 @@ pub struct IssueCreate<'a> {
     pub due_date: Option<&'a str>,
 }
 
+#[derive(Default)]
+pub struct IssueUpdate<'a> {
+    pub title: Option<&'a str>,
+    pub body: Option<&'a str>,
+    pub issue_type: Option<Selection<'a>>,
+    pub priority: Option<Selection<'a>>,
+    pub status: Option<Selection<'a>>,
+    pub assignee: Option<Selection<'a>>,
+    pub resolution: Option<Selection<'a>>,
+    pub milestone: Vec<Selection<'a>>,
+    pub start_date: Option<&'a str>,
+    pub due_date: Option<&'a str>,
+    pub clear_assignee: bool,
+    pub clear_resolution: bool,
+    pub clear_start_date: bool,
+    pub clear_due_date: bool,
+    pub clear_milestones: bool,
+}
+
 pub struct Service {
     api: Api,
 }
@@ -68,6 +87,237 @@ impl Service {
         Ok(Self {
             api: Api::new(config)?,
         })
+    }
+    pub async fn issue_update(&self, issue: &str, update: IssueUpdate<'_>) -> Result<Value, Error> {
+        self.update_issue_inner(issue, update)
+            .await
+            .map_err(|error| error.with_update_outcome(WriteOutcome::NotUpdated))
+    }
+    async fn update_issue_inner(
+        &self,
+        issue: &str,
+        update: IssueUpdate<'_>,
+    ) -> Result<Value, Error> {
+        validate_issue_identifier(issue)?;
+        if update.title.is_some_and(|title| title.trim().is_empty()) {
+            return Err(Error::new("input", "Title must not be blank"));
+        }
+        for (clear, specified) in [
+            (update.clear_assignee, update.assignee.is_some()),
+            (update.clear_resolution, update.resolution.is_some()),
+            (update.clear_start_date, update.start_date.is_some()),
+            (update.clear_due_date, update.due_date.is_some()),
+            (update.clear_milestones, !update.milestone.is_empty()),
+        ] {
+            if clear && specified {
+                return Err(Error::new(
+                    "input",
+                    "Value and clear flag are mutually exclusive",
+                ));
+            }
+        }
+        for date in [update.start_date, update.due_date].into_iter().flatten() {
+            if !valid_date(date) {
+                return Err(Error::new("input", "Date must be a real YYYY-MM-DD date"));
+            }
+        }
+        if update
+            .milestone
+            .iter()
+            .any(|s| matches!(s, Selection::Name(_)))
+            && update
+                .milestone
+                .iter()
+                .any(|s| matches!(s, Selection::Id(_)))
+        {
+            return Err(Error::new(
+                "input",
+                "Milestone names and IDs are mutually exclusive",
+            ));
+        }
+        // Direct IDs need no candidates, and invalid IDs fail before fetching the issue.
+        for (candidate, selection) in [
+            (Candidate::IssueType { project: "" }, update.issue_type),
+            (Candidate::Priority, update.priority),
+            (Candidate::Status { project: "" }, update.status),
+            (Candidate::Assignee { project: "" }, update.assignee),
+            (Candidate::Resolution, update.resolution),
+        ] {
+            if let Some(Selection::Id(id)) = selection {
+                self.resolve(candidate, Selection::Id(id)).await?;
+            }
+        }
+        for selection in &update.milestone {
+            if let Selection::Id(id) = selection {
+                self.resolve(Candidate::Milestone { project: "" }, Selection::Id(id))
+                    .await?;
+            }
+        }
+        let latest = self.api.get(&["issues", issue]).await?;
+        let project = response_id(&latest["projectId"], false)?.to_string();
+        let project = project.as_str();
+        let mut form = Vec::new();
+        if let Some(title) = update.title {
+            let current = latest
+                .get("summary")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_response("Issue response has invalid summary"))?;
+            if title != current {
+                form.push(("summary", title.into()));
+            }
+        }
+        if let Some(body) = update.body {
+            let current = latest
+                .get("description")
+                .ok_or_else(|| invalid_response("Issue response has invalid description"))?;
+            let current = if current.is_null() {
+                ""
+            } else {
+                current
+                    .as_str()
+                    .ok_or_else(|| invalid_response("Issue response has invalid description"))?
+            };
+            if body != current {
+                form.push(("description", body.into()));
+            }
+        }
+        for (field, parameter, candidate, selection, clear) in [
+            (
+                "issueType",
+                "issueTypeId",
+                Candidate::IssueType { project },
+                update.issue_type,
+                false,
+            ),
+            (
+                "priority",
+                "priorityId",
+                Candidate::Priority,
+                update.priority,
+                false,
+            ),
+            (
+                "status",
+                "statusId",
+                Candidate::Status { project },
+                update.status,
+                false,
+            ),
+            (
+                "assignee",
+                "assigneeId",
+                Candidate::Assignee { project },
+                update.assignee,
+                update.clear_assignee,
+            ),
+            (
+                "resolution",
+                "resolutionId",
+                Candidate::Resolution,
+                update.resolution,
+                update.clear_resolution,
+            ),
+        ] {
+            if selection.is_none() && !clear {
+                continue;
+            }
+            let current = latest
+                .get(field)
+                .ok_or_else(|| invalid_response("Issue response has invalid comparison field"))?;
+            let nullable = matches!(
+                candidate,
+                Candidate::Assignee { .. } | Candidate::Resolution
+            );
+            let current = if nullable && current.is_null() {
+                None
+            } else {
+                Some(response_id(
+                    &current["id"],
+                    matches!(candidate, Candidate::Resolution),
+                )?)
+            };
+            let desired = match selection {
+                Some(selection) => Some(self.resolve(candidate, selection).await?),
+                None => None,
+            };
+            if current != desired {
+                form.push((
+                    parameter,
+                    desired.map(|id| id.to_string()).unwrap_or_default(),
+                ));
+            }
+        }
+        for (field, date, clear) in [
+            ("startDate", update.start_date, update.clear_start_date),
+            ("dueDate", update.due_date, update.clear_due_date),
+        ] {
+            if date.is_none() && !clear {
+                continue;
+            }
+            let current = latest
+                .get(field)
+                .ok_or_else(|| invalid_response("Issue response has invalid date"))?;
+            let current = if current.is_null() {
+                None
+            } else {
+                let text = current
+                    .as_str()
+                    .ok_or_else(|| invalid_response("Issue response has invalid date"))?;
+                // Backlog date fields include a time suffix; compare only the calendar date.
+                Some(
+                    text.get(..10)
+                        .filter(|date| valid_date(date))
+                        .ok_or_else(|| invalid_response("Issue response has invalid date"))?,
+                )
+            };
+            if current != date {
+                form.push((field, date.unwrap_or_default().into()));
+            }
+        }
+        if !update.milestone.is_empty() || update.clear_milestones {
+            let mut current = latest
+                .get("milestone")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid_response("Issue response has invalid milestones"))?
+                .iter()
+                .map(|v| response_id(&v["id"], false).map(|id| id.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let desired = self
+                .resolve_search_values(Candidate::Milestone { project }, update.milestone)
+                .await?;
+            current.sort();
+            current.dedup();
+            let mut sorted = desired.clone();
+            sorted.sort();
+            if current != sorted {
+                if desired.is_empty() {
+                    form.push(("milestoneId[]", String::new()));
+                } else {
+                    form.extend(desired.into_iter().map(|id| ("milestoneId[]", id)));
+                }
+            }
+        }
+        if form.is_empty() {
+            return Err(Error::new("input", "No fields have changed"));
+        }
+        let mut value = self.api.update_issue(issue, &form).await?;
+        let key = value
+            .get("issueKey")
+            .and_then(Value::as_str)
+            .filter(|key| {
+                issue_key(key)
+                    && value
+                        .get("id")
+                        .and_then(Value::as_number)
+                        .is_some_and(|id| positive_integer(&id.to_string()))
+            })
+            .ok_or_else(|| {
+                invalid_response("Updated issue response has invalid required fields")
+                    .with_update_outcome(WriteOutcome::Updated)
+            })?;
+        let url = self.api.issue_url(key);
+        value["url"] = Value::String(url);
+        Ok(value)
     }
     pub async fn issue_create(
         &self,
@@ -659,6 +909,17 @@ impl Service {
         let items = self.candidates(candidate).await?;
         resolve_name(&items, name)
     }
+}
+
+fn response_id(value: &Value, zero: bool) -> Result<Number, Error> {
+    value
+        .as_number()
+        .filter(|id| {
+            let text = id.to_string();
+            positive_integer(&text) || (zero && text == "0")
+        })
+        .cloned()
+        .ok_or_else(|| invalid_response("Issue response has invalid ID"))
 }
 
 fn resolve_name(items: &Value, name: &str) -> Result<Number, Error> {

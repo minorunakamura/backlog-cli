@@ -693,3 +693,130 @@ fn issue_create_preserves_raw_response_and_body_and_validates_before_post() {
         assert_eq!(requests().last().unwrap()["method"],"GET");
     });
 }
+
+#[test]
+fn issue_update_compares_latest_title_and_preserves_raw_response() {
+    use backlog_cli::service::IssueUpdate;
+    let original = json!({"id":1,"issueKey":"P-1","summary":"changed test-secret\u{1b}","unknown":["123456789012345678901234567890".parse::<serde_json::Number>().unwrap()]});
+    if library_process(
+        "issue_update_compares_latest_title_and_preserves_raw_response",
+        json!({"routes":{
+            "GET /api/v2/issues/P-1":{"body":"{\"projectId\":42,\"summary\":\"old\"}"},
+            "PATCH /api/v2/issues/P-1":{"body":original.to_string()}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        let value = s
+            .issue_update(
+                "P-1",
+                IssueUpdate {
+                    title: Some("changed test-secret\u{1b}"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut expected = original;
+        expected["url"] = json!(format!(
+            "{}/view/P-1",
+            std::env::var("SERVICE_TEST").unwrap()
+        ));
+        assert_eq!(value, expected);
+        assert_eq!(requests().len(), 2);
+        assert_eq!(requests()[1]["method"], "PATCH");
+        assert_eq!(
+            requests()[1]["form"],
+            json!({"summary":["changed test-secret\u{1b}"]})
+        );
+        let error = s
+            .issue_update(
+                "P-1",
+                IssueUpdate {
+                    title: Some("old"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!((error.kind, error.exit_code()), ("input", 2));
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["write"],
+            json!({"operation":"issue.update","outcome":"not_updated"})
+        );
+        assert_eq!(requests().len(), 3);
+    });
+}
+
+#[test]
+fn issue_update_validates_public_inputs_and_only_used_comparison_fields() {
+    use backlog_cli::service::IssueUpdate;
+    if library_process(
+        "issue_update_validates_public_inputs_and_only_used_comparison_fields",
+        json!({"routes":{
+            "GET /api/v2/issues/0007":{"body":"{\"projectId\":987654321098765432109876543210,\"description\":null,\"assignee\":null}"},
+            "PATCH /api/v2/issues/0007":{"body":"{\"id\":7,\"issueKey\":\"P-7\",\"raw\":\"test-secret\\u001b\"}"}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s=service();
+        for update in [
+            IssueUpdate{title:Some(" \n\t"),..Default::default()},
+            IssueUpdate{assignee:Some(Selection::Name("self")),clear_assignee:true,..Default::default()},
+            IssueUpdate{resolution:Some(Selection::Id("0")),clear_resolution:true,..Default::default()},
+            IssueUpdate{start_date:Some("2024-01-01"),clear_start_date:true,..Default::default()},
+            IssueUpdate{due_date:Some("2024-01-01"),clear_due_date:true,..Default::default()},
+            IssueUpdate{milestone:vec![Selection::Id("1")],clear_milestones:true,..Default::default()},
+            IssueUpdate{milestone:vec![Selection::Name("v1"),Selection::Id("1")],..Default::default()},
+            IssueUpdate{issue_type:Some(Selection::Id("0")),..Default::default()},
+            IssueUpdate{priority:Some(Selection::Id("1e2")),..Default::default()},
+            IssueUpdate{status:Some(Selection::Id("-1")),..Default::default()},
+            IssueUpdate{assignee:Some(Selection::Id("0")),..Default::default()},
+            IssueUpdate{resolution:Some(Selection::Id("1.5")),..Default::default()},
+            IssueUpdate{milestone:vec![Selection::Id("0")],..Default::default()},
+            IssueUpdate{start_date:Some("2100-02-29"),..Default::default()},
+            IssueUpdate{due_date:Some("2024-04-31"),..Default::default()},
+        ] {
+            let e=s.issue_update("0007",update).await.unwrap_err();
+            assert_eq!((e.kind,e.exit_code(),e.http_status),("input",2,None));
+            assert_eq!(serde_json::to_value(e).unwrap()["write"],json!({"operation":"issue.update","outcome":"not_updated"}));
+        }
+        for issue in ["","0","P-0","../P-1"] {assert_eq!(s.issue_update(issue,IssueUpdate::default()).await.unwrap_err().kind,"input");}
+        assert!(requests().is_empty());
+        let value=s.issue_update("0007",IssueUpdate{body:Some(" \n原文 test-secret\u{1b}\t "),assignee:Some(Selection::Id("00123456789012345678901234567890")),..Default::default()}).await.unwrap();
+        assert_eq!(value["raw"],"test-secret\u{1b}");
+        assert_eq!(value["url"],format!("{}/view/P-7",std::env::var("SERVICE_TEST").unwrap()));
+        assert_eq!(requests().len(),2);
+        assert_eq!(requests()[0]["path"],"/api/v2/issues/0007");
+        assert_eq!(requests()[1]["form"],json!({"description":[" \n原文 test-secret\u{1b}\t "],"assigneeId":["123456789012345678901234567890"]}));
+        // The minimal latest object has no display names or omitted fields.
+        for update in [IssueUpdate{body:Some(""),..Default::default()},IssueUpdate{clear_assignee:true,..Default::default()}] {
+            assert_eq!(s.issue_update("0007",update).await.unwrap_err().kind,"input");
+        }
+        assert_eq!(requests().len(),4);
+        for body in [
+            json!({"projectId":42,"status":{"name":"open"}}),
+            json!({"projectId":42,"status":{"id":0}}),
+            json!({"projectId":42,"status":{"id":"1"}}),
+            json!({"projectId":42,"status":null}),
+        ] {
+            response(json!({"body":body.to_string()}));
+            let e=s.issue_update("0007",IssueUpdate{status:Some(Selection::Id("2")),..Default::default()}).await.unwrap_err();
+            assert_eq!((e.kind,e.http_status),("invalid_response",Some(200)));
+            assert_eq!(serde_json::to_value(e).unwrap()["write"]["outcome"],"not_updated");
+        }
+        assert_eq!(requests().len(),8);
+        response(json!({"routes":{
+            "GET /api/v2/issues/0007":{"body":"{\"projectId\":42,\"startDate\":null,\"dueDate\":null}"},
+            "PATCH /api/v2/issues/0007":{"body":"not json"}
+        }}));
+        let e=s.issue_update("0007",IssueUpdate{start_date:Some("2400-02-29"),due_date:Some("2000-02-29"),..Default::default()}).await.unwrap_err();
+        assert_eq!((e.kind,e.http_status),("invalid_response",Some(200)));
+        assert_eq!(serde_json::to_value(e).unwrap()["write"]["outcome"],"updated");
+        assert_eq!(requests().last().unwrap()["form"],json!({"startDate":["2400-02-29"],"dueDate":["2000-02-29"]}));
+    });
+}

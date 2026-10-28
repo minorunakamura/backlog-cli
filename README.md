@@ -2,7 +2,7 @@
 
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
-`issue list` / `issue mine` / `issue view` / `issue create` / `issue comment list` / `issue comment view` を利用できます。
+`issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` を利用できます。
 その他のCLI操作とTUI画面は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -216,6 +216,49 @@ JSONは元objectへ検証済みorigin/keyからの `url` を追加します。�
 {"error":{"kind":"network","message":"Response body failed or timed out","httpStatus":201,"apiErrors":[],"write":{"operation":"issue.create","outcome":"created"}}}
 ```
 
+## 課題の部分更新
+
+```sh
+bl-cli issue update MYAPP-123 -t "修正" -b "修正内容" --status 完了 --resolution-id 0
+bl-cli issue update 123 --assignee self --milestone-id 8 --milestone-id 9 --json
+printf '' | bl-cli issue update MYAPP-123 --body-file - --clear-due-date --clear-milestones
+```
+
+対象は正整数IDまたは課題キーです。最新の課題をGETし、明示入力と比較して異なる項目だけを
+単一PATCH `/api/v2/issues/:issueIdOrKey` へform送信します。未指定項目は保持し、全く変更がなければ
+input（exit 2、PATCHなし）です。projectは最新課題のprojectIdで判断し、cwdのproject・create既定値は
+適用しません。`--project`・`--created`・`--updated` やコメント送信flagは受け付けません。
+競合検出・自動mergeはなく、GET後に同じ項目が他者に変更される可能性は残ります。
+
+更新項目は `--title/-t`・`--body/-b` / `--body-file`・`--issue-type`・`--priority`・
+`--assignee/-a`・`--status/-s`・`--resolution`・`--start-date`・`--due-date`・`--milestone/-m` です。
+名前と対応する `--issue-type-id` / `--priority-id` / `--assignee-id` / `--status-id` /
+`--resolution-id` / `--milestone-id` は項目ごとに排他。名前は対象project（優先度・完了理由はspace）の
+候補で完全一致解決し、不在・複数一致は入力エラーです。`--assignee self` は選択profileの認証ユーザー。
+直接IDは候補GETなしで、任意精度の正整数を使います。resolution ID 0は値であり解除ではありません。
+
+`--clear-assignee`・`--clear-resolution`・`--clear-start-date`・`--clear-due-date`・`--clear-milestones`
+が明示解除で、対応する値指定と排他です。担当者・完了理由・日付は空値、milestoneは空の `milestoneId[]` を
+送ります。milestoneは反復可能で指定集合へ置換し、重複IDは一度だけ送信、順番だけの変更は送信しません。
+他の単一flagの反復は拒否します。タイトル・実在日付の検証は作成と同じで、日付の前後関係は制限しません。
+応答の日付に時刻が付いていても、変更判定はカレンダー日付で比較します。
+
+本文はUTF-8の原文（空白・改行・制御文字を含む）をtrim・変換せず送信します。
+本文省略なら保持、明示空文字・空file・空stdinなら解除で、null本文と空本文は同値です。
+`--body` / `--body-file` は空指定も含め排他、`--body-file -` だけがstdinを読みます。
+TTYでもeditorや確認を起動せず、成功確認GET・retry・redirect追従・永続的な結果管理はしません。
+
+HTTP 200の応答object・正整数id・安全なissueKeyを検証し、固定表示は `UPDATED` / `URL`、
+JSONは元の応答objectへ検証済みorigin/keyからの `url` を追加します。未知field・大整数は保持し、表示時だけ安全化します。
+識別できる更新エラーは引数・設定・本文・事前GET/名前解決を含め `write.operation: "issue.update"` を持ちます。
+送信前または信頼できる具体的な4xx拒否は `not_updated`、送信開始後の成否不明は `unknown`、
+200観測後は本文読取・decode・必須field検証・出力失敗・中断でも `updated` を保持します。
+終了コードは確度と独立で、通常の後続エラーは1、処理可能なCtrl+C中断は130です。結果不明・更新済みから再送は促しません。
+
+```json
+{"error":{"kind":"network","message":"Response body failed or timed out","httpStatus":200,"apiErrors":[],"write":{"operation":"issue.update","outcome":"updated"}}}
+```
+
 ## コメントの読取り
 
 ```sh
@@ -279,7 +322,16 @@ offsetは任意精度を保つ10進文字列で受け取り、返却値は数値
 `Default` は全項目未指定（titleは空文字）で、必須値は呼出し時に検証します。
 既定値・入力検証・名前解決・重複除去・単一POST・確度判定を共通で行い、元objectとurlの `Value` を返します。
 返却値と送信本文はsecret/制御文字を含む原文のままで、表示の安全化とは分離しています。
-失敗時は `Error::write` の `WriteResult { operation, outcome: CreateOutcome }` で確度を取得できます。
+`issue_update(issue_id_or_key: &str, IssueUpdate)` は最新取得・変更判定・名前解決・単一PATCH・確度判定の共通入口です。
+`IssueUpdate` は `title/body/start_date/due_date: Option<&str>`、
+`issue_type/priority/status/assignee/resolution: Option<Selection>`、`milestone: Vec<Selection>` と
+`clear_assignee/clear_resolution/clear_start_date/clear_due_date/clear_milestones: bool` を受け取ります。
+`Default` は全項目未指定です。設定引数は持たず、名前解決に使うprojectは対象課題から取得します。
+比較に使うID・本文・日付などを検証し、使用しない表示名や未指定項目は要求しません。
+返却値は作成同様に原文objectと構築urlの `Value` です。
+失敗時は `Error::write` の `WriteResult { operation, outcome: WriteOutcome }` で確度を取得できます。
+`WriteOutcome` は `NotCreated/Unknown/Created/NotUpdated/Updated`、従来の `CreateOutcome` 名は同じenumの再exportです。
+作成エラーのJSON語彙・`with_create_outcome` の動作は維持しています。
 
 共通 `body::display(raw, text_formatting_rule, secrets)` が本文表示入口です。
 Markdownはpulldown-cmark、Backlog記法は主要構造の変換と原文fallbackを使い、最後に共通safetyを適用します。

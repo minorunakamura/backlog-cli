@@ -1,10 +1,10 @@
 use backlog_cli::{
-    CreateOutcome, Error,
+    CreateOutcome, Error, WriteOutcome,
     api::Api,
     body,
     config::Config,
     safety,
-    service::{Candidate, IssueCreate, IssueSearch, Selection, Service},
+    service::{Candidate, IssueCreate, IssueSearch, IssueUpdate, Selection, Service},
 };
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use serde_json::{Value, json};
@@ -49,6 +49,7 @@ enum Command {
 #[derive(Subcommand)]
 enum Issue {
     Create(Box<CreateArgs>),
+    Update(Box<UpdateArgs>),
     List(ListArgs),
     Mine(SearchArgs),
     View {
@@ -107,6 +108,54 @@ struct CreateArgs {
     milestone: Vec<String>,
     #[arg(long, conflicts_with = "milestone")]
     milestone_id: Vec<String>,
+}
+#[derive(clap::Args)]
+struct UpdateArgs {
+    issue_id_or_key: String,
+    #[arg(long, short = 't')]
+    title: Option<String>,
+    #[arg(long, short = 'b', conflicts_with = "body_file")]
+    body: Option<String>,
+    #[arg(long, conflicts_with = "body")]
+    body_file: Option<String>,
+    #[arg(long, conflicts_with = "issue_type_id")]
+    issue_type: Option<String>,
+    #[arg(long, conflicts_with = "issue_type")]
+    issue_type_id: Option<String>,
+    #[arg(long, conflicts_with = "priority_id")]
+    priority: Option<String>,
+    #[arg(long, conflicts_with = "priority")]
+    priority_id: Option<String>,
+    #[arg(long, short = 'a', conflicts_with_all = ["assignee_id", "clear_assignee"])]
+    assignee: Option<String>,
+    #[arg(long, conflicts_with_all = ["assignee", "clear_assignee"])]
+    assignee_id: Option<String>,
+    #[arg(long, conflicts_with_all = ["assignee", "assignee_id"])]
+    clear_assignee: bool,
+    #[arg(long, conflicts_with = "clear_start_date")]
+    start_date: Option<String>,
+    #[arg(long, conflicts_with = "clear_due_date")]
+    due_date: Option<String>,
+    #[arg(long, short = 'm', conflicts_with_all = ["milestone_id", "clear_milestones"])]
+    milestone: Vec<String>,
+    #[arg(long, conflicts_with_all = ["milestone", "clear_milestones"])]
+    milestone_id: Vec<String>,
+    #[arg(long, short = 's', conflicts_with = "status_id")]
+    status: Option<String>,
+    #[arg(long, conflicts_with = "status")]
+    status_id: Option<String>,
+    #[arg(long, conflicts_with_all = ["resolution_id", "clear_resolution"])]
+    resolution: Option<String>,
+    #[arg(long, conflicts_with_all = ["resolution", "clear_resolution"])]
+    resolution_id: Option<String>,
+    #[arg(long, conflicts_with_all = ["resolution", "resolution_id"])]
+    clear_resolution: bool,
+    #[arg(long, conflicts_with = "start_date")]
+    clear_start_date: bool,
+    #[arg(long, conflicts_with = "due_date")]
+    clear_due_date: bool,
+    #[arg(long, conflicts_with_all = ["milestone", "milestone_id"])]
+    clear_milestones: bool,
 }
 #[derive(clap::Args)]
 struct ListArgs {
@@ -269,6 +318,8 @@ fn report(mut error: Error, json_mode: bool, secrets: &[&str]) -> ExitCode {
                         CreateOutcome::NotCreated => "not_created",
                         CreateOutcome::Unknown => "unknown",
                         CreateOutcome::Created => "created",
+                        CreateOutcome::NotUpdated => "not_updated",
+                        CreateOutcome::Updated => "updated",
                     }
                 )
             })
@@ -278,9 +329,12 @@ fn report(mut error: Error, json_mode: bool, secrets: &[&str]) -> ExitCode {
     let _ = io::stderr().lock().write_all(message.as_bytes());
     ExitCode::from(code)
 }
-async fn read_create_body(create: &CreateArgs) -> Result<Option<String>, Error> {
-    let Some(path) = create.body_file.clone() else {
-        return Ok(create.body.clone());
+async fn read_body(
+    body: &Option<String>,
+    body_file: &Option<String>,
+) -> Result<Option<String>, Error> {
+    let Some(path) = body_file.clone() else {
+        return Ok(body.clone());
     };
     let (sender, receiver) = tokio::sync::oneshot::channel();
     // A detached reader lets Ctrl+C stop explicit stdin input without waiting for EOF.
@@ -311,7 +365,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
         command: Issue::Create(create),
     } = &args.command
     {
-        let body = read_create_body(create).await?;
+        let body = read_body(&create.body, &create.body_file).await?;
         let value = Service::new(config)?
             .issue_create(
                 &config.settings,
@@ -358,6 +412,71 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
         return output.map_err(|mut error: Error| {
             error.http_status = Some(201);
             error.with_create_outcome(CreateOutcome::Created)
+        });
+    }
+    if let Command::Issue {
+        command: Issue::Update(update),
+    } = &args.command
+    {
+        let body = read_body(&update.body, &update.body_file).await?;
+        let value = Service::new(config)?
+            .issue_update(
+                &update.issue_id_or_key,
+                IssueUpdate {
+                    title: update.title.as_deref(),
+                    body: body.as_deref(),
+                    issue_type: update
+                        .issue_type
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(update.issue_type_id.as_deref().map(Selection::Id)),
+                    priority: update
+                        .priority
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(update.priority_id.as_deref().map(Selection::Id)),
+                    status: update
+                        .status
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(update.status_id.as_deref().map(Selection::Id)),
+                    assignee: update
+                        .assignee
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(update.assignee_id.as_deref().map(Selection::Id)),
+                    resolution: update
+                        .resolution
+                        .as_deref()
+                        .map(Selection::Name)
+                        .or(update.resolution_id.as_deref().map(Selection::Id)),
+                    milestone: selections(&update.milestone, &update.milestone_id),
+                    clear_assignee: update.clear_assignee,
+                    clear_resolution: update.clear_resolution,
+                    start_date: update.start_date.as_deref(),
+                    due_date: update.due_date.as_deref(),
+                    clear_start_date: update.clear_start_date,
+                    clear_due_date: update.clear_due_date,
+                    clear_milestones: update.clear_milestones,
+                },
+            )
+            .await?;
+        let output = (|| {
+            let secrets = &[config.api_key.as_str()];
+            let output = if args.json {
+                format!("{}\n", safety::json(&value, secrets)?)
+            } else {
+                format!(
+                    "UPDATED\t{}\nURL\t{}\n",
+                    safety::text(value["issueKey"].as_str().expect("validated key"), secrets),
+                    safety::text(value["url"].as_str().expect("constructed URL"), secrets)
+                )
+            };
+            write_stdout(&output)
+        })();
+        return output.map_err(|mut error: Error| {
+            error.http_status = Some(200);
+            error.with_update_outcome(WriteOutcome::Updated)
         });
     }
     if let Command::Issue {
@@ -517,7 +636,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
                 false,
             ),
             Issue::Mine(search) => (search, vec![], true),
-            Issue::Create(..) | Issue::View { .. } | Issue::Comment { .. } => {
+            Issue::Create(..) | Issue::Update(..) | Issue::View { .. } | Issue::Comment { .. } => {
                 unreachable!("handled read")
             }
         };
@@ -643,22 +762,23 @@ async fn main() -> ExitCode {
         .skip(1)
         .take_while(|arg| *arg != "--")
         .any(|arg| arg == "--json" || arg.as_encoded_bytes().starts_with(b"--json="));
-    let identified_create = Args::command()
+    let identified_write = Args::command()
         .ignore_errors(true)
         .try_get_matches_from(&argv)
         .ok()
         .and_then(|matches| {
             matches
                 .subcommand_matches("issue")
-                .map(|issue| issue.subcommand_name() == Some("create"))
-        })
-        .unwrap_or(false);
-    let parse_error = |error: Error| {
-        if identified_create {
-            error.with_create_outcome(CreateOutcome::NotCreated)
-        } else {
-            error
-        }
+                .and_then(|issue| match issue.subcommand_name() {
+                    Some("create") => Some("issue.create"),
+                    Some("update") => Some("issue.update"),
+                    _ => None,
+                })
+        });
+    let parse_error = |error: Error| match identified_write {
+        Some("issue.create") => error.with_create_outcome(CreateOutcome::NotCreated),
+        Some("issue.update") => error.with_update_outcome(WriteOutcome::NotUpdated),
+        _ => error,
     };
     let args = match Args::try_parse_from(&argv) {
         Ok(args) => args,
@@ -709,26 +829,22 @@ async fn main() -> ExitCode {
             );
         }
     }
-    let is_create = matches!(
-        &args.command,
+    let write_error = |error: Error| match &args.command {
         Command::Issue {
-            command: Issue::Create(_)
-        }
-    );
-    let create_error = |error: Error| {
-        if is_create {
-            error.with_create_outcome(CreateOutcome::NotCreated)
-        } else {
-            error
-        }
+            command: Issue::Create(_),
+        } => error.with_create_outcome(CreateOutcome::NotCreated),
+        Command::Issue {
+            command: Issue::Update(_),
+        } => error.with_update_outcome(WriteOutcome::NotUpdated),
+        _ => error,
     };
     let config = match Config::load(&args.profile) {
         Ok(config) => config,
-        Err(error) => return report(create_error(error), args.json, &[]),
+        Err(error) => return report(write_error(error), args.json, &[]),
     };
     let result = run(&args, &config).await;
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => report(create_error(error), args.json, &[&config.api_key]),
+        Err(error) => report(write_error(error), args.json, &[&config.api_key]),
     }
 }

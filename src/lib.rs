@@ -10,15 +10,20 @@ use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CreateOutcome {
+pub enum WriteOutcome {
     NotCreated,
     Unknown,
     Created,
+    NotUpdated,
+    Updated,
 }
+/// Creation callers retain the same source and serialized outcome vocabulary.
+pub use WriteOutcome as CreateOutcome;
+
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct WriteResult {
     pub operation: &'static str,
-    pub outcome: CreateOutcome,
+    pub outcome: WriteOutcome,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,11 +47,14 @@ impl Error {
         }
     }
     /// Add fallback metadata without lowering certainty already recorded by communication.
-    pub fn with_create_outcome(mut self, outcome: CreateOutcome) -> Self {
-        self.write.get_or_insert(WriteResult {
-            operation: "issue.create",
-            outcome,
-        });
+    pub fn with_create_outcome(self, outcome: CreateOutcome) -> Self {
+        self.with_write_outcome("issue.create", outcome)
+    }
+    pub fn with_update_outcome(self, outcome: WriteOutcome) -> Self {
+        self.with_write_outcome("issue.update", outcome)
+    }
+    pub fn with_write_outcome(mut self, operation: &'static str, outcome: WriteOutcome) -> Self {
+        self.write.get_or_insert(WriteResult { operation, outcome });
         self
     }
     pub fn exit_code(&self) -> u8 {
