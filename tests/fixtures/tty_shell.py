@@ -15,8 +15,9 @@ import unicodedata
 
 
 def screen_text(data):
+    height, width = struct.unpack("HHHH", fcntl.ioctl(slave, termios.TIOCGWINSZ, b"\0" * 8))[:2]
     # shortcut: cursor-addressed shell output only; use an emulator for more VT behavior.
-    cells = [[" "] * 100 for _ in range(24)]
+    cells = [[" "] * width for _ in range(height)]
     row = col = 0
     for token in re.split(r"(\x1b\[[0-?]*[ -/]*[@-~])", data):
         if token.startswith("\x1b["):
@@ -24,7 +25,7 @@ def screen_text(data):
                 coordinates = token[2:-1].split(";")
                 row, col = [int(n or 1) - 1 for n in coordinates]
             elif token in ("\x1b[2J", "\x1b[3J"):
-                cells = [[" "] * 100 for _ in range(24)]
+                cells = [[" "] * width for _ in range(height)]
             continue
         for char in token:
             if char == "\r":
@@ -32,7 +33,7 @@ def screen_text(data):
             elif char == "\n":
                 row += 1
             elif not unicodedata.combining(char):
-                if 0 <= row < 24 and 0 <= col < 100:
+                if 0 <= row < height and 0 <= col < width:
                     cells[row][col] = char
                 col += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
     return "\n".join("".join(row) for row in cells)
@@ -53,12 +54,15 @@ input_left = False
 steps_path = os.environ.get("SHELL_STEPS_FILE")
 steps = json.load(open(steps_path)) if steps_path and os.path.exists(steps_path) else []
 snapshots = []
+sent_at = []
 request_counts = []
+browse_request_counts = []
 step_ready_at = None
 try:
     while child.poll() is None:
         if time.monotonic() - started > 8:
-            raise AssertionError("shell did not exit responsively")
+            screen = screen_text(output.decode("utf-8", "replace"))
+            raise AssertionError(f"shell did not exit responsively; remaining steps={steps!r}; screen={screen!r}")
         if select.select([master], [], [], 0.02)[0]:
             output.extend(os.read(master, 65536))
         if not action_sent and mode == "early-signal" and b"\x1b[?25l" in output:
@@ -79,13 +83,22 @@ try:
         if mode == "scripted" and steps:
             step = steps[0]
             screen = screen_text(output.decode("utf-8", "replace"))
-            if step.get("wait", "") in screen:
+            marker = step.get("wait_file")
+            marker_ready = not marker or os.path.exists(os.path.join(os.path.dirname(os.environ["SHELL_REQUESTS_FILE"]), marker))
+            if step.get("wait", "") in screen and marker_ready:
                 if step_ready_at is None:
                     step_ready_at = time.monotonic() + step.get("pause", 0.08)
                 if time.monotonic() >= step_ready_at:
                     snapshots.append(screen)
                     requests_path = os.environ.get("SHELL_REQUESTS_FILE")
                     request_counts.append(len(open(requests_path).readlines()) if requests_path and os.path.exists(requests_path) else 0)
+                    records = [json.loads(line) for line in open(requests_path)] if requests_path and os.path.exists(requests_path) else []
+                    browse_request_counts.append(sum(not re.fullmatch(r"/api/v2/(issues/[^/?]+|projects/[^/?]+)", record["path"]) for record in records))
+                    sent_at.append(time.time())
+                    if "resize" in step:
+                        height, width = step["resize"]
+                        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", height, width, 0, 0))
+                        child.send_signal(signal.SIGWINCH)
                     os.write(master, step.get("keys", "").encode())
                     steps.pop(0)
                     step_ready_at = None
@@ -111,7 +124,7 @@ try:
     # macOS sets transient PENDIN when restoring cooked input without a subsequent read.
     before[3] &= ~getattr(termios, "PENDIN", 0)
     after[3] &= ~getattr(termios, "PENDIN", 0)
-    print(json.dumps({"code": child.returncode, "snapshots": snapshots, "request_counts": request_counts,
+    print(json.dumps({"code": child.returncode, "snapshots": snapshots, "sent_at": sent_at, "request_counts": request_counts, "browse_request_counts": browse_request_counts,
                       "stdout": output.decode("utf-8", "replace"),
                       "screen": screen_text(output.decode("utf-8", "replace")),
                       "stderr": stderr.decode("utf-8", "replace"),

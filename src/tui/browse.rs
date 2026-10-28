@@ -1,4 +1,7 @@
-use super::Focus;
+use super::{
+    Focus,
+    detail::{self, Detail},
+};
 use crate::{
     Error,
     api::Api,
@@ -8,7 +11,7 @@ use crate::{
 };
 use crossterm::event::KeyCode;
 use serde_json::{Number, Value};
-use std::sync::Arc;
+use std::{process::Stdio, sync::Arc, time::Instant};
 
 #[derive(Clone)]
 struct Project {
@@ -65,11 +68,19 @@ impl Search {
 enum Target {
     Projects,
     Issues,
+    Detail,
+    Browser,
 }
 #[derive(Clone, Copy)]
 pub(super) struct RequestId(Target, u64);
 
 enum Operation {
+    Detail {
+        key: String,
+    },
+    Browser {
+        key: String,
+    },
     Initial,
     Projects,
     Search {
@@ -87,6 +98,8 @@ pub(super) struct Request {
     operation: Operation,
 }
 enum Data {
+    Detail(String, String),
+    Browser,
     Initial(Value, Value),
     Projects(Value),
     Search(Project, ResolvedIssueSearch, Value),
@@ -106,6 +119,48 @@ impl Request {
         let initial = matches!(self.operation, Operation::Initial);
         let result = async {
             match self.operation {
+                Operation::Detail { key } => {
+                    if !crate::service::issue_key(&key) {
+                        return Err(Error::new("invalid_response", "Invalid selected issue key"));
+                    }
+                    let service = Service::new(&config)?;
+                    let issue = service.issue_view(&key).await?;
+                    if issue["issueKey"].as_str() != Some(&key) {
+                        return Err(Error::new(
+                            "invalid_response",
+                            "Issue response does not match selected key",
+                        ));
+                    }
+                    let rule = service
+                        .project_text_formatting_rule(issue["projectId"].as_number().unwrap())
+                        .await?;
+                    Ok(Data::Detail(key, detail::display(&issue, &rule, &config)))
+                }
+                Operation::Browser { key } => {
+                    if !crate::service::issue_key(&key) {
+                        return Err(Error::new("invalid_response", "Invalid selected issue key"));
+                    }
+                    let url = crate::api::issue_url(&config.origin, &key);
+                    if url.contains(&config.api_key) {
+                        return Err(Error::new(
+                            "input",
+                            "Cannot open a URL containing the API key",
+                        ));
+                    }
+                    let status = tokio::process::Command::new("open")
+                        .arg(url)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .kill_on_drop(true)
+                        .status()
+                        .await
+                        .map_err(|_| Error::new("output", "Cannot launch browser"))?;
+                    if !status.success() {
+                        return Err(Error::new("output", "Browser launch failed"));
+                    }
+                    Ok(Data::Browser)
+                }
                 Operation::Initial => {
                     let api = Api::new(&config)?;
                     let space = api.space().await.map_err(|mut error| {
@@ -168,15 +223,21 @@ pub(super) struct Browse {
     generation: u64,
     projects_busy: Option<u64>,
     issues_busy: Option<u64>,
+    detail_busy: Option<u64>,
+    browser_busy: Option<u64>,
+    pub(super) detail: Detail,
     pub(super) requests: Vec<Request>,
     notice: String,
-    secret: String,
+    pub(super) error_notice: Option<String>,
+    pub(super) secret: String,
 }
 impl Browse {
     pub(super) fn is_current(&self, id: RequestId) -> bool {
         (match id.0 {
             Target::Projects => self.projects_busy,
             Target::Issues => self.issues_busy,
+            Target::Detail => self.detail_busy,
+            Target::Browser => self.browser_busy,
         }) == Some(id.1)
     }
     pub(super) fn start(&mut self, secret: &str) {
@@ -186,7 +247,11 @@ impl Browse {
     fn request(&mut self, target: Target, operation: Operation) {
         self.generation += 1;
         *self.busy(target) = Some(self.generation);
-        self.notice.clear();
+        if target == Target::Detail {
+            self.detail.notice.clear();
+        } else {
+            self.notice.clear();
+        }
         self.requests.push(Request {
             generation: self.generation,
             target,
@@ -197,6 +262,8 @@ impl Browse {
         match target {
             Target::Projects => &mut self.projects_busy,
             Target::Issues => &mut self.issues_busy,
+            Target::Detail => &mut self.detail_busy,
+            Target::Browser => &mut self.browser_busy,
         }
     }
     pub(super) fn complete(
@@ -212,11 +279,22 @@ impl Browse {
             Ok(data) => data,
             Err(error) if response.initial => return Err(error),
             Err(error) => {
-                self.notice = safety::text(&format!("Failed: {}", error.message), &[&self.secret]);
+                let notice = safety::text(&format!("Failed: {}", error.message), &[&self.secret]);
+                if response.target == Target::Detail {
+                    self.detail.status = "Preview failed";
+                }
+                self.error_notice = Some(notice);
                 return Ok(());
             }
         };
+        let reset_detail = matches!(data, Data::Search(..));
         match data {
+            Data::Detail(key, text) => {
+                if self.detail.key.as_ref() == Some(&key) {
+                    self.detail.replace(text);
+                }
+            }
+            Data::Browser => {}
             Data::Initial(space, projects) => {
                 self.space = Some(safety::text(
                     space["name"].as_str().unwrap(),
@@ -256,7 +334,52 @@ impl Browse {
                 }
             }
         }
+        self.sync_selection(reset_detail);
         Ok(())
+    }
+    fn selected_key(&self) -> Option<String> {
+        let search = self.search.as_ref()?;
+        let page = &search.pages[search.current];
+        page.items.get(page.position.selected)?["issueKey"]
+            .as_str()
+            .map(str::to_owned)
+    }
+    fn sync_selection(&mut self, force: bool) {
+        let key = self.selected_key();
+        if force || self.detail.key != key {
+            self.detail_busy = None;
+            self.browser_busy = None;
+            self.detail.select(key);
+        }
+    }
+    pub(super) fn tick(&mut self) {
+        if self.detail.due.is_some_and(|due| Instant::now() >= due) {
+            self.detail.due = None;
+            if let Some(key) = self.detail.key.clone() {
+                self.request(Target::Detail, Operation::Detail { key });
+            }
+        }
+    }
+    pub(super) fn open_browser(&mut self) {
+        if let Some(key) = self.selected_key() {
+            self.request(Target::Browser, Operation::Browser { key });
+        }
+    }
+    pub(super) fn cancel_detail(&mut self) {
+        if self.detail_busy.is_some() || self.detail.due.is_some() {
+            self.detail.status = "Preview cancelled";
+            self.detail.notice = "Cancelled; display retained".into();
+        }
+        self.detail_busy = None;
+        self.detail.due = None;
+    }
+    pub(super) fn detail_status(&self) -> String {
+        let status = if self.detail_busy.is_some() {
+            "Loading... Esc: cancel"
+        } else {
+            ""
+        };
+        format!("{status} {}", self.detail.notice)
     }
     fn set_projects(&mut self, projects: Value) {
         self.projects_loaded = true;
@@ -318,9 +441,18 @@ impl Browse {
             (_, KeyCode::Esc) if self.projects_busy.is_some() || self.issues_busy.is_some() => {
                 self.projects_busy = None;
                 self.issues_busy = None;
+                self.cancel_detail();
+                self.browser_busy = None;
                 self.requests.clear();
                 self.notice = "Cancelled; display retained".into();
             }
+            (Focus::Detail, KeyCode::Char('R')) => {
+                if let Some(key) = self.detail.key.clone() {
+                    self.detail.due = None;
+                    self.request(Target::Detail, Operation::Detail { key });
+                }
+            }
+            (_, KeyCode::Esc) => self.cancel_detail(),
             (Focus::Project, KeyCode::Down | KeyCode::Char('j')) => {
                 self.position.move_by(true, self.projects.len(), rows)
             }
@@ -377,6 +509,7 @@ impl Browse {
             }
             _ => {}
         }
+        self.sync_selection(false);
     }
     pub(super) fn content(&self, focus: Focus, rows: usize) -> String {
         let busy = match focus {

@@ -203,3 +203,133 @@ Rootの直接probeでもcombining/ZWJ/国旗の隣接結合後の表示列・全
 修正後の実test binaryをPTYで直接起動し、paste受信/全欄伏字/q=0・Ctrl+C=130/復元も再確認しました。
 Correctness ReviewのP1を採用して修正し、fresh再レビューで解消と追加指摘なしを確認。独立Ponytail Reviewも追加指摘なし。
 実IME/実端末目視は、その後上表のとおりユーザー確認を完了しました。確認範囲で入力部品を採用し、検索/フォーム等の後続Issueを実装済みとは扱いません。
+
+## 選択追従プレビュー・Issue Detail・Ctrl+O (#16)
+
+状態: **自動TestBackend/PTY・release製品binaryの直接ローカルHTTPS検証済み。実端末確認と通知修正後のRoot検証は末尾の記録を参照**。
+以下は初回worker時点の履歴です。#13/#14のユーザー確認を#16の受入へ流用せず、実ブラウザ・実Backlog接続・書込みは行っていません。
+
+| 項目 | 記録 |
+| --- | --- |
+| 確認日 / 実施者 | 2026-10-28 UTC / Implementation worker、自動実行 |
+| macOS / CPU / toolchain | macOS 26.7.1（25G241）/ arm64 / rustc 1.99.1 |
+| 対象build | HEAD `9970424` + #16未コミット差分、`cargo build --locked --release --target aarch64-apple-darwin --bins` |
+| release `bl` SHA-256 | `e028a069fbd5e76c59e438f417a6fc381c5070b3684f384fa70fad4740732703` |
+| 端末 / TLS / browser | Python標準PTY、100x24→40x12→100x24。localhost自己署名証明書を子processだけでtrust。fake key。PATHの`open` stub、実ブラウザ非起動 |
+| 直接実測 | `code:0`、`restored:true`、stderr空、約1.87秒、11 snapshots、9 GETのみ。`open`のargvは引数数1と設定originの`/view/B-3`のみ |
+
+再実施は [CONTRIBUTING.md の #16 手順](../../CONTRIBUTING.md#プレビュー詳細とブラウザ-16) を使用します。
+`tests/fixtures/tui_detail.json` / `tui_detail_steps.json` を既存HTTPS server・PTY driverに渡し、test binaryではなくrelease `bl` を直接起動しました。
+HTTP記録はspace/projects/count/list、B-3初期GETとproject記法GET、R失敗のB-3 GET、次のR成功のB-3/project GETのみです。
+連続選択でB-1/B-2を取得せず、Enterで追加GETせず、末尾30行目へ移動、40x12のGでも末尾へ到達、
+R失敗時の末尾保持、次のR成功時のKEY先頭への交換、Backlog記法変換・secret伏字、Ctrl+O失敗後のB-3選択保持を確認しました。
+raw出力にfake key原文や外部OSCはありませんでした。
+
+| 検証 | 終了コード / 結果 |
+| --- | --- |
+| `cargo test --locked --test tui_process preview_debounces_selection_and_enter_reuses_safely_rendered_detail -- --exact`（実装前→実装後） | 101 RED（未実装でプレビュー待ちtimeout）→0 GREEN。最終版はキー送信/HTTP時刻差で約150ms（120ms〜1秒内）、最終対象だけの通信、全項目/安全表示を照合 |
+| `cargo test --locked --test tui_process preview_cancelled_before_debounce_has_no_request_or_permanent_loading -- --exact`（取消状態対応前→後） | 101 RED（取消後もLoading表示）→0 GREEN。取消後は対象キーと取消表示、通信なし |
+| `cargo test --locked --test tui_process --test tui_shell --lib` | 0 / その後追加した同じfixture試験も含め最終all-targetsで再確認 |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0 / 216件成功、実IME専用1件ignored。初回180秒実行枠では途中timeoutし、420秒枠で最初から再実行して完走 |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / 警告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| release `bl` + HTTPS/PTY（上記再実施手順） | 0 / 上記実測。最初の外部検証assertは40列時の伏字の折返し位置を誤って指定し1、100列へ戻したsnapshotで再照合して0、さらに一式を再実行して0 |
+
+追加の自動試験では、全scrollキー・右側h/l/Tab/Shift+Tab/Esc、Unicode wrap/resize/clamp、Rのissue失敗/project記法失敗での原子保持、
+同対象の逆順成功/失敗・選択変更・画面閉鎖/取消後の古い応答で新busyを壊さないこと、別課題応答の非表示、
+ブラウザの不正listキー/secret URL拒否・任意API URL非使用・失敗時選択保持を確認しました。
+一覧操作の既存試験はプレビューGETを独立に数え、`request_counts`（全通信）と`browse_request_counts`（一覧操作）を区別しています。
+`Cargo.lock` はHEADと同じSHA-256 `0b5c7a872566c900fcbbd060bb07ddd1760eb69127359c11dcba5fc43c16c4d6` で不変です。
+監査はRootの全体チェックへ委ね、このworkerでは実行していません。
+
+初回worker時点の未実施: 実端末アプリでの#16の目視、OSブラウザ起動/ログイン、実サービスE2E、GitHub Actions。後続の実端末確認は末尾に記録します。
+確認する場合は上記一時環境でrelease `bl` を直接TTY起動し、100x24/40x12で全項目/本文への移動・resize・R保持/交換・終了後の通常shell利用を目視してください。
+stubを外して実ブラウザを起動する場合も、接続先はこのローカルfixtureのみとし、実Backlogへ無断で接続/書込みしないでください。
+
+既知制限: 固定Ratatui版のunstable行数APIを使用します。スクロール開始位置の上限は65,535折返し行で、
+それを超える本文末尾へは到達できない場合があります（原文は不変）。上限でoverflow/panicしないTestBackend試験があります。
+PTY driverは簡易VT復元であり、Unicodeの実字幅やIME/目視を保証するものではありません。
+
+### #16 通知表示のユーザーフィードバック対応
+
+ユーザーの実端末フィードバックで、Ctrl+O失敗がProject側に表示されること、Detail R失敗の上部一行を見落とし旧本文を最新と誤認しうることが判明しました。
+この節は通知修正worker時点の自動検証記録です。中央popupの見た目と修飾なしEnter/Esc/Spaceのdismiss-onlyはユーザーが実端末で確認済みです。当時未確認だった通常操作による通知消去も、末尾のRoot最終検証で確認しました。前節の修正前binaryのhash/実測は履歴として残します。
+
+再取得/ブラウザの失敗は共通の安全化済みメッセージ1件を中央の枠付きpopupへ表示します。ERROR見出し/閉じるbuttonはなく、赤/太字、NO_COLORでは色なしの枠/太字です。
+通常サイズでは修飾キーなしEnter/Esc/Spaceは通知だけを閉じます。次のキーから通常の遷移/取消/scrollを行います。
+その他の通常dispatchに進むキー（j/k/h/l/R/Ctrl+O、既存のShift付きキー、未割当の文字）は通知を消してから本来の動作を実行します。Rが再び失敗すれば新しい通知を表示します。
+無視するmodifier・Release・時間経過・resizeでは消えず、極小時は安全操作制限を維持して通常サイズへの復帰まで保持します。qは終了、Ctrl+Cは130を優先します。
+初期通信エラーの致命的終了、失敗時の本文/scroll/選択保持、世代/busy/cancel、Detailの安全化済みcopy借用は変更していません。
+
+以下は初回の中央popup/dismiss-only修正時の記録です。通常操作時の通知保持という当時の期待値は、末尾の追補で置き換えています。
+
+| 検証 | 終了コード / 結果 |
+| --- | --- |
+| `cargo test --locked --test tui_process ctrl_o_uses_only_origin_and_selected_key_without_shell_and_failure_keeps_selection -- --exact`（修正前→後） | **101 RED→0 GREEN**。修正前は通知時EnterがDetailへ遷移して次step待ちtimeout。修正後は中央枠/単一表示/ERROR見出しなし、Enterは通知だけ閉じ、次EnterでDetailへ入る |
+| `cargo test --locked --lib tui::tests::` | 0 / 10件成功、実IME専用1件ignored。新規2件で40x12/100x24の中央枠/日本語折返し/赤太字/NO_COLOR、Enter/Esc/Space消費、修飾/release/repeat、本文scroll保持・次キーの通常動作・極小復帰を確認 |
+| `cargo test --locked --test tui_shell --test tui_process` | 0 / 5 + 30件成功。新規PTY試験で取消済みの遅い応答による通知非破壊、通知中の選択変更、100x24→40x12→39x11→40x12の通知保持とCtrl+C=130/端末復元。Detailのissue/project記法失敗で本文/scroll保持、R通常実行、dismiss後の一覧保持も確認 |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / 警告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| `git diff --check` | 0 |
+
+途中の回帰実行では、一覧用fixtureのpreview未定義による意図しない404通知と、popupで隠れる行のassert/旧dismiss手順の不整合を検出しました。
+一覧fixtureには正常preview応答を補い、意図した再取得失敗の保持assertはdismiss後も確認するよう整合しました。最後の上記実行で全関連試験が成功しています。
+`tests/fixtures/tui_detail_steps.json` は今回の追補でR失敗後のRが通知を消して再取得し、成功後はEnter不要で本文移動する手順へ整合しました。自動sequenceは固定手順用であり、自由な手動操作では応答段階を固定してください。
+
+初回の中央popup修正workerでは修正後の全対象test・audit・release binary直接HTTPS/PTY再実測・実端末目視・実ブラウザ・実Backlog接続・GitHub Actionsは未実施でした。
+新規依存/config/永続化/タイマーはありません。長文通知は画面内に収めて折返し、画面を超える部分の独自pagerは設けません。
+
+#### 通常操作時の通知消去契約の追補
+
+初回の説明と実装の不一致を修正しました。製品側の変更は `Shell::key` のCtrl+O分岐内と既存modifier guard通過後で通知を消す2行だけです。
+修飾なしEnter/Esc/Spaceのdismiss-only、拒否modifier/Release、Ctrl+C優先、極小制限、世代判定、失敗時の本文/scroll保持は維持しています。
+
+| 今回の検証 | 終了コード / 結果 |
+| --- | --- |
+| 新規TestBackend通常scroll/focus回帰（追加当初 `error_popup_clears_before_normal_scroll_and_focus_keys_execute`） | **101 RED→0 GREEN**。旧実装ではjの通常scroll後も`Failed:`が残って失敗。2行のclear追加後は成功。その後Ctrl+Oと拒否modifier/Release保持も同じ試験へ追加 |
+| `cargo test --locked --lib tui::tests::` | 0 / 11件成功、実IME専用1件ignored。3キーのdismiss-only、j/kのscroll、h/lのfocus移動と通知消去、Ctrl+O、Shift+Enterの通常遷移を確認 |
+| `cargo test --locked --test tui_shell --test tui_process` | 0 / 5 + 30件成功、filterなし。Rで旧通知を消した取得中画面と再失敗の新通知、失敗時本文/scroll保持、R成功後はdismiss不要、j選択変更で消去、再度Ctrl+Oの新通知、古い応答非破壊・resize/極小保持・Ctrl+C=130/端末復元を確認 |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / 警告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| `git diff --check` / staged filesなしの確認 | 0 / staged filesなし |
+
+今回workerでは全体test・audit・release binaryの直接HTTPS/PTY実行・実端末の再受入は再実施していません。関連試験はdebug製品binaryのHTTPS/PTYを含み、release直接検証と独立reviewはRootに委ねます。
+実Backlog/実ブラウザ/Herdr/GitHub操作、commit/push、Plan変更、依存追加は行っていません。
+
+### #16 Rootの最終検証・実端末確認（2026-10-28 UTC）
+
+対象はHEAD `9970424` + 今回の未コミット差分です。最終release `bl` SHA-256は
+`b6c131a8c31a51b3b02b97f6a275e7c9a009d1ef69ae5c4362091c2f3e202c42`。
+macOS 26.7.1（25G241）/ arm64 / Rust 1.99.1、Herdr 0.8.0 / Ghostty 1.3.1、専用タブ「#16 詳細・プレビュー確認」で確認しました。
+
+| 最終差分に対するRootチェック | 終了コード / 観測 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0 / 221件成功、実IME専用1件ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / 警告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| `git diff --check` | 0 |
+| `cargo audit --file Cargo.lock`（cargo-audit 0.22.2、通知popup修正後） | 0 / 224依存・1381 advisory、警告・脆弱性報告なし。後の通常入力clear追補は製品2行で、manifest/lockfile不変 |
+| release製品 `bl` + ローカルHTTPS/PTY | 0 / 11 snapshots、9 GETのみ、stderr空、端末復元成功。Enter再GETなし、40x12/100x24のscroll/resize、R失敗時保持・次Rで通知消去と成功交換、secret/OSC非表示、安全なbrowser argv・失敗時選択保持をRootが直接assert |
+
+lockfile SHA-256は監査前後・最終確認とも
+`0b5c7a872566c900fcbbd060bb07ddd1760eb69127359c11dcba5fc43c16c4d6` でHEADと同じです。
+Correctness / Ponytailの独立fresh Reviewを実施し、通知popup修正後も両方のfocused Reviewで追加指摘なし。
+採用したPonytail P2の本文copy/再安全化の重複はCow借用とParagraph共有で解消しました。
+その後の通常入力clear 2行はRootが呼出し経路・回帰テスト・最終全対象test・直接操作で確認し、全レビューの無条件再実行はしていません。
+
+| 実端末での観測 | 実施者 / 結果 |
+| --- | --- |
+| 詳細項目・日本語/結合文字/emoji本文 | ユーザーが初回手順1をOK確認 |
+| 縮小後の本文 | 初回に本文消失の報告があり、リクエスト回数で進むsequence fixtureが自由操作時にも本文を変更していたため、手動用は各課題の30行本文を固定。約109列×37行でRootがBODYと01〜11行を読み取り、ユーザーも「今は本文が見えている」と確認。初回現象の原因は断定せず、この再確認と区別する |
+| R失敗の本文末尾保持・成功時の先頭交換 | Rootが応答を固定500→固定成功へ明示切替し、ユーザーが各OK。Rootも失敗通知/30行目保持、成功後の先頭と伏字本文を確認 |
+| ブラウザstub失敗時の選択保持・終了後のshell操作 | ユーザーがOK確認。実OSブラウザは起動せず、`echo shell-ok` は利用者がshellへ入力 |
+| 中央popupの見た目・Enter/Esc/Space | popup版release SHA-256 `30d991fc3aa4b041afab83b68bd09f0cbe561ee7841e273f4dae96c93bb0b6a5` でユーザーが1〜3すべてOK。RootもANSIの赤太字・見出しなしを確認 |
+| 通常操作時の通知消去（最終2行追補後） | 最終releaseをRootが同じ実Herdrタブで直接操作。200行の固定本文で、jが通知消去と1行scroll、lが通知消去とComment focus移動、Rが旧通知を即消して通信中表示→成功先頭交換、一覧B-3選択保持を確認。ユーザーの再目視確認とは区別する |
+| 最終binaryの終了・一時環境のcleanup | Rootの直接操作でexit 0 / `termios unchanged=True`。launcherがローカルserverを停止し、fake key設定/TLS/応答の一時rootを削除。専用Herdrタブは通常shellへ戻した |
+
+実端末で正確な40x12/極小境界の目視は行わず、その境界はTestBackend/PTYで検証しました。新たな実IME受入、実OSブラウザ起動・ログイン、実Backlog接続/書込み、GitHub Actions、配布物作成/公開は未実施です。
+実端末の最終通常入力確認にはRoot専用の一時launcherと固定応答の段階切替を用い、製品のdebug flagや永続設定は追加していません。

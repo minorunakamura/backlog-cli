@@ -18,9 +18,9 @@ cargo audit --version
 RatatuiはCrossterm 0.29 backendを明示しています。共有単行入力はtui-input **=0.15.5**の
 Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語入力で早期実端末受入を行い、採用しました。全端末/IMEでの一致を保証するものではありません。`bl-cli project list` と候補一覧3コマンド、
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
-`bl` のプロジェクト選択・課題一覧ページ巡回/再取得・focus・layout・端末復元も実装しています。
+`bl` のプロジェクト選択・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・ブラウザ起動・focus・layout・端末復元も実装しています。
 共有単行入力部品と開発専用の実端末確認経路を実装していますが、製品shellには入力欄を追加していません。
-TUIの詳細/コメント取得・書込み・検索/フォームへの入力組込み・editorは後続Work Itemの範囲です。
+TUIのコメント取得・書込み・検索/フォームへの入力組込み・editorは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -325,13 +325,65 @@ JSON
     SHELL_REQUESTS_FILE="$root/requests" python3 "$driver" scripted "$tui")
 ```
 
-出力JSONの `code:0`、`restored:true`、空 `stderr`、`request_counts:[4,5,5,7]` と各 `snapshots` を確認します。
+出力JSONの `code:0`、`restored:true`、空 `stderr`、`browse_request_counts:[4,5,5,7]` と各 `snapshots` を確認します。
+`request_counts` はプレビュー/記法GETも含む全通信、`browse_request_counts` は一覧操作の通信数です。
 `screen` は終了前の100x24描画、`stdout` はraw端末出力です。driverの簡易描画復元はcursor-addressed出力のみが対象で、
 実端末の目視/IME受入を代替しません。対話操作を直接確認するなら同じ環境変数で `"$tui"` をTTY上で起動します。
 stepsの `wait` は現在画面の部分一致、`keys` は送信文字列（Enterは `\r`、Escは `\u001b`）、
 `pause` は一致後の待機秒数（既定0.08）です。routeの `sequence` は同じpathの応答を順番に返し末尾を反復、
 `offsets` はlistのoffset文字列から応答を選び、不在なら空一覧です。`header_delay`/`delay` と組み合わせて
 R失敗/取消/応答逆転を再現できます。各自動試験の具体的な組合せは `tests/tui_process.rs` を参照してください。
+
+
+### プレビュー/詳細とブラウザ (#16)
+
+`tests/tui_process.rs` は同じPTY/HTTPS境界で、約150ms debounceの実時間/通信回数、連続選択・対象切替直後の旧本文非表示、
+遅延した成功/失敗による新busyの非破壊、Enter再GETなし、全項目、Markdown/Backlog/未知記法fallbackと安全表示、
+Detail Rのissue/project両方成功時だけの交換・失敗/取消/閉鎖後の内容/scroll/focus保持と一覧非更新を確認します。
+ブラウザはテスト用PATHの`open` stubでargvを記録し、APIの任意URL非使用、不正キー/secret URLの非起動、失敗時の選択保持を確認します。
+実ブラウザを開かず、製品flagは追加しません。`src/tui.rs` のTestBackend試験で全scrollキー、右側focus往復、
+Unicodeのwrap/resize/clampとscroll上限でのoverflow防止を確認します。
+再取得/ブラウザ失敗の中央popup（ERROR見出し/ボタンなし）、40x12での折返し、赤/太字とNO_COLORの枠/太字、
+修飾なしEnter/Esc/Spaceの通知だけのdismiss・次キーの通常動作、j/k/h/l・Ctrl+Oの通知消去と通常動作を確認します。
+既存の通常dispatchに進むShift付きキーは通知を消して本来の動作を行い、拒否するmodifier/releaseやresize/極小復帰では通知を保持します。
+PTYではDetail失敗後の本文/scroll/一覧保持、Rでの通知消去と再取得（再失敗なら新通知）、選択変更での消去・古い応答の非破壊・Ctrl+C=130と端末復元を照合します。
+一覧だけを扱う試験のfixtureも、自動previewの正常応答を返し、意図しない404通知が操作を遮らないようにします。
+Ratatui **0.30.2** の `unstable-rendered-line-info` featureだけを有効にし、描画と同じ `Paragraph`/`Wrap`/内幅で行数を計算します。
+依存更新時はこのunstable APIを再確認してください。スクロール開始位置の上限は65,535折返し行で、
+これを超える本文末尾へは到達できない場合があります（原文は変更しません）。
+
+release `bl` の直接確認には、上のローカルHTTPS用subshellでserver/設定を作り、次を実行できます。
+`repo` と `tui` はcwdを変える前に設定します。fixtureは実Backlogへ接続/書込みを行いません。
+
+```sh
+  repo="$PWD"
+  tui="$repo/target/aarch64-apple-darwin/release/bl"
+  cp "$repo/tests/fixtures/tui_detail.json" "$root/response.json"
+  cp "$repo/tests/fixtures/tui_detail_steps.json" "$root/steps.json"
+  mkdir -p "$root/.backlog" "$root/bin"
+  printf '%s\n' '{"project":"B"}' > "$root/.backlog/settings.json"
+  cat > "$root/bin/open" <<'SH'
+#!/bin/sh
+printf '%s\n' "$#" "$@" >> open-args
+exit 7
+SH
+  chmod 700 "$root/bin/open"
+  (cd "$root" && env -i HOME="$root" XDG_CONFIG_HOME="$root" TEST_KEY=test-secret NO_COLOR=1 \
+    PATH="$root/bin:/usr/bin:/bin" SSL_CERT_FILE="$root/tls/localhost-cert.pem" \
+    SHELL_STEPS_FILE="$root/steps.json" SHELL_REQUESTS_FILE="$root/requests" \
+    python3 "$repo/tests/fixtures/tty_shell.py" scripted "$tui")
+  cat "$root/open-args"
+```
+
+成功基準は `code:0`、`restored:true`、空stderr、9 GETのみ、`open-args`は引数数1と設定originの`/view/B-3`のみです。
+初期連続選択はB-3だけを取得し、100x24/40x12のGで`Local body line 30`へ到達、R失敗時はその位置を保持、
+次のRは通知を消して再取得し、成功時に先頭へ戻ります。そのままGで`Refreshed body [REDACTED]`を表示します。
+Ctrl+O失敗も中央popupに一度だけ表示され、B-3の選択を保持します。
+`stdout` に `test-secret` や外部OSCが出ないことも確認してください。
+`tests/fixtures/tui_detail*.json` を使う自動試験も同じdebug製品binaryでこの手順を走らせます。
+このsequence fixtureは自動手順用です。自由な手動操作ではリクエスト回数で応答が進まないよう、成功/失敗の応答段階を固定してください。
+PTY driverのstepは `resize:[高さ,幅]` と、stub完了等の同期用 `wait_file:"root内の相対path"` も使用できます。
+`sent_at`/HTTP記録の`at`は時刻秒、実時間debounceの照合用です。簡易画面復元は実端末の目視/IMEを代替しません。
 
 コメントpagingはrouteに `"commentItems":[コメントobject,...]` を指定して再現できます。
 fixtureはqueryの `minId` / `maxId` を正整数として比較して境界自身を除外し、IDでsortし、`count` 件へ切り詰めます。
