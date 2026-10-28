@@ -17,8 +17,8 @@ cargo audit --version
 主要依存は `Cargo.toml` で完全一致版を指定し、推移依存を含む `Cargo.lock` を追跡します。
 RatatuiはCrossterm 0.29 backendを明示しています。tui-input 0.15.5は実端末確認前の
 候補であり、まだ依存に追加していません。`bl-cli project list` と候補一覧3コマンド、
-`issue list/mine/view/create` / `issue comment list/view` と共通libraryの候補/名前解決/検索/詳細・コメント取得・課題作成・Markdown/Backlog本文の安全表示を実装しています。
-他の書込み・TUIの機能は後続Work Itemの範囲です。
+`issue list/mine/view/create/update` / `issue comment list/view` と共通libraryの候補/名前解決/検索/詳細・コメント取得・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
+コメントの書込み・TUIの機能は後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -86,6 +86,15 @@ API失敗の伝播を確認します。
 stdin待ち中断・stdin非明示時の非読取・global/profile・TTY非対話も実processで試験します。
 `tests/service.rs` の公開 `Service::issue_create` 試験は、送信本文と返却object/巨大整数の原文保持・URL追加、
 既定値/直接ID・解除・入力検証前のPOSTなし、201後と名前解決時のエラー確度を確認します。
+`tests/issue_update.rs` は実CLI/HTTPS境界で最新GETと単一PATCH、明示入力だけの差分form、設定非流用、
+名前/直接ID/self・resolution 0と解除、日付のcalendar比較、milestone集合の置換/重複除去/順序不問と空配列解除を確認します。
+全項目同値/未指定/null・空本文のno-op、title/日付/flag/UTF-8検証、literal/file/明示stdin・空入力/本文省略、
+非明示stdinの非読取、global/profile/help・TTY非対話、未知field/巨大整数/原文と構築URL・安全表示を検証します。
+事前エラーはPATCHなし、具体的4xx拒否・切断/5xx/redirect・200後のbody/decode/必須field/出力エラー・key衝突・timeout、
+stdin/事前GET/送信後/200 headers後のCtrl+Cでも確度を保持し、retry/redirect/確認GETがないことを確認します。
+200後の中断は `patch-headers-sent` markerを待ち、事前GETの200 markerとは区別します。
+`tests/service.rs` の公開 `Service::issue_update` 試験でも原文/巨大ID・URL、比較に使うIDの検証と未使用field非要求、
+直接ID/部分更新・no-op・入力検証時の通信なし・日付順序の独自制限なし・確度を確認します。
 `tests/body.rs` は公開 `body::display/display_with_origin` からMarkdown/Backlogの見出し/list/強調/引用/code/checklist/通常表、
 複合記法・通常改行/空行/TAB・code/escapeの保護、可視link/画像/参照、HTML/未知macroの内容保持、
 難しい表/未知記法の原文fallbackを確認します。Backlogの課題linkは設定origin/keyの共通検証・URL構築を使い、
@@ -125,6 +134,7 @@ cargo test --locked --test issue_search
 cargo test --locked --test issue_view
 cargo test --locked --test issue_comment
 cargo test --locked --test issue_create
+cargo test --locked --test issue_update
 cargo test --locked --test body
 cargo test --locked --test https_fixture
 # 30秒のbody timeoutだけを再確認
@@ -172,10 +182,25 @@ Rust側がserverの停止・回収後に鍵・設定・応答・受信記録を�
 )
 ```
 
+同じsubshell内で更新を直接再現するには、`cat "$root/requests"` の前へ次を追加します。
+成功時は最新GETと、本文解除・milestone置換だけのPATCHが1回ずつ記録されます。
+
+```sh
+  cat > "$root/response.json" <<'JSON'
+{"routes":{"GET /api/v2/issues/P-1":{"body":"{\"projectId\":42,\"description\":\"old\",\"milestone\":[{\"id\":5}]}"},"PATCH /api/v2/issues/P-1":{"body":"{\"id\":1,\"issueKey\":\"P-1\",\"unknown\":123456789012345678901234567890}"}}}
+JSON
+  run_cli issue update P-1 --body '' --milestone-id 8 --milestone-id 9 --json
+  # 200 headers後のbody失敗: exit 1、write.outcomeはupdatedのまま。
+  cat > "$root/response.json" <<'JSON'
+{"routes":{"GET /api/v2/issues/P-1":{"body":"{\"projectId\":42,\"description\":\"old\"}"},"PATCH /api/v2/issues/P-1":{"body":"not json"}}}
+JSON
+  run_cli issue update P-1 --body '' --json
+```
+
 fixtureのstdoutの最初の行がport、`requests` がHTTP method/path/header/body/formのJSONL記録です。
-POSTのformは空値・反復array keyを保持した配列値で記録します。`truncate:true` はContent-Lengthより短いbodyを返します。
-上の例は順に `{"items":[]}`、`ID`/`NAME` 見出し、`{"items":[]}` を出します。
-記録は3 GETだけで、pathは `/api/v2/projects/a%2Fb%25%3F%23/issueTypes`、
+POST/PATCHのformは空値・反復array keyを保持した配列値で記録します。`truncate:true` はContent-Lengthより短いbodyを返します。
+上の一覧3コマンドの例は順に `{"items":[]}`、`ID`/`NAME` 見出し、`{"items":[]}` を出します。
+一覧3コマンドだけを実行した場合、記録は3 GETだけで、pathは `/api/v2/projects/a%2Fb%25%3F%23/issueTypes`、
 `/api/v2/priorities`、`/api/v2/resolutions`。myself/project/space取得は発生しません。
 `response.json` のbodyをAPI配列のJSON文字列に置き換えれば非空表示も再現できます。
 検索の成功・失敗を直接確認するには、同じsubshellの `cat "$root/requests"` の前へ次を追加できます。
@@ -193,7 +218,8 @@ JSON
 
 成功時はそれぞれ1件のitemsと `pagination`（count=1、total=43）を返します。
 `requests` のcount/list両方に同じfilterとsort/orderがあり、listだけcount/offsetを持ちます。
-fixtureは `routes` があればqueryを除いたpathでdispatchし、不明pathは404です。
+fixtureは `routes` があれば `"PATCH /api/v2/issues/P-1"` のようなmethod + queryを除いたpathを優先し、
+次に従来のpathだけのrouteでdispatchします。不明pathは404です。
 `routes` がなければ従来どおり全pathに同じ応答を返します。各routeは通常のresponseと同じ形式です。
 生成物はテスト専用で、実サービスに使わないでください。
 コメントpagingはrouteに `"commentItems":[コメントobject,...]` を指定して再現できます。
@@ -202,6 +228,7 @@ fixtureはqueryの `minId` / `maxId` を正整数として比較して境界自�
 固定bodyを返すだけでは境界除外の検証として扱いません。
 `response.json` の `header_delay` はheaders前、`delay` はheaders送信後の秒数、`location` はredirect先、
 `disconnect:true` は応答前の切断を制御します。`requests` / `headers-sent` markerで中断するphaseを合わせます。
+`get-headers-sent` / `post-headers-sent` / `patch-headers-sent` も生成するため、事前GETと書込みheadersを区別できます。
 実API keyは使わないでください。
 
 現段階では実Backlogへの接続/書込み、実IME/TUI受入、配布tar.gz/SHA-256作成や公開は行いません。

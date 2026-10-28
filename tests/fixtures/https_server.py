@@ -29,13 +29,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.do_GET()
 
+    def do_PATCH(self):
+        self.do_GET()
+
     def do_GET(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8")
         with (root / "requests").open("a") as output:
             output.write(json.dumps({"method": self.command, "path": self.path, "headers": dict(self.headers), "body": body, "form": urllib.parse.parse_qs(body, keep_blank_values=True)}) + "\n")
         response = json.loads((root / "response.json").read_text())
         if "routes" in response:
-            response = response["routes"].get(self.path.split("?", 1)[0], {"status": 404})
+            path = self.path.split("?", 1)[0]
+            routes = response["routes"]
+            response = routes.get(f"{self.command} {path}", routes.get(path, {"status": 404}))
         if "commentItems" in response:
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             items = response["commentItems"]
@@ -57,6 +62,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.flush()
         (root / "headers-sent").touch()
+        (root / f"{self.command.lower()}-headers-sent").touch()
         time.sleep(response.get("delay", 0))
         try:
             self.wfile.write(body)

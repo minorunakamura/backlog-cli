@@ -1,4 +1,4 @@
-use crate::{CreateOutcome, Error, config::Config};
+use crate::{Error, WriteOutcome, config::Config};
 use reqwest::{Client, header::HeaderValue, redirect::Policy};
 use serde::{Deserializer, de::MapAccess, de::Visitor};
 use serde_json::{Value, value::RawValue};
@@ -90,35 +90,77 @@ impl Api {
         Ok(value)
     }
     pub(crate) async fn create_issue(&self, form: &[(&str, String)]) -> Result<Value, Error> {
+        self.write_issue(None, form).await
+    }
+    pub(crate) async fn update_issue(
+        &self,
+        issue: &str,
+        form: &[(&str, String)],
+    ) -> Result<Value, Error> {
+        self.write_issue(Some(issue), form).await
+    }
+    async fn write_issue(
+        &self,
+        issue: Option<&str>,
+        form: &[(&str, String)],
+    ) -> Result<Value, Error> {
+        let (operation, not_written, written, expected_status) = if issue.is_some() {
+            (
+                "issue.update",
+                WriteOutcome::NotUpdated,
+                WriteOutcome::Updated,
+                200,
+            )
+        } else {
+            (
+                "issue.create",
+                WriteOutcome::NotCreated,
+                WriteOutcome::Created,
+                201,
+            )
+        };
+        let mut url = self.origin.join("api/v2/issues").expect("fixed path");
+        if let Some(issue) = issue {
+            url.path_segments_mut()
+                .expect("validated origin")
+                .push(issue);
+        }
         let request = self
             .client
-            .post(self.origin.join("api/v2/issues").expect("fixed path"))
+            .request(
+                if issue.is_some() {
+                    reqwest::Method::PATCH
+                } else {
+                    reqwest::Method::POST
+                },
+                url,
+            )
             .header("Backlog-API-Key", self.key.clone())
             .form(form)
             .build()
             .map_err(|_| {
-                Error::new("input", "Cannot construct create request")
-                    .with_create_outcome(CreateOutcome::NotCreated)
+                Error::new("input", "Cannot construct issue write request")
+                    .with_write_outcome(operation, not_written)
             })?;
-        let state = std::sync::Arc::new(std::sync::Mutex::new((CreateOutcome::NotCreated, None)));
+        let state = std::sync::Arc::new(std::sync::Mutex::new((not_written, None)));
         let progress = state.clone();
         let client = self.client.clone();
         let mut task = tokio::spawn(async move {
-            // Record possible transmission before polling the send, and 201 before reading body.
-            progress.lock().expect("write state").0 = CreateOutcome::Unknown;
+            // Record possible transmission before send, and success headers before reading body.
+            progress.lock().expect("write state").0 = WriteOutcome::Unknown;
             let response = client.execute(request).await.map_err(|error| {
                 if error.is_connect() {
                     // Connection establishment failed before the HTTP request could be sent.
-                    progress.lock().expect("write state").0 = CreateOutcome::NotCreated;
+                    progress.lock().expect("write state").0 = not_written;
                 }
                 Error::new("network", "HTTPS request failed or timed out")
             })?;
             let status = response.status().as_u16();
             *progress.lock().expect("write state") = (
-                if status == 201 {
-                    CreateOutcome::Created
+                if status == expected_status {
+                    written
                 } else {
-                    CreateOutcome::Unknown
+                    WriteOutcome::Unknown
                 },
                 Some(status),
             );
@@ -128,7 +170,7 @@ impl Api {
                 .map_err(|_| Error::new("network", "Response body failed or timed out"))?;
             let decoded =
                 serde_json::from_slice::<&RawValue>(&body).and_then(|raw| decode_json(raw, 128));
-            if status != 201 {
+            if status != expected_status {
                 let kind = match status {
                     401 => "auth",
                     403 => "permission",
@@ -152,7 +194,7 @@ impl Api {
                                 && e.get("message").is_some_and(Value::is_string)
                         })
                     {
-                        progress.lock().expect("write state").0 = CreateOutcome::NotCreated;
+                        progress.lock().expect("write state").0 = not_written;
                     }
                     error.api_errors = errors.clone();
                 }
@@ -171,7 +213,7 @@ impl Api {
         result.map_err(|mut error| {
             let (outcome, status) = *state.lock().expect("write state");
             error.http_status = status;
-            error.with_create_outcome(outcome)
+            error.with_write_outcome(operation, outcome)
         })
     }
     pub(crate) fn issue_url(&self, issue_key: &str) -> String {
