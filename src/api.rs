@@ -115,6 +115,20 @@ impl Api {
         )
         .await
     }
+    pub(crate) async fn update_comment(
+        &self,
+        issue: &str,
+        comment: &str,
+        body: &str,
+    ) -> Result<Value, Error> {
+        self.write(
+            &["issues", issue, "comments", comment],
+            reqwest::Method::PATCH,
+            "comment.update",
+            &[("content", body.into())],
+        )
+        .await
+    }
     pub(crate) async fn update_issue_for_comment(
         &self,
         issue: &str,

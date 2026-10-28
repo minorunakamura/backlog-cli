@@ -2,8 +2,8 @@
 
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
-`issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` を利用できます。
-その他のCLI操作とTUI画面は未実装です。
+`issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
+TUI画面は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
 ```sh
@@ -321,6 +321,33 @@ PATCH選択後は `not_updated/unknown/updated` です。具体的な4xx拒否�
 201/200観測後は本文読取・decode・必須field検証・出力失敗・中断でも `created/updated` を保持します。
 終了コードは確度と独立し、成功0、入力エラー2、実行エラー1、中断130です。
 
+## 既存コメントの本文更新
+
+```sh
+bl-cli issue comment update MYAPP-123 234 -b "修正したコメント"
+printf '修正内容\n' | bl-cli issue comment update MYAPP-123 234 --body-file - --json
+```
+
+対象課題とコメントIDを指定し、最新コメントと認証ユーザーをGETして、自分が登録した既存本文だけを更新します。
+他者のコメントと `content:null` の変更履歴は入力エラーで書き込みません。所有者確認に使う投稿者IDも正整数として検証します。
+APIの権限拒否はそのまま報告し、回避や別方式へのfallbackはしません。
+
+`--body/-b` または `--body-file` の明示入力が必須で、空文字指定も含め排他・単一指定です。
+UTF-8原文の空白・改行はtrimせず、空白/改行だけの本文も保持します。空文字・空file・空stdin・同値更新は
+input（exit 2、PATCHなし）です。明示 `--body-file -` だけがstdinを読み、editorや確認待ちは使いません。
+課題項目・解除flag・project指定は受け付けず、cwdのprojectやcreate既定値は適用しません。
+
+PATCH `/api/v2/issues/:issueIdOrKey/comments/:commentId` へ `content` だけをformで一回送ります。
+成功はHTTP 200とコメントの必要fieldを検証し、固定表示は `UPDATED` とコメントIDだけ、JSONは元の応答objectです。
+urlやresource wrapperは追加せず、未知field・巨大整数・通常文字列は保持し、出力時に共通safetyを適用します。
+成功確認/表示用の追加GET・retry・redirect追従・結果の永続保存はしません。
+最新取得後の競合検出・自動mergeはなく、同じ本文が他者に変更される可能性は残ります。
+
+引数・設定・本文・事前GETも含め、識別できるエラーは `write.operation: "comment.update"` を持ちます。
+送信前または信頼できる具体的な4xx拒否は `not_updated`、送信開始後の成否不明は `unknown`、
+200観測後は本文読取・decode・必要field検証・出力失敗・中断でも `updated` を保持します。
+終了コードは確度と独立で、成功0、入力エラー2、実行エラー1、中断130です。結果不明・更新済みから再送は促しません。
+
 ## 共通libraryの候補取得・名前解決
 
 CLI/TUIから共通に `service::Service::new(&Config)` を使えます（生成だけでは通信しません）。
@@ -369,6 +396,9 @@ offsetは任意精度を保つ10進文字列で受け取り、返却値は数値
 `clear_assignee/clear_resolution: bool` を受け取り、`Default` は全項目未指定です。
 設定引数は持たず、必要な最新値取得・名前解決・差分比較と単一POST/PATCH・確度判定を行います。
 返却 `Value` は `resource/data` の形で、dataは安全化前の元object（url追加なし）です。
+`comment_update(issue_id_or_key: &str, comment_id: &str, body: &str)` は既存本文更新の共通入口です。
+必須本文・対象IDの検証、最新コメント/認証ユーザー取得、投稿者IDの検証・所有者確認、同値/履歴の拒否と単一PATCHを行います。
+設定引数は持たず、返却 `Value` は安全化前の元コメントobject（url追加なし）です。
 失敗時は `Error::write` の `WriteResult { operation, outcome: WriteOutcome }` で確度を取得できます。
 `WriteOutcome` は `NotCreated/Unknown/Created/NotUpdated/Updated`、従来の `CreateOutcome` 名は同じenumの再exportです。
 作成エラーのJSON語彙・`with_create_outcome` の動作は維持しています。

@@ -63,6 +63,7 @@ enum Issue {
 #[derive(Subcommand)]
 enum Comment {
     Add(Box<CommentAddArgs>),
+    Update(CommentUpdateArgs),
     View {
         issue_id_or_key: String,
         comment_id: String,
@@ -76,6 +77,20 @@ enum Comment {
         #[arg(long)]
         max_id: Option<String>,
     },
+}
+#[derive(clap::Args)]
+struct CommentUpdateArgs {
+    issue_id_or_key: String,
+    comment_id: String,
+    #[arg(
+        long,
+        short = 'b',
+        conflicts_with = "body_file",
+        required_unless_present = "body_file"
+    )]
+    body: Option<String>,
+    #[arg(long, conflicts_with = "body", required_unless_present = "body")]
+    body_file: Option<String>,
 }
 #[derive(clap::Args)]
 struct CommentAddArgs {
@@ -567,12 +582,43 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
         });
     }
     if let Command::Issue {
+        command: Issue::Comment {
+            command: Comment::Update(update),
+        },
+    } = &args.command
+    {
+        let body = read_body(&update.body, &update.body_file).await?;
+        let value = Service::new(config)?
+            .comment_update(
+                &update.issue_id_or_key,
+                &update.comment_id,
+                body.as_deref().expect("required body input"),
+            )
+            .await?;
+        let output = (|| {
+            let secrets = &[config.api_key.as_str()];
+            let output = if args.json {
+                format!("{}\n", safety::json(&value, secrets)?)
+            } else {
+                format!(
+                    "UPDATED\t{}\n",
+                    safety::text(&value["id"].to_string(), secrets)
+                )
+            };
+            write_stdout(&output)
+        })();
+        return output.map_err(|mut error: Error| {
+            error.http_status = Some(200);
+            error.with_write_outcome("comment.update", WriteOutcome::Updated)
+        });
+    }
+    if let Command::Issue {
         command: Issue::Comment { command },
     } = &args.command
     {
         let service = Service::new(config)?;
         let value = match command {
-            Comment::Add(..) => unreachable!("handled write"),
+            Comment::Add(..) | Comment::Update(..) => unreachable!("handled write"),
             Comment::View {
                 issue_id_or_key,
                 comment_id,
@@ -602,7 +648,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
             format!("{safe}\n")
         } else {
             let issue_id_or_key = match command {
-                Comment::Add(..) => unreachable!("handled write"),
+                Comment::Add(..) | Comment::Update(..) => unreachable!("handled write"),
                 Comment::List {
                     issue_id_or_key, ..
                 }
@@ -612,7 +658,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
             };
             let mut output = String::new();
             let items = match command {
-                Comment::Add(..) => unreachable!("handled write"),
+                Comment::Add(..) | Comment::Update(..) => unreachable!("handled write"),
                 Comment::List { .. } => value["items"]
                     .as_array()
                     .expect("validated comments")
@@ -862,14 +908,14 @@ async fn main() -> ExitCode {
                 .and_then(|issue| match issue.subcommand_name() {
                     Some("create") => Some("issue.create"),
                     Some("update") => Some("issue.update"),
-                    Some("comment")
-                        if issue
-                            .subcommand_matches("comment")
-                            .and_then(|comment| comment.subcommand_name())
-                            == Some("add") =>
+                    Some("comment") => match issue
+                        .subcommand_matches("comment")
+                        .and_then(|comment| comment.subcommand_name())
                     {
-                        Some("comment.add")
-                    }
+                        Some("add") => Some("comment.add"),
+                        Some("update") => Some("comment.update"),
+                        _ => None,
+                    },
                     _ => None,
                 })
         });
@@ -877,6 +923,9 @@ async fn main() -> ExitCode {
         Some("issue.create") => error.with_create_outcome(CreateOutcome::NotCreated),
         Some("issue.update") => error.with_update_outcome(WriteOutcome::NotUpdated),
         Some("comment.add") => error.with_write_outcome("comment.add", WriteOutcome::NotCreated),
+        Some("comment.update") => {
+            error.with_write_outcome("comment.update", WriteOutcome::NotUpdated)
+        }
         _ => error,
     };
     let args = match Args::try_parse_from(&argv) {
@@ -940,6 +989,11 @@ async fn main() -> ExitCode {
                 command: Comment::Add(..),
             },
         } => error.with_write_outcome("comment.add", WriteOutcome::NotCreated),
+        Command::Issue {
+            command: Issue::Comment {
+                command: Comment::Update(..),
+            },
+        } => error.with_write_outcome("comment.update", WriteOutcome::NotUpdated),
         _ => error,
     };
     let config = match Config::load(&args.profile) {
