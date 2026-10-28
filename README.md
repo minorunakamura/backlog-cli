@@ -3,8 +3,8 @@
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
-`bl` はプロジェクト選択、課題一覧のページ巡回と再取得、端末復元を利用できます。
-TUIの検索ダイアログ・横断検索・プレビュー/詳細/コメント取得・書込み・入力・editor連携は未実装です。
+`bl` はプロジェクト選択、課題一覧のページ巡回、選択追従プレビュー/詳細と再取得、ブラウザ起動、端末復元を利用できます。
+TUIの検索ダイアログ・横断検索・コメント取得・書込み・入力・editor連携は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
 ```sh
@@ -12,7 +12,7 @@ cargo run --locked --bin bl -- --help
 cargo run --locked --bin bl-cli -- project list --json
 ```
 
-## TUIプロジェクト・課題一覧
+## TUIプロジェクト・課題一覧・詳細
 
 ```sh
 bl                  # default profile、stdin/stdoutの両方がTTY必須
@@ -29,18 +29,35 @@ NO_COLOR=1 bl        # 色なしでも二重枠・太字・>でfocusを表示
 - Project List: j/k・上下は候補移動だけ（通信なし）。Enterで確定し、focusはProjectに維持します。
   別projectは設定の検索statusを適用して新しい一覧へ切替。同projectの再確定は現在の条件/履歴を保持します。
 - Issue List: j/k・上下で選択、p/nでページ移動。既定20件・更新日時降順で、実取得数から次offsetを求めます。
-  訪問済みページの内容/選択/scrollはメモリ保持し、再訪では通信しません。全件自動取得はしません。
+  訪問済みページの一覧内容/選択/scrollはメモリ保持し、再訪では一覧を再取得しません。全件自動取得はしません。
+  選択に約150ms遅延でプレビューが追従します。連続移動は間引き、選択変更時点で旧課題の本文を隠します。
+  取得中/失敗時は対象キーを表示し、別課題の本文は表示しません。Enterだけでは追加GETしません。
+- Issue Detail: KEY・タイトル・本文・種別・優先度・担当者・状態・完了理由・開始日・期限日・
+  マイルストーン・作成/更新日時を一つの折返し文書として表示します。上下/j/k、PgUp/PgDn、b/Space、
+  g/Home（先頭）、G/End（末尾）で移動し、resizeで折返し直してscrollを表示範囲へ収めます。
+  Rは同課題とそのproject記法を再取得し、両方の成功後だけ文書先頭へ交換します。失敗時は内容/scroll/focusを保持し、一覧は変更しません。
+- Issue ListのCtrl+O: 設定HTTPS originと選択キーだけからURLを構築してmacOSの`open`へ渡します。
+  shell・APIの任意URLは使用せず、既知API key入りURLは開きません。起動失敗時も選択を保持します。
 - R: Projectではprojectsだけを再取得。確定projectが候補から消えても課題一覧や条件は変更しません。
   Issueでは現在の解決済み条件でcountと先頭listを取得し、両方の成功後だけ履歴を置換します。
-- 取得失敗は画面に通知し、以前の内容/選択/scroll/履歴を保持。Escは実行中の読取りを取消して表示を保持します。
-  取消/切替前の古い応答は新しい表示やbusyを変更しません。通信中もfocus移動・終了・中断ができます。
+- 再取得・ブラウザ起動の失敗は画面中央の枠付き通知に安全なメッセージを表示し、以前の内容/選択/scroll/履歴を保持します。
+  通知中の修飾キーなしEnter・Esc・Spaceは通知だけを閉じ、通常の画面遷移/取消/scrollは実行しません。
+  その他の通常入力（j/k/h/l・R・Ctrl+O等）は通知を閉じてから本来の動作を実行し、Rが再び失敗すれば新しい通知を表示します。
+  通常dispatchに進むShift付きキーや未割当の文字も通知を閉じますが、無視するmodifier・キーRelease・resize・時間経過では閉じません。
+  qは終了、Ctrl+Cは中断130を優先します。
+  赤/太字で表示し、NO_COLORでは色なしの枠/太字で識別します。
+  通知がない時のEscは実行中の読取りを取消して表示を保持します。
+  取消/切替前の古い応答は新しい表示・通知やbusyを変更しません。通信中もfocus移動・終了・中断ができます。
 
 - 100列×24行以上: Workspace / Project List / Issue List / Issue Detail / Comment。
 - 40列×12行以上: focus中パネルのみ。h/l・Tab/Shift+Tabは左2パネル内または右2パネル内を切替。
-- Issue ListのEnterは未実装のDetailパネルへfocusを移すだけ。右側のEscでIssue Listへ戻ります。
+- 通知がない時はIssue ListのEnterでDetailへfocusを移します。右側のEscで読取りを取消しIssue Listへ戻ります。
 - それ未満: サイズ案内とq/Ctrl+Cだけ。見えない画面の操作は受け付けません。
 - qは終了0、Ctrl+C（キー/SIGINT）は130、実行エラーは1。終了時にraw mode・表示属性・
   alternate screen・cursorを可能な限り復元し、復元失敗も通知します。SIGKILL/端末切断後は保証しません。
+
+本文スクロール開始位置の上限は65,535折返し行で、これを超える本文末尾へは到達できない場合があります。
+本文原文を切り詰め/変更する制限ではありません。固定Ratatui版のunstable行数APIを利用しているため、依存更新時に再確認します。
 
 実端末での確認手順・未実施記録は [手動受入](docs/testing/manual-acceptance.md) を参照してください。
 

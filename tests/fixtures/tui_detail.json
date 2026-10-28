@@ -1,0 +1,39 @@
+{
+  "routes": {
+    "/api/v2/space": {
+      "body": "{\"name\": \"Actual space\"}"
+    },
+    "/api/v2/projects": {
+      "body": "[{\"id\": 2, \"projectKey\": \"B\", \"name\": \"Beta\"}]"
+    },
+    "/api/v2/issues/count": {
+      "body": "{\"count\":3}"
+    },
+    "/api/v2/issues": {
+      "body": "[{\"id\": 1, \"issueKey\": \"B-1\", \"summary\": \"Issue 01\", \"status\": {\"name\": \"open\"}}, {\"id\": 2, \"issueKey\": \"B-2\", \"summary\": \"Issue 02\", \"status\": {\"name\": \"open\"}}, {\"id\": 3, \"issueKey\": \"B-3\", \"summary\": \"Issue 03\", \"status\": {\"name\": \"open\"}}]"
+    },
+    "/api/v2/issues/B-3": {
+      "sequence": [
+        {
+          "body": "{\"id\": 3, \"projectId\": 2, \"issueKey\": \"B-3\", \"summary\": \"Detail B-3\", \"description\": \"Local body line 01 日本語 é 👩‍💻\\nLocal body line 02 日本語 é 👩‍💻\\nLocal body line 03 日本語 é 👩‍💻\\nLocal body line 04 日本語 é 👩‍💻\\nLocal body line 05 日本語 é 👩‍💻\\nLocal body line 06 日本語 é 👩‍💻\\nLocal body line 07 日本語 é 👩‍💻\\nLocal body line 08 日本語 é 👩‍💻\\nLocal body line 09 日本語 é 👩‍💻\\nLocal body line 10 日本語 é 👩‍💻\\nLocal body line 11 日本語 é 👩‍💻\\nLocal body line 12 日本語 é 👩‍💻\\nLocal body line 13 日本語 é 👩‍💻\\nLocal body line 14 日本語 é 👩‍💻\\nLocal body line 15 日本語 é 👩‍💻\\nLocal body line 16 日本語 é 👩‍💻\\nLocal body line 17 日本語 é 👩‍💻\\nLocal body line 18 日本語 é 👩‍💻\\nLocal body line 19 日本語 é 👩‍💻\\nLocal body line 20 日本語 é 👩‍💻\\nLocal body line 21 日本語 é 👩‍💻\\nLocal body line 22 日本語 é 👩‍💻\\nLocal body line 23 日本語 é 👩‍💻\\nLocal body line 24 日本語 é 👩‍💻\\nLocal body line 25 日本語 é 👩‍💻\\nLocal body line 26 日本語 é 👩‍💻\\nLocal body line 27 日本語 é 👩‍💻\\nLocal body line 28 日本語 é 👩‍💻\\nLocal body line 29 日本語 é 👩‍💻\\nLocal body line 30 日本語 é 👩‍💻\\n\", \"issueType\": {\"name\": \"Task\"}, \"priority\": {\"name\": \"Medium\"}, \"assignee\": {\"name\": \"自分\"}, \"status\": {\"name\": \"Open\"}, \"resolution\": {\"name\": \"Done\"}, \"startDate\": \"2026-01-01\", \"dueDate\": \"2026-02-02\", \"milestone\": [{\"name\": \"v1\"}, {\"name\": \"v2\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\", \"url\": \"https://evil.invalid/test-secret\"}"
+        },
+        {
+          "status": 500
+        },
+        {
+          "body": "{\"id\": 3, \"projectId\": 2, \"issueKey\": \"B-3\", \"summary\": \"Detail B-3\", \"description\": \"''Refreshed body'' test-secret\\u001b]52;c;bad\\u0007\", \"issueType\": {\"name\": \"Task\"}, \"priority\": {\"name\": \"Medium\"}, \"assignee\": {\"name\": \"自分\"}, \"status\": {\"name\": \"Open\"}, \"resolution\": {\"name\": \"Done\"}, \"startDate\": \"2026-01-01\", \"dueDate\": \"2026-02-02\", \"milestone\": [{\"name\": \"v1\"}, {\"name\": \"v2\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\", \"url\": \"https://evil.invalid/test-secret\"}"
+        }
+      ]
+    },
+    "/api/v2/projects/2": {
+      "sequence": [
+        {
+          "body": "{\"textFormattingRule\":\"markdown\"}"
+        },
+        {
+          "body": "{\"textFormattingRule\":\"backlog\"}"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,53 @@
+[
+  {
+    "wait": "Issue 01",
+    "pause": 0.02,
+    "keys": "ljj\r"
+  },
+  {
+    "wait": "TITLE: Detail B-3",
+    "keys": "G"
+  },
+  {
+    "wait": "Local body line 30",
+    "resize": [
+      12,
+      40
+    ]
+  },
+  {
+    "wait": "> Issue Detail",
+    "keys": "G"
+  },
+  {
+    "wait": "Local body line 30",
+    "keys": "R"
+  },
+  {
+    "wait": "Failed:",
+    "keys": "R"
+  },
+  {
+    "wait": "TITLE: Detail B-3",
+    "keys": "G"
+  },
+  {
+    "wait": "Refreshed body",
+    "resize": [
+      24,
+      100
+    ]
+  },
+  {
+    "wait": "Refreshed body",
+    "keys": "\u001b"
+  },
+  {
+    "wait": "> Issue List",
+    "keys": "\u000f"
+  },
+  {
+    "wait": "Browser launch failed",
+    "keys": "q"
+  }
+]

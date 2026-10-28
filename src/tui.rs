@@ -1,5 +1,6 @@
-//! Read-only project selection and issue-list browsing; detail and editing are not implemented.
+//! Read-only project, issue-list and detail browsing.
 mod browse;
+mod detail;
 mod input;
 use crate::{Error, config::Config, safety};
 use crossterm::{
@@ -18,7 +19,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 use std::{
     io::{self, Write},
@@ -72,10 +73,38 @@ impl Shell {
         if area.width < 40 || area.height < 12 {
             return None;
         }
+        if self.browse.error_notice.is_some()
+            && key.modifiers.is_empty()
+            && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' '))
+        {
+            self.browse.error_notice = None;
+            return None;
+        }
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('o') {
+            self.browse.error_notice = None;
+            if self.focus == Focus::Issue {
+                self.browse.open_browser();
+            }
+            return None;
+        }
         if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
             return None;
         }
-        let rows = self.panel_area(area, self.focus).height.saturating_sub(2) as usize;
+        self.browse.error_notice = None;
+        let panel = self.panel_area(area, self.focus);
+        let rows = panel.height.saturating_sub(2) as usize;
+        if self.focus == Focus::Detail {
+            self.browse.detail.key(
+                key.code,
+                Rect::new(
+                    0,
+                    0,
+                    panel.width.saturating_sub(2),
+                    panel.height.saturating_sub(3),
+                ),
+                &self.browse.secret,
+            );
+        }
         self.browse.key(key.code, self.focus, rows);
         match key.code {
             KeyCode::Char('h' | 'l') | KeyCode::Tab | KeyCode::BackTab => {
@@ -128,8 +157,11 @@ impl Shell {
         .split(area);
         let (navigation, action) = match self.focus {
             Focus::Project => ("h/l Tab: Issue", "j/k: move Enter: select R: reload"),
-            Focus::Issue => ("h/l Tab: Project", "j/k: move p/n: page R: reload"),
-            Focus::Detail => ("h/l Tab/Shift+Tab: Comment", "Esc: Issue"),
+            Focus::Issue => ("h/l Tab: Project", "j/k p/n Enter:Detail Ctrl+O R"),
+            Focus::Detail => (
+                "h/l Tab: Comment Esc: Issue",
+                "j/k PgUp/Dn b/Space g/G Home/End R",
+            ),
             Focus::Comment => ("h/l Tab/Shift+Tab: Detail", "Esc: Issue"),
         };
         let exits = "q: quit | Ctrl+C: interrupt";
@@ -143,6 +175,7 @@ impl Shell {
         frame.render_widget(Paragraph::new(keys), rows[1]);
         if compact {
             self.panel(frame, rows[0], self.focus);
+            self.error_popup(frame);
             return;
         }
         let main = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(rows[0]);
@@ -158,6 +191,36 @@ impl Shell {
         for focus in [Focus::Project, Focus::Issue, Focus::Detail, Focus::Comment] {
             self.panel(frame, self.panel_area(area, focus), focus);
         }
+        self.error_popup(frame);
+    }
+    fn error_popup(&self, frame: &mut Frame<'_>) {
+        let Some(message) = &self.browse.error_notice else {
+            return;
+        };
+        let area = frame.area();
+        let width = area.width.saturating_sub(4).min(76);
+        let mut style = Style::default().add_modifier(Modifier::BOLD);
+        if !self.no_color {
+            style = style.fg(Color::Red);
+        }
+        let paragraph = Paragraph::new(message.as_str())
+            .wrap(Wrap { trim: false })
+            .style(style);
+        let height = paragraph
+            .line_count(width.saturating_sub(2))
+            .saturating_add(2)
+            .min(area.height.saturating_sub(2) as usize) as u16;
+        let popup = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            paragraph.block(Block::default().borders(Borders::ALL)),
+            popup,
+        );
     }
     fn panel_area(&self, area: Rect, focus: Focus) -> Rect {
         let compact = area.width < 100 || area.height < 24;
@@ -202,6 +265,14 @@ impl Shell {
                 style = style.fg(Color::Cyan);
             }
             block = block.border_type(BorderType::Double).border_style(style);
+        }
+        if focus == Focus::Detail {
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+            frame.render_widget(Paragraph::new(self.browse.detail_status()), rows[0]);
+            self.browse.detail.draw(frame, rows[1], &self.browse.secret);
+            return;
         }
         let content = self
             .browse
@@ -333,8 +404,10 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             return if code == 0 { Ok(()) } else { Err(Error::new("interrupted", "Operation interrupted")) };
                         }
                     }
+                    shell.browse.tick();
                     for request in std::mem::take(&mut shell.browse.requests) {
                         let id = request.id();
+                        if !shell.browse.is_current(id) { continue; }
                         let config = Arc::clone(&config);
                         pending.push((id, tokio::spawn(request.run(config))));
                     }
@@ -532,6 +605,310 @@ mod tests {
             assert!(!result.to_string().contains("test-secret"));
             assert!(!screen.contains("\x1b]52"));
         }
+    }
+
+    #[test]
+    fn detail_document_scroll_keys_wrap_resize_and_right_focus_keep_the_selected_document() {
+        use ratatui::backend::TestBackend;
+        fn screen(shell: &Shell, w: u16, h: u16) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect()
+        }
+        let mut shell = Shell::new(true);
+        shell.focus = Focus::Detail;
+        shell.browse.detail.replace(
+            (1..=30)
+                .map(|n| {
+                    format!(
+                        "Line {n:02} Japanese 日本語 e\u{301} 👩‍💻 wrapping across narrow panels\n"
+                    )
+                })
+                .collect(),
+        );
+        let area = Rect::new(0, 0, 40, 12);
+        let press = |shell: &mut Shell, code| {
+            shell.key(KeyEvent::new(code, KeyModifiers::NONE), area);
+        };
+        assert!(screen(&shell, 40, 12).contains("Line 01"));
+        for down in [KeyCode::Down, KeyCode::Char('j')] {
+            press(&mut shell, down);
+        }
+        assert!(!screen(&shell, 40, 12).contains("Line 01"));
+        for up in [KeyCode::Up, KeyCode::Char('k')] {
+            press(&mut shell, up);
+        }
+        assert!(screen(&shell, 40, 12).contains("Line 01"));
+        for (down, up) in [
+            (KeyCode::PageDown, KeyCode::PageUp),
+            (KeyCode::Char(' '), KeyCode::Char('b')),
+        ] {
+            press(&mut shell, down);
+            assert!(!screen(&shell, 40, 12).contains("Line 01"));
+            press(&mut shell, up);
+            assert!(screen(&shell, 40, 12).contains("Line 01"));
+        }
+        for (end, home) in [
+            (KeyCode::End, KeyCode::Home),
+            (KeyCode::Char('G'), KeyCode::Char('g')),
+        ] {
+            press(&mut shell, end);
+            assert!(screen(&shell, 40, 12).contains("Line 30"));
+            press(&mut shell, home);
+            assert!(screen(&shell, 40, 12).contains("Line 01"));
+        }
+        press(&mut shell, KeyCode::End);
+        let bottom = screen(&shell, 40, 12);
+        for toggle in [
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Tab,
+            KeyCode::BackTab,
+        ] {
+            press(&mut shell, toggle);
+            assert!(screen(&shell, 40, 12).contains("> Comment"));
+            press(&mut shell, toggle);
+            assert_eq!(screen(&shell, 40, 12), bottom);
+        }
+        // A taller document viewport clamps the old end offset and still shows its tail.
+        assert!(screen(&shell, 100, 60).contains("Line 30"));
+        // Width changes reflow the same Unicode document, not a prewrapped cache.
+        let wide = screen(&shell, 160, 60);
+        assert!(
+            wide.contains("Line 01 Japanese") && wide.contains("wrapping across narrow panels")
+        );
+        assert!(wide.contains("Line 30"));
+        press(&mut shell, KeyCode::Esc);
+        assert!(screen(&shell, 40, 12).contains("> Issue List"));
+    }
+
+    #[test]
+    fn error_popup_wraps_inside_both_layouts_and_uses_bold_without_color_under_no_color() {
+        use ratatui::backend::TestBackend;
+        for no_color in [false, true] {
+            let mut shell = Shell::new(no_color);
+            shell.browse.error_notice = Some("Failed: 再取得に失敗しました。日本語の長い通知も折り返して表示します。\nRetry later".into());
+            for (width, height) in [(40, 12), (100, 24)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| shell.draw(frame)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+                assert!(text.contains("Retry later"), "{text}");
+                assert!(!text.contains("ERROR") && !text.contains("OK"));
+                let left = if width == 40 { 2 } else { 12 };
+                let top = (1..height - 1)
+                    .find(|&row| buffer[(left, row)].symbol() == "┌")
+                    .unwrap();
+                let bottom = (top + 1..height - 1)
+                    .find(|&row| buffer[(left, row)].symbol() == "└")
+                    .unwrap();
+                assert!((i32::from(top) - i32::from(height - bottom - 1)).abs() <= 1);
+                assert!(bottom - top > 2, "long message must wrap");
+                for row in top..=bottom {
+                    let cell = &buffer[(left, row)];
+                    assert!(cell.modifier.contains(Modifier::BOLD));
+                    assert_eq!(cell.fg, if no_color { Color::Reset } else { Color::Red });
+                }
+                if no_color {
+                    assert!(
+                        buffer
+                            .content
+                            .iter()
+                            .all(|cell| { cell.fg == Color::Reset && cell.bg == Color::Reset })
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn error_popup_dismissal_consumes_only_unmodified_enter_escape_space_and_preserves_document() {
+        use ratatui::{backend::TestBackend, buffer::Buffer};
+        fn draw(shell: &Shell, area: Rect) -> Buffer {
+            let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            terminal.backend().buffer().clone()
+        }
+        let area = Rect::new(0, 0, 40, 12);
+        let mut shell = Shell::new(true);
+        shell.focus = Focus::Detail;
+        shell
+            .browse
+            .detail
+            .replace((1..=30).map(|n| format!("Line {n:02}\n")).collect());
+        shell.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), area);
+        let retained = draw(&shell, area);
+        for code in [KeyCode::Enter, KeyCode::Esc, KeyCode::Char(' ')] {
+            shell.browse.error_notice = Some("Failed: retained document".into());
+            let popup = draw(&shell, area);
+            for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+                shell.key(KeyEvent::new(code, modifiers), area);
+                assert_eq!(draw(&shell, area), popup);
+            }
+            shell.key(
+                KeyEvent::new_with_kind(code, KeyModifiers::NONE, KeyEventKind::Release),
+                area,
+            );
+            assert_eq!(draw(&shell, area), popup);
+            let tiny = Rect::new(0, 0, 39, 12);
+            shell.event(Event::Resize(39, 12), tiny);
+            shell.key(KeyEvent::new(code, KeyModifiers::NONE), tiny);
+            draw(&shell, tiny);
+            shell.event(Event::Resize(40, 12), area);
+            assert_eq!(draw(&shell, area), popup);
+            assert_eq!(
+                shell.key(
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                    area
+                ),
+                Some(130)
+            );
+            assert_eq!(draw(&shell, area), popup);
+            shell.key(
+                KeyEvent::new_with_kind(code, KeyModifiers::NONE, KeyEventKind::Repeat),
+                area,
+            );
+            assert_eq!(
+                draw(&shell, area),
+                retained,
+                "dismissal must not navigate or scroll"
+            );
+        }
+        shell.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), area);
+        assert_ne!(
+            draw(&shell, area),
+            retained,
+            "Space without a popup still scrolls"
+        );
+        shell.browse.error_notice = Some("Failed: retained document".into());
+        shell.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), area);
+        shell.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), area);
+        assert!(shell.browse.error_notice.is_none());
+        shell.browse.error_notice = Some("Failed: retained document".into());
+        shell.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+        let text: String = draw(&shell, area)
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("> Comment"), "other keys still change focus");
+        shell.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+        let text: String = draw(&shell, area)
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            text.contains("> Issue List"),
+            "second Esc still returns to Issue List"
+        );
+        shell.browse.error_notice = Some("Failed: retained document".into());
+        shell.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), area);
+        assert!(shell.browse.error_notice.is_none());
+        let text: String = draw(&shell, area)
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            text.contains("> Issue Detail"),
+            "modified Enter retains its normal action"
+        );
+    }
+
+    #[test]
+    fn error_popup_clears_before_normal_scroll_focus_and_browser_keys_execute() {
+        use ratatui::backend::TestBackend;
+        let area = Rect::new(0, 0, 40, 12);
+        let mut shell = Shell::new(true);
+        shell.focus = Focus::Detail;
+        shell
+            .browse
+            .detail
+            .replace((1..=30).map(|n| format!("Line {n:02}\n")).collect());
+        for (code, expected) in [
+            (KeyCode::Char('j'), "Line 02"),
+            (KeyCode::Char('k'), "Line 01"),
+            (KeyCode::Char('h'), "> Comment"),
+            (KeyCode::Char('l'), "> Issue Detail"),
+        ] {
+            shell.browse.error_notice = Some("Failed: old notification".into());
+            for ignored in [
+                KeyEvent::new(code, KeyModifiers::ALT),
+                KeyEvent::new(code, KeyModifiers::CONTROL),
+                KeyEvent::new_with_kind(code, KeyModifiers::NONE, KeyEventKind::Release),
+            ] {
+                shell.key(ignored, area);
+                assert!(shell.browse.error_notice.is_some());
+            }
+            shell.key(KeyEvent::new(code, KeyModifiers::NONE), area);
+            let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(!text.contains("Failed:"), "{code:?}: {text}");
+            assert!(text.contains(expected), "{code:?}: {text}");
+            if code == KeyCode::Char('j') {
+                assert!(!text.contains("Line 01"), "j must scroll: {text}");
+            }
+        }
+        shell.focus = Focus::Issue;
+        shell.browse.error_notice = Some("Failed: old notification".into());
+        shell.key(
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            area,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(!text.contains("Failed:"), "{text}");
+        assert!(text.contains("> Issue List"), "{text}");
+    }
+
+    #[test]
+    fn detail_document_scroll_upper_bound_does_not_overflow() {
+        use ratatui::backend::TestBackend;
+        let mut shell = Shell::new(true);
+        shell.focus = Focus::Detail;
+        shell.browse.detail.replace("Row\n".repeat(65_550));
+        let area = Rect::new(0, 0, 40, 12);
+        for code in [
+            KeyCode::End,
+            KeyCode::Down,
+            KeyCode::Char(' '),
+            KeyCode::PageDown,
+        ] {
+            shell.key(KeyEvent::new(code, KeyModifiers::NONE), area);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| cell.symbol() == "R")
+        );
+        shell.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), area);
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
     }
 
     // Inject faults at the terminal Write boundary, never through a product debug flag.

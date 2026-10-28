@@ -91,7 +91,7 @@ fn shell_focus_reaches_empty_right_panels_and_returns_without_claiming_issue_sel
         !issue.contains("Cancelled"),
         "Esc without a read is navigation only"
     );
-    for unimplemented in ["search", "create", "refresh", "editor", "Ctrl+O", "Ctrl+A"] {
+    for unimplemented in ["search", "create", "refresh", "editor", "Ctrl+A"] {
         assert!(!issue.contains(unimplemented));
     }
 }
