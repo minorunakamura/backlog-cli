@@ -3,13 +3,36 @@
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
-TUI画面は未実装です。
+`bl` は初期space/projects取得・パネル配置・focus移動・端末復元の基本shellを利用できます。
+TUIのプロジェクト候補選択・確定、課題/コメント操作・検索・入力・editor連携は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
 ```sh
 cargo run --locked --bin bl -- --help
 cargo run --locked --bin bl-cli -- project list --json
 ```
+
+## TUI基本shell
+
+```sh
+bl                  # default profile、stdin/stdoutの両方がTTY必須
+bl --profile work
+NO_COLOR=1 bl        # 色なしでも二重枠・太字・>でfocusを表示
+```
+
+起動時に正式なspace名と参加プロジェクトを取得します。取得中もfocus移動・終了・中断ができ、
+失敗はstderrに明示して非0で終了します。空projectsの成功と取得失敗を区別します。
+プロジェクトは表示のみ・未確定で、設定projectからの自動選択や課題取得は行いません。
+Workspaceの `*` は未実装の設定入口マーカーで、editorは開きません。
+
+- 100列×24行以上: Workspace / Project List / Issue List / Issue Detail / Comment。
+- 40列×12行以上: focus中パネルのみ。h/l・Tab/Shift+Tabは左2パネル内または右2パネル内を切替。
+- Issue ListのEnterは未実装のDetailパネルへfocusを移すだけ。右側のEscでIssue Listへ戻ります。
+- それ未満: サイズ案内とq/Ctrl+Cだけ。見えない画面の操作は受け付けません。
+- qは終了0、Ctrl+C（キー/SIGINT）は130、実行エラーは1。終了時にraw mode・表示属性・
+  alternate screen・cursorを可能な限り復元し、復元失敗も通知します。SIGKILL/端末切断後は保証しません。
+
+実端末での確認手順・未実施記録は [手動受入](docs/testing/manual-acceptance.md) を参照してください。
 
 ## 設定
 

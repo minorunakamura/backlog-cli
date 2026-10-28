@@ -4,6 +4,7 @@ pub mod body;
 pub mod config;
 pub mod safety;
 pub mod service;
+pub mod tui;
 
 use serde::Serialize;
 use serde_json::Value;
