@@ -145,3 +145,131 @@ fn shell_no_color_keeps_focus_visible_without_any_color() {
     );
     assert!(screen(&shell, 100, 24).contains("> Project List"));
 }
+
+#[test]
+fn shell_uppercase_region_keys_restore_last_panels_and_enter_escape_update_memory() {
+    for (w, h) in [(100, 24), (40, 12)] {
+        for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+            let mut shell = Shell::new(true);
+            for (code, expected) in [
+                (KeyCode::Char('H'), "> Project List"),
+                (KeyCode::Char('L'), "> Issue Detail"),
+                (KeyCode::Char('L'), "> Issue Detail"),
+                (KeyCode::Char('l'), "> Comment"),
+                (KeyCode::Char('H'), "> Project List"),
+                (KeyCode::Char('H'), "> Project List"),
+                (KeyCode::Char('L'), "> Comment"),
+                (KeyCode::Esc, "> Issue List"),
+                (KeyCode::Char('L'), "> Comment"),
+                (KeyCode::Char('H'), "> Issue List"),
+                (KeyCode::Enter, "> Issue Detail"),
+                (KeyCode::Char('H'), "> Issue List"),
+                (KeyCode::Char('L'), "> Issue Detail"),
+                (KeyCode::Tab, "> Comment"),
+                (KeyCode::Char('H'), "> Issue List"),
+                (KeyCode::BackTab, "> Project List"),
+                (KeyCode::Char('L'), "> Comment"),
+                (KeyCode::BackTab, "> Issue Detail"),
+                (KeyCode::Char('H'), "> Project List"),
+            ] {
+                let mods = if matches!(code, KeyCode::Char('H' | 'L')) {
+                    modifiers
+                } else if code == KeyCode::BackTab {
+                    KeyModifiers::SHIFT
+                } else {
+                    KeyModifiers::NONE
+                };
+                assert_eq!(key(&mut shell, code, mods, w, h), None);
+                assert!(
+                    screen(&shell, w, h).contains(expected),
+                    "{code:?} {mods:?}: {}",
+                    screen(&shell, w, h)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn shell_region_guidance_fits_full_and_minimum_sizes() {
+    for (w, h) in [(100, 24), (40, 12)] {
+        let mut shell = Shell::new(true);
+        for (code, action) in [
+            (KeyCode::Char('H'), "Enter:select"),
+            (KeyCode::Tab, "Enter:Detail"),
+            (KeyCode::Char('L'), "Esc:Issue"),
+            (KeyCode::Tab, "Esc:Issue"),
+        ] {
+            key(&mut shell, code, KeyModifiers::NONE, w, h);
+            let text = screen(&shell, w, h);
+            for help in [
+                "H:Left",
+                "L:Right",
+                "h/l",
+                "Tab/S-Tab",
+                action,
+                "q:quit",
+                "Ctrl+C",
+            ] {
+                assert!(text.contains(help), "{w}x{h} missing {help}: {text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn shell_rejected_region_events_and_tiny_resize_preserve_focus_and_memory() {
+    use crossterm::event::KeyEventKind;
+    for no_color in [false, true] {
+        let mut shell = Shell::new(no_color);
+        key(&mut shell, KeyCode::Tab, KeyModifiers::NONE, 40, 12);
+        key(&mut shell, KeyCode::Enter, KeyModifiers::NONE, 40, 12);
+        key(&mut shell, KeyCode::Tab, KeyModifiers::NONE, 40, 12);
+        key(&mut shell, KeyCode::Char('H'), KeyModifiers::NONE, 40, 12);
+        let before = screen(&shell, 100, 24);
+        for code in [KeyCode::Char('H'), KeyCode::Char('L')] {
+            for modifiers in [
+                KeyModifiers::CONTROL,
+                KeyModifiers::ALT,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                KeyModifiers::ALT | KeyModifiers::SHIFT,
+                KeyModifiers::SUPER,
+            ] {
+                shell.key(KeyEvent::new(code, modifiers), Rect::new(0, 0, 100, 24));
+                assert_eq!(screen(&shell, 100, 24), before);
+            }
+            for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+                for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+                    shell.key(
+                        KeyEvent::new_with_kind(code, modifiers, kind),
+                        Rect::new(0, 0, 100, 24),
+                    );
+                    assert_eq!(screen(&shell, 100, 24), before);
+                }
+            }
+            for (w, h) in [(39, 12), (40, 11)] {
+                key(&mut shell, code, KeyModifiers::NONE, w, h);
+                screen(&shell, w, h);
+                assert_eq!(screen(&shell, 100, 24), before);
+            }
+        }
+        key(&mut shell, KeyCode::Char('L'), KeyModifiers::NONE, 40, 12);
+        assert!(screen(&shell, 40, 12).contains("> Comment"));
+        key(&mut shell, KeyCode::Char('H'), KeyModifiers::SHIFT, 100, 24);
+        assert!(screen(&shell, 100, 24).contains("> Issue List"));
+        assert_eq!(
+            key(
+                &mut shell,
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+                40,
+                12
+            ),
+            Some(130)
+        );
+        assert_eq!(
+            key(&mut shell, KeyCode::Char('q'), KeyModifiers::NONE, 40, 12),
+            Some(0)
+        );
+    }
+}

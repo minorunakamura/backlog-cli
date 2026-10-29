@@ -3,8 +3,8 @@
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
-`bl` はプロジェクト選択、課題一覧のページ巡回、選択追従プレビュー/詳細と再取得、ブラウザ起動、端末復元を利用できます。
-TUIの検索ダイアログ・横断検索・コメント取得・書込み・入力・editor連携は未実装です。
+`bl` はプロジェクト選択、通常/横断検索ダイアログ、課題一覧のページ巡回、選択追従プレビュー/詳細と再取得、ブラウザ起動、端末復元を利用できます。
+TUIのコメント取得・書込みフォーム・editor連携は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
 ```sh
@@ -41,7 +41,7 @@ NO_COLOR=1 bl        # 色なしでも二重枠・太字・>でfocusを表示
 - R: Projectではprojectsだけを再取得。確定projectが候補から消えても課題一覧や条件は変更しません。
   Issueでは現在の解決済み条件でcountと先頭listを取得し、両方の成功後だけ履歴を置換します。
 - 再取得・ブラウザ起動の失敗は画面中央の枠付き通知に安全なメッセージを表示し、以前の内容/選択/scroll/履歴を保持します。
-  通知中の修飾キーなしEnter・Esc・Spaceは通知だけを閉じ、通常の画面遷移/取消/scrollは実行しません。
+  通常画面の通知中の修飾キーなしEnter・Esc・Spaceは通知だけを閉じ、通常の画面遷移/取消/scrollは実行しません。
   その他の通常入力（j/k/h/l・R・Ctrl+O等）は通知を閉じてから本来の動作を実行し、Rが再び失敗すれば新しい通知を表示します。
   通常dispatchに進むShift付きキーや未割当の文字も通知を閉じますが、無視するmodifier・キーRelease・resize・時間経過では閉じません。
   qは終了、Ctrl+Cは中断130を優先します。
@@ -51,10 +51,67 @@ NO_COLOR=1 bl        # 色なしでも二重枠・太字・>でfocusを表示
 
 - 100列×24行以上: Workspace / Project List / Issue List / Issue Detail / Comment。
 - 40列×12行以上: focus中パネルのみ。h/l・Tab/Shift+Tabは左2パネル内または右2パネル内を切替。
-- 通知がない時はIssue ListのEnterでDetailへfocusを移します。右側のEscで読取りを取消しIssue Listへ戻ります。
+- 通常メイン画面の大文字 **L（Shift+L）で右、H（Shift+H）で左**の最後にfocusしたパネルへ戻ります。
+  初期値は左Project／右Detail。同じ側へのキーはfocusを変えません。小文字h/l・Tab/Shift+Tabは左右それぞれの内部切替です。
+  記憶は起動中だけで、内部切替・Enter/Esc・検索適用成功も反映し、resize・project切替・通常/横断検索ではresetしません。
+  新キーは空一覧・通信中もfocusだけを変え、選択・条件・履歴・本文scrollを保ち、追加GETや読取り取消をしません。
+  dialog/popup/適用中/40x12未満では背面focusを変えず、キーワード中のH/Lは文字です。
+  大文字H/LのNONEまたはSHIFTのPressだけが対象で、Ctrl/Alt等の併用・Repeat/Releaseはfocus・記憶・通知を変えません。
+  端末がPressとして送る反復やCaps Lock由来の大文字は区別しません。案内の `H:Left L:Right` が領域間、`h/l Tab/S-Tab` が内部切替です。
+- 通知がない時はIssue ListのEnterで、右の記憶に関係なくDetailへfocusを移します。右側のEscは読取りを取消しIssue Listへ戻ります。
+  有効なH/Lは通知を消して移動します。同じ側へのno-opでも通知だけは消しますが、拒否されたH/Lでは消しません。
 - それ未満: サイズ案内とq/Ctrl+Cだけ。見えない画面の操作は受け付けません。
-- qは終了0、Ctrl+C（キー/SIGINT）は130、実行エラーは1。終了時にraw mode・表示属性・
-  alternate screen・cursorを可能な限り復元し、復元失敗も通知します。SIGKILL/端末切断後は保証しません。
+- 通常画面ではqで終了0（極小サイズでも可）。検索dialogはEscで候補を閉じる／取消、Ctrl+Cで中断します。
+  Ctrl+C（キー/SIGINT）は130、実行エラーは1。終了時にraw mode・表示属性・alternate screen・cursorを可能な限り復元し、
+  復元失敗も通知します。SIGKILL/端末切断後は保証しません。
+
+### TUI検索ダイアログ (#17)
+
+Issue Listの `/` でkeyword・状態・担当者・マイルストーンの4条件を一枚で編集します。
+初回は設定の検索status、その後は適用済み条件を表示します。Projectの同project再確定でも条件を保持し、
+別projectへの切替ではそのprojectで通常検索を開始します。
+
+| キー | 検索中の操作 |
+| --- | --- |
+| キーワード欄の編集キー | Ctrl+A/E/B/Fで移動、Ctrl+K/U/W/Hで削除、Ctrl+Yで貼戻し等、単行入力の標準編集を優先 |
+| Tab / Shift+Tab | キーワード→状態→担当者→マイルストーンの順/逆順。候補項目へ移るとpopupを開く |
+| キーワード欄外のCtrl+K / S / A / G | キーワード / 状態 / 担当者 / マイルストーンへfocus |
+| キーワード欄外のCtrl+U | キーワードを含む全条件をクリア。focusと成功候補を保持しpopupは閉じる。欄内のCtrl+Uはキーワードだけを削除 |
+| 修飾なしEnter（Pressのみ） | キーワード/閉じた候補項目では適用、popup内は閉じるだけ、候補失敗中は再取得だけ |
+| 上下 / j/k、Space | popup内は候補移動・複数選択/解除。閉じた項目では再表示だけ。キーワード中のj/k等は文字 |
+| 左右 | popupの選択行や閉じた項目の長い選択済み値をgrapheme単位で水平scrollし、複数値の全文を確認 |
+| Esc | 候補だけを閉じる。候補が閉じていれば未適用draftを破棄して取消 |
+| Ctrl+C | 常に中断130。キーワード中のq/h/l/H/L/j/k/R/c等は通常の文字 |
+
+検索用Ctrl+Fは廃止しました（キーワード欄内は右移動、欄外は何もしません）。Alt/Ctrl+Enterの別名はなく、
+Repeat/ReleaseのEnterで適用・候補閉鎖・再試行はしません。端末がPressとして送る反復の完全識別は保証しません。
+中央dialogは最大72x18（100x24時）、40x12では38x10です。状態/担当者を上段、マイルストーンを次段、
+枠付きキーワードを下に表示します。選択値は各ラベルの右に一行で表示し、未選択の値欄は空欄です。
+候補は親内に最大60x10のpopupとして重ねます。
+候補は一行ずつで、選択が表示範囲を越える時だけ最小scrollします。
+成功候補は空配列も含め同一dialog内で再利用し、Tab周回・再表示・全クリアでGETを繰り返しません。
+未取得/失敗後の明示再試行だけ取得し、取得中の同項目は重複しません。dialogを閉じると候補を破棄します。
+
+編集中は候補取得だけでcount/listを呼びません。適用時のcountと先頭listの両方が成功した後だけ、
+条件・total・一覧・履歴を交換してIssueへfocusします。適用中はEsc取消とCtrl+Cのみ受け付けます。
+失敗時はdraft/値を残して通知し、以前の条件/一覧/履歴/選択/scrollを保持します。
+検索中の通知は次の入力で消え、その入力による編集/候補操作/取消を実行します。
+一覧上部の `K:` はkeywordの短縮表示、`S:`/`A:`/`G:` は状態/担当者/マイルストーンの選択数（0は絞込みなし）です。
+全値・候補の名前とIDはダイアログで確認できます。Rも適用済み条件を使い、クリア後に設定statusを戻しません。
+
+Project Listの **Ctrl+A** は専用の横断検索を開きます。編集できるのはkeywordと担当者「自分」（内部値self）だけで、
+空白のみでないkeywordまたはselfが必要です。状態・マイルストーン・他の担当者やローカル既定値は適用しません。
+結果は同じIssue List/Detailに表示され、横断中の `/` は現在の横断条件を再編集します。
+h/lまたはTabでProjectへ移り、具体projectをEnterで確定すると通常検索へ戻り作成先が決まります。
+横断一覧とcはこの手順を案内するだけで作成しません。nは次ページのままです。通常復帰もcount/list両方の成功まで旧結果を保持します。
+
+keywordは共有単行入力を使い、Unicode編集/水平scroll/実cursorを維持します。
+bracketed pasteのCRLF/CR/LF/TABだけをspaceへ正規化します。既知API keyまたは制御文字を含めば、
+画面外も含む全値を検査して欄全体を固定表示 `[REDACTED]` にします。送信原文を表示用copyで書き換えません。
+40x12未満では入力/適用せず、q/Ctrl+Cだけです。OS/IME受信前の未確定文字の秘匿は保証しません。
+検索の長い値は左右で確認します。IME確定Enterは端末側の処理に依存し、アプリはcompositionを推測しません。
+製品で「変換確定では検索せず、次のEnterで検索」を実端末で必須確認し、失敗した環境では未完了として停止します。
+実Backlog/実IME受入の完了状況は手動受入記録を参照してください。
 
 本文スクロール開始位置の上限は65,535折返し行で、これを超える本文末尾へは到達できない場合があります。
 本文原文を切り詰め/変更する制限ではありません。固定Ratatui版のunstable行数APIを利用しているため、依存更新時に再確認します。

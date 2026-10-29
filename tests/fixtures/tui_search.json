@@ -1,0 +1,81 @@
+{
+  "routes": {
+    "/api/v2/space": {
+      "body": "{\"name\": \"Search fixture\"}"
+    },
+    "/api/v2/projects": {
+      "body": "[{\"id\": 1, \"projectKey\": \"A\", \"name\": \"Alpha\"}, {\"id\": 2, \"projectKey\": \"B\", \"name\": \"Beta\"}]"
+    },
+    "/api/v2/projects/2/statuses": {
+      "body": "[{\"id\":1,\"name\":\"open\"},{\"id\":2,\"name\":\"closed\"},{\"id\":3,\"name\":\"日本語é👩‍💻 長い候補 確認確認確認確認確認確認確認確認確認確認確認確認確認確認確認 POPUP-END\"},{\"id\":4,\"name\":\"Fourth status\"},{\"id\":5,\"name\":\"Fifth status\"},{\"id\":6,\"name\":\"Sixth status\"}]"
+    },
+    "/api/v2/projects/2/users": {
+      "body": "[{\"id\": 7, \"name\": \"Alice\"}, {\"id\": 8, \"name\": \"Bob\"}]"
+    },
+    "/api/v2/projects/2/versions": {
+      "body": "[{\"id\": 123456789012345678901234567890, \"name\": \"v1\"}, {\"id\": 10, \"name\": \"v2\"}]"
+    },
+    "/api/v2/users/myself": {
+      "body": "{\"id\":7}"
+    },
+    "/api/v2/issues/count": {
+      "sequence": [
+        {
+          "body": "{\"count\": 1}"
+        },
+        {
+          "body": "{\"count\": 1}"
+        },
+        {
+          "body": "{\"count\": 1}"
+        },
+        {
+          "body": "{\"count\": 2}"
+        },
+        {
+          "body": "{\"count\": 1}"
+        }
+      ]
+    },
+    "/api/v2/issues": {
+      "sequence": [
+        {
+          "body": "[{\"id\": 1, \"issueKey\": \"B-1\", \"summary\": \"First issue\", \"status\": {\"name\": \"open\"}}]"
+        },
+        {
+          "body": "[{\"id\": 2, \"issueKey\": \"B-2\", \"summary\": \"Filtered issue\", \"status\": {\"name\": \"open\"}}]"
+        },
+        {
+          "body": "[{\"id\": 3, \"issueKey\": \"B-3\", \"summary\": \"Cleared issue\", \"status\": {\"name\": \"open\"}}]"
+        },
+        {
+          "body": "[{\"id\": 1, \"issueKey\": \"A-1\", \"summary\": \"Alpha result\", \"status\": {\"name\": \"open\"}}, {\"id\": 2, \"issueKey\": \"B-2\", \"summary\": \"Beta result\", \"status\": {\"name\": \"open\"}}]"
+        },
+        {
+          "body": "[{\"id\": 4, \"issueKey\": \"B-4\", \"summary\": \"Returned issue\", \"status\": {\"name\": \"open\"}}]"
+        }
+      ]
+    },
+    "/api/v2/issues/B-1": {
+      "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Detail B-3\", \"description\": \"Local preview \\u65e5\\u672c\\u8a9e e\\u0301 \\ud83d\\udc69\\u200d\\ud83d\\udcbb\", \"issueType\": {\"name\": \"Task\"}, \"priority\": {\"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"name\": \"Open\"}, \"resolution\": {\"name\": \"Done\"}, \"startDate\": \"2026-01-01\", \"dueDate\": \"2026-02-02\", \"milestone\": [{\"name\": \"v1\"}, {\"name\": \"v2\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\", \"url\": \"https://evil.invalid/test-secret\"}"
+    },
+    "/api/v2/issues/B-2": {
+      "body": "{\"id\": 2, \"projectId\": 2, \"issueKey\": \"B-2\", \"summary\": \"Detail B-3\", \"description\": \"Local preview \\u65e5\\u672c\\u8a9e e\\u0301 \\ud83d\\udc69\\u200d\\ud83d\\udcbb\", \"issueType\": {\"name\": \"Task\"}, \"priority\": {\"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"name\": \"Open\"}, \"resolution\": {\"name\": \"Done\"}, \"startDate\": \"2026-01-01\", \"dueDate\": \"2026-02-02\", \"milestone\": [{\"name\": \"v1\"}, {\"name\": \"v2\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\", \"url\": \"https://evil.invalid/test-secret\"}"
+    },
+    "/api/v2/issues/B-3": {
+      "body": "{\"id\": 3, \"projectId\": 2, \"issueKey\": \"B-3\", \"summary\": \"Detail B-3\", \"description\": \"Local preview \\u65e5\\u672c\\u8a9e e\\u0301 \\ud83d\\udc69\\u200d\\ud83d\\udcbb\", \"issueType\": {\"name\": \"Task\"}, \"priority\": {\"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"name\": \"Open\"}, \"resolution\": {\"name\": \"Done\"}, \"startDate\": \"2026-01-01\", \"dueDate\": \"2026-02-02\", \"milestone\": [{\"name\": \"v1\"}, {\"name\": \"v2\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\", \"url\": \"https://evil.invalid/test-secret\"}"
+    },
+    "/api/v2/issues/A-1": {
+      "body": "{\"id\": 1, \"projectId\": 1, \"issueKey\": \"A-1\", \"summary\": \"Detail B-3\", \"description\": \"Local preview \\u65e5\\u672c\\u8a9e e\\u0301 \\ud83d\\udc69\\u200d\\ud83d\\udcbb\", \"issueType\": {\"name\": \"Task\"}, \"priority\": {\"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"name\": \"Open\"}, \"resolution\": {\"name\": \"Done\"}, \"startDate\": \"2026-01-01\", \"dueDate\": \"2026-02-02\", \"milestone\": [{\"name\": \"v1\"}, {\"name\": \"v2\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\", \"url\": \"https://evil.invalid/test-secret\"}"
+    },
+    "/api/v2/issues/B-4": {
+      "body": "{\"id\": 4, \"projectId\": 2, \"issueKey\": \"B-4\", \"summary\": \"Detail B-3\", \"description\": \"Local preview \\u65e5\\u672c\\u8a9e e\\u0301 \\ud83d\\udc69\\u200d\\ud83d\\udcbb\", \"issueType\": {\"name\": \"Task\"}, \"priority\": {\"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"name\": \"Open\"}, \"resolution\": {\"name\": \"Done\"}, \"startDate\": \"2026-01-01\", \"dueDate\": \"2026-02-02\", \"milestone\": [{\"name\": \"v1\"}, {\"name\": \"v2\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\", \"url\": \"https://evil.invalid/test-secret\"}"
+    },
+    "/api/v2/projects/1": {
+      "body": "{\"textFormattingRule\":\"markdown\"}"
+    },
+    "/api/v2/projects/2": {
+      "body": "{\"textFormattingRule\":\"markdown\"}"
+    }
+  }
+}

@@ -1,21 +1,22 @@
 use super::{
     Focus,
     detail::{self, Detail},
+    search::{self, Conditions, Dialog},
 };
 use crate::{
     Error,
     api::Api,
     config::Config,
     safety,
-    service::{IssueSearch, ResolvedIssueSearch, Service},
+    service::{Candidate, ResolvedIssueSearch, Service},
 };
 use crossterm::event::KeyCode;
 use serde_json::{Number, Value};
 use std::{process::Stdio, sync::Arc, time::Instant};
 
 #[derive(Clone)]
-struct Project {
-    id: String,
+pub(super) struct Project {
+    pub(super) id: String,
     key: String,
     label: String,
 }
@@ -40,7 +41,8 @@ impl Position {
     }
 }
 struct Search {
-    project: Project,
+    project: Option<Project>,
+    conditions: Conditions,
     resolved: ResolvedIssueSearch,
     total: Number,
     pages: Vec<Page>,
@@ -52,6 +54,9 @@ struct Page {
     position: Position,
 }
 impl Search {
+    fn header_rows(&self) -> usize {
+        if self.project.is_none() { 4 } else { 2 }
+    }
     fn next_offset(&self) -> Option<usize> {
         let page = &self.pages[self.current];
         if page.items.is_empty() {
@@ -70,11 +75,16 @@ enum Target {
     Issues,
     Detail,
     Browser,
+    Candidates,
 }
 #[derive(Clone, Copy)]
 pub(super) struct RequestId(Target, u64);
 
 enum Operation {
+    Candidates {
+        project: String,
+        field: usize,
+    },
     Detail {
         key: String,
     },
@@ -84,8 +94,10 @@ enum Operation {
     Initial,
     Projects,
     Search {
-        project: Project,
+        project: Option<Project>,
+        conditions: Option<Conditions>,
         resolved: Option<ResolvedIssueSearch>,
+        apply: bool,
     },
     Page {
         resolved: ResolvedIssueSearch,
@@ -98,11 +110,18 @@ pub(super) struct Request {
     operation: Operation,
 }
 enum Data {
+    Candidates(Value),
     Detail(String, String),
     Browser,
     Initial(Value, Value),
     Projects(Value),
-    Search(Project, ResolvedIssueSearch, Value),
+    Search(
+        Option<Project>,
+        Conditions,
+        ResolvedIssueSearch,
+        Value,
+        bool,
+    ),
     Page(usize, Value),
 }
 pub(super) struct Response {
@@ -119,6 +138,16 @@ impl Request {
         let initial = matches!(self.operation, Operation::Initial);
         let result = async {
             match self.operation {
+                Operation::Candidates { project, field } => {
+                    let candidate = match field {
+                        0 => Candidate::Status { project: &project },
+                        1 => Candidate::Assignee { project: &project },
+                        _ => Candidate::Milestone { project: &project },
+                    };
+                    Ok(Data::Candidates(
+                        Service::new(&config)?.candidates(candidate).await?,
+                    ))
+                }
                 Operation::Detail { key } => {
                     if !crate::service::issue_key(&key) {
                         return Err(Error::new("invalid_response", "Invalid selected issue key"));
@@ -182,24 +211,28 @@ impl Request {
                         .search_page(&resolved, &offset.to_string())
                         .await?,
                 )),
-                Operation::Search { project, resolved } => {
+                Operation::Search {
+                    project,
+                    conditions,
+                    resolved,
+                    apply,
+                } => {
                     let service = Service::new(&config)?;
+                    let mut conditions =
+                        conditions.unwrap_or_else(|| Conditions::defaults(&config.settings));
                     let resolved = match resolved {
                         Some(resolved) => resolved,
                         None => {
-                            service
-                                .resolve_search(
-                                    &config.settings,
-                                    IssueSearch {
-                                        project: Some(&project.id),
-                                        ..Default::default()
-                                    },
+                            conditions
+                                .resolve(
+                                    &service,
+                                    project.as_ref().map_or("all", |p| p.id.as_str()),
                                 )
                                 .await?
                         }
                     };
                     let page = service.search_resolved(&resolved).await?;
-                    Ok(Data::Search(project, resolved, page))
+                    Ok(Data::Search(project, conditions, resolved, page, apply))
                 }
             }
         }
@@ -220,11 +253,16 @@ pub(super) struct Browse {
     projects_loaded: bool,
     position: Position,
     search: Option<Search>,
+    confirmed_project: Option<Project>,
+    defaults: Conditions,
+    pub(super) dialog: Option<Dialog>,
+    pub(super) focus_issue: bool,
     generation: u64,
     projects_busy: Option<u64>,
     issues_busy: Option<u64>,
     detail_busy: Option<u64>,
     browser_busy: Option<u64>,
+    candidates_busy: Option<u64>,
     pub(super) detail: Detail,
     pub(super) requests: Vec<Request>,
     notice: String,
@@ -238,10 +276,12 @@ impl Browse {
             Target::Issues => self.issues_busy,
             Target::Detail => self.detail_busy,
             Target::Browser => self.browser_busy,
+            Target::Candidates => self.candidates_busy,
         }) == Some(id.1)
     }
-    pub(super) fn start(&mut self, secret: &str) {
-        self.secret = secret.into();
+    pub(super) fn start(&mut self, config: &Config) {
+        self.secret = config.api_key.clone();
+        self.defaults = Conditions::defaults(&config.settings);
         self.request(Target::Projects, Operation::Initial);
     }
     fn request(&mut self, target: Target, operation: Operation) {
@@ -264,6 +304,7 @@ impl Browse {
             Target::Issues => &mut self.issues_busy,
             Target::Detail => &mut self.detail_busy,
             Target::Browser => &mut self.browser_busy,
+            Target::Candidates => &mut self.candidates_busy,
         }
     }
     pub(super) fn complete(
@@ -280,6 +321,17 @@ impl Browse {
             Err(error) if response.initial => return Err(error),
             Err(error) => {
                 let notice = safety::text(&format!("Failed: {}", error.message), &[&self.secret]);
+                if response.target == Target::Candidates
+                    && let Some(candidates) =
+                        self.dialog.as_mut().and_then(|d| d.candidates.as_mut())
+                {
+                    candidates.failed = true;
+                }
+                if response.target == Target::Issues
+                    && let Some(dialog) = &mut self.dialog
+                {
+                    dialog.applying = false;
+                }
                 if response.target == Target::Detail {
                     self.detail.status = "Preview failed";
                 }
@@ -289,6 +341,20 @@ impl Browse {
         };
         let reset_detail = matches!(data, Data::Search(..));
         match data {
+            Data::Candidates(items) => {
+                if let Some(dialog) = &mut self.dialog {
+                    let choices = items
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|item| search::Choice {
+                            id: Some(item["id"].to_string()),
+                            label: item["name"].as_str().unwrap().into(),
+                        })
+                        .collect();
+                    dialog.load_candidates(choices);
+                }
+            }
             Data::Detail(key, text) => {
                 if self.detail.key.as_ref() == Some(&key) {
                     self.detail.replace(text);
@@ -310,9 +376,14 @@ impl Browse {
                 }
             }
             Data::Projects(projects) => self.set_projects(projects),
-            Data::Search(project, resolved, page) => {
+            Data::Search(project, conditions, resolved, page, apply) => {
+                if apply {
+                    self.dialog = None;
+                    self.focus_issue = true;
+                }
                 self.search = Some(Search {
                     project,
+                    conditions,
                     resolved,
                     total: page["pagination"]["total"].as_number().unwrap().clone(),
                     pages: vec![Page {
@@ -415,10 +486,11 @@ impl Browse {
     }
     fn confirm(&mut self) {
         if let Some(project) = self.projects.get(self.position.selected) {
+            self.confirmed_project = Some(project.clone());
             if self
                 .search
                 .as_ref()
-                .is_some_and(|search| search.project.id == project.id)
+                .is_some_and(|search| search.project.as_ref().is_some_and(|p| p.id == project.id))
             {
                 self.issues_busy = None;
                 self.notice.clear();
@@ -427,8 +499,10 @@ impl Browse {
             self.request(
                 Target::Issues,
                 Operation::Search {
-                    project: project.clone(),
+                    project: Some(project.clone()),
+                    conditions: None,
                     resolved: None,
+                    apply: false,
                 },
             );
         }
@@ -465,16 +539,16 @@ impl Browse {
             }
             (Focus::Issue, KeyCode::Down | KeyCode::Char('j')) => {
                 if let Some(search) = &mut self.search {
+                    let visible_rows = rows.saturating_sub(search.header_rows());
                     let page = &mut search.pages[search.current];
-                    page.position
-                        .move_by(true, page.items.len(), rows.saturating_sub(1));
+                    page.position.move_by(true, page.items.len(), visible_rows);
                 }
             }
             (Focus::Issue, KeyCode::Up | KeyCode::Char('k')) => {
                 if let Some(search) = &mut self.search {
+                    let visible_rows = rows.saturating_sub(search.header_rows());
                     let page = &mut search.pages[search.current];
-                    page.position
-                        .move_by(false, page.items.len(), rows.saturating_sub(1));
+                    page.position.move_by(false, page.items.len(), visible_rows);
                 }
             }
             (Focus::Issue, KeyCode::Char('p')) => {
@@ -496,13 +570,22 @@ impl Browse {
                     }
                 }
             }
+            (Focus::Issue, KeyCode::Char('c'))
+                if self.search.as_ref().is_some_and(|s| s.project.is_none()) =>
+            {
+                self.error_notice = Some(
+                    "Select a concrete project: h/l or Tab -> Project, then Enter for normal search / create target".into(),
+                );
+            }
             (Focus::Issue, KeyCode::Char('R')) => {
                 if let Some(search) = &self.search {
                     self.request(
                         Target::Issues,
                         Operation::Search {
                             project: search.project.clone(),
+                            conditions: Some(search.conditions.clone()),
                             resolved: Some(search.resolved.clone()),
+                            apply: false,
                         },
                     );
                 }
@@ -510,6 +593,72 @@ impl Browse {
             _ => {}
         }
         self.sync_selection(false);
+    }
+    pub(super) fn open_search(&mut self, cross: bool) {
+        if !self.projects_loaded {
+            return;
+        }
+        let (project, conditions) = if cross {
+            (
+                None,
+                self.search
+                    .as_ref()
+                    .filter(|s| s.project.is_none())
+                    .map(|s| s.conditions.clone())
+                    .unwrap_or_default(),
+            )
+        } else if let Some(search) = &self.search {
+            (search.project.clone(), search.conditions.clone())
+        } else if let Some(project) = &self.confirmed_project {
+            (Some(project.clone()), self.defaults.clone())
+        } else {
+            return;
+        };
+        self.issues_busy = None;
+        self.candidates_busy = None;
+        self.dialog = Some(Dialog::new(project, conditions));
+    }
+    pub(super) fn dialog_event(
+        &mut self,
+        event: &crossterm::event::Event,
+        area: ratatui::layout::Rect,
+    ) {
+        let action = self.dialog.as_mut().unwrap().event(event, area);
+        match action {
+            search::Action::None => {}
+            search::Action::CancelCandidates => {
+                self.candidates_busy = None;
+            }
+            search::Action::Candidates(field) => {
+                let dialog = self.dialog.as_ref().unwrap();
+                if let Some(project) = &dialog.project {
+                    self.request(
+                        Target::Candidates,
+                        Operation::Candidates {
+                            project: project.id.clone(),
+                            field,
+                        },
+                    );
+                }
+            }
+            search::Action::Close => {
+                self.dialog = None;
+                self.candidates_busy = None;
+                self.issues_busy = None;
+            }
+            search::Action::Apply => {
+                self.candidates_busy = None;
+                let dialog = self.dialog.as_mut().unwrap();
+                dialog.applying = true;
+                let operation = Operation::Search {
+                    project: dialog.project.clone(),
+                    conditions: Some(dialog.conditions.clone()),
+                    resolved: None,
+                    apply: true,
+                };
+                self.request(Target::Issues, operation);
+            }
+        }
     }
     pub(super) fn content(&self, focus: Focus, rows: usize) -> String {
         let busy = match focus {
@@ -553,20 +702,27 @@ impl Browse {
                 Some(search) => {
                     let page = &search.pages[search.current];
                     let mut text = format!(
-                        "Project: {} | total {} | page {}\n",
-                        search.project.key,
+                        "{} | total {} | page {}\n",
+                        search.project.as_ref().map_or_else(
+                            || "Cross-project".into(),
+                            |p| format!("Project: {}", p.key)
+                        ),
                         search.total,
                         search.current + 1
                     );
+                    text.push_str(&format!("{}\n", search.conditions.summary(&[&self.secret])));
+                    if search.project.is_none() {
+                        text.push_str(
+                            "h/l or Tab -> Project\nEnter: normal search / create target\n",
+                        );
+                    }
                     if page.items.is_empty() {
                         text.push_str("No issues");
                     }
-                    for (index, item) in page
-                        .items
-                        .iter()
-                        .enumerate()
-                        .skip(page.position.start(rows.saturating_sub(1)))
-                    {
+                    for (index, item) in page.items.iter().enumerate().skip(
+                        page.position
+                            .start(rows.saturating_sub(search.header_rows())),
+                    ) {
                         text.push_str(&safety::text(
                             &format!(
                                 "{} {} {} [{}]\n",
