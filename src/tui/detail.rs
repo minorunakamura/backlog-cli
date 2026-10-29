@@ -3,15 +3,16 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::Rect,
+    text::Text,
     widgets::{Paragraph, Wrap},
 };
 use serde_json::Value;
-use std::{borrow::Cow, cell::Cell, time::Instant};
+use std::{cell::Cell, time::Instant};
 
 #[derive(Default)]
 pub(super) struct Detail {
     pub(super) key: Option<String>,
-    text: Option<String>,
+    text: Option<Text<'static>>,
     pub(super) due: Option<Instant>,
     pub(super) status: &'static str,
     pub(super) notice: String,
@@ -26,21 +27,21 @@ impl Detail {
             ..Self::default()
         };
     }
-    /// Accept the safe display copy produced by `display`, never raw API text.
-    pub(super) fn replace(&mut self, text: String) {
+    /// Accept a safe display copy from the shared formatter, never raw API text.
+    pub(super) fn replace(&mut self, text: Text<'static>) {
         self.text = Some(text);
         self.status = "";
         self.scroll.set(0);
     }
-    fn paragraph(&self, secret: &str) -> Paragraph<'_> {
-        let content = match (&self.key, &self.text) {
-            (_, Some(text)) => Cow::Borrowed(text.as_str()),
+    fn paragraph(&self, secret: &str, text: Option<Text<'static>>) -> Paragraph<'_> {
+        let content = text.unwrap_or_else(|| match (&self.key, &self.text) {
+            (_, Some(text)) => text.clone(),
             (Some(key), None) => {
-                Cow::Owned(safety::text(&format!("{key}\n{}", self.status), &[secret]))
+                Text::from(safety::text(&format!("{key}\n{}", self.status), &[secret]))
             }
-            _ => Cow::Owned(safety::text("Select an issue", &[secret])),
-        };
-        Paragraph::new(content).wrap(Wrap { trim: false })
+            _ => Text::from(safety::text("Select an issue", &[secret])),
+        });
+        Paragraph::new(crate::tui_text::display(content, &[secret])).wrap(Wrap { trim: false })
     }
     fn maximum(paragraph: &Paragraph<'_>, area: Rect) -> u16 {
         // shortcut: Paragraph's scroll is u16; revisit for documents over 65,535 wrapped rows.
@@ -49,8 +50,14 @@ impl Detail {
             .saturating_sub(area.height as usize)
             .min(u16::MAX as usize) as u16
     }
-    pub(super) fn key(&mut self, code: KeyCode, area: Rect, secret: &str) {
-        let maximum = Self::maximum(&self.paragraph(secret), area);
+    pub(super) fn key(
+        &mut self,
+        code: KeyCode,
+        area: Rect,
+        secret: &str,
+        text: Option<Text<'static>>,
+    ) {
+        let maximum = Self::maximum(&self.paragraph(secret, text), area);
         let scroll = self.scroll.get().min(maximum);
         let page = area.height.max(1);
         self.scroll.set(match code {
@@ -63,8 +70,14 @@ impl Detail {
             _ => scroll,
         });
     }
-    pub(super) fn draw(&self, frame: &mut Frame<'_>, area: Rect, secret: &str) {
-        let paragraph = self.paragraph(secret);
+    pub(super) fn draw(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        secret: &str,
+        text: Option<Text<'static>>,
+    ) {
+        let paragraph = self.paragraph(secret, text);
         self.scroll
             .set(self.scroll.get().min(Self::maximum(&paragraph, area)));
         frame.render_widget(paragraph.scroll((self.scroll.get(), 0)), area);
@@ -99,8 +112,8 @@ pub(super) fn display(value: &Value, rule: &str, config: &Config) -> String {
         .join(", ");
     text.push_str(&format!(
         "MILESTONES: {milestones}\nCREATED: {}\nUPDATED: {}\nBODY\n",
-        value["created"].as_str().unwrap(),
-        value["updated"].as_str().unwrap()
+        crate::tui_datetime::display(value["created"].as_str().unwrap(), &[&config.api_key]),
+        crate::tui_datetime::display(value["updated"].as_str().unwrap(), &[&config.api_key])
     ));
     text.push_str(&body::display_with_origin(
         value["description"].as_str().unwrap_or(""),

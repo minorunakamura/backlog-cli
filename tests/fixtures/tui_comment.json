@@ -1,0 +1,91 @@
+{
+  "routes": {
+    "/api/v2/space": {
+      "body": "{\"name\": \"Actual space\"}"
+    },
+    "/api/v2/projects": {
+      "body": "[{\"id\": 2, \"projectKey\": \"B\", \"name\": \"Beta\"}]"
+    },
+    "/api/v2/issues/count": {
+      "body": "{\"count\":1}"
+    },
+    "/api/v2/issues": {
+      "body": "[{\"id\": 1, \"issueKey\": \"B-1\", \"summary\": \"Comment demo issue\", \"status\": {\"name\": \"Open\"}}]"
+    },
+    "/api/v2/projects/2": {
+      "body": "{\"textFormattingRule\":\"markdown\"}"
+    },
+    "/api/v2/issues/B-1/comments": {
+      "sequence": [
+        {
+          "commentItems": [
+            {
+              "id": 1,
+              "content": "Comment 1 line 01 日本語 é 👩‍💻\nComment 1 line 02 日本語 é 👩‍💻\nComment 1 line 03 日本語 é 👩‍💻\nComment 1 line 04 日本語 é 👩‍💻\nComment 1 line 05 日本語 é 👩‍💻\nComment 1 line 06 日本語 é 👩‍💻\nComment 1 line 07 日本語 é 👩‍💻\nComment 1 line 08 日本語 é 👩‍💻\nComment 1 line 09 日本語 é 👩‍💻\nComment 1 line 10 日本語 é 👩‍💻\nComment 1 line 11 日本語 é 👩‍💻\nComment 1 line 12 日本語 é 👩‍💻\nComment 1 line 13 日本語 é 👩‍💻\nComment 1 line 14 日本語 é 👩‍💻\nComment 1 line 15 日本語 é 👩‍💻\nComment 1 line 16 日本語 é 👩‍💻\nComment 1 line 17 日本語 é 👩‍💻\nComment 1 line 18 日本語 é 👩‍💻\nComment 1 line 19 日本語 é 👩‍💻\nComment 1 line 20 日本語 é 👩‍💻\nComment 1 line 21 日本語 é 👩‍💻\nComment 1 line 22 日本語 é 👩‍💻\nComment 1 line 23 日本語 é 👩‍💻\nComment 1 line 24 日本語 é 👩‍💻\nComment 1 line 25 日本語 é 👩‍💻\nComment 1 line 26 日本語 é 👩‍💻\nComment 1 line 27 日本語 é 👩‍💻\nComment 1 line 28 日本語 é 👩‍💻\nComment 1 line 29 日本語 é 👩‍💻\nComment 1 line 30 日本語 é 👩‍💻\n",
+              "changeLog": [],
+              "createdUser": {
+                "id": 7,
+                "name": "Comment author"
+              },
+              "created": "2026-03-01T00:00:00Z",
+              "updated": "2026-03-02T00:00:00Z"
+            },
+            {
+              "id": 2,
+              "content": "Comment 2 line 01 日本語 é 👩‍💻\nComment 2 line 02 日本語 é 👩‍💻\nComment 2 line 03 日本語 é 👩‍💻\nComment 2 line 04 日本語 é 👩‍💻\nComment 2 line 05 日本語 é 👩‍💻\nComment 2 line 06 日本語 é 👩‍💻\nComment 2 line 07 日本語 é 👩‍💻\nComment 2 line 08 日本語 é 👩‍💻\nComment 2 line 09 日本語 é 👩‍💻\nComment 2 line 10 日本語 é 👩‍💻\nComment 2 line 11 日本語 é 👩‍💻\nComment 2 line 12 日本語 é 👩‍💻\nComment 2 line 13 日本語 é 👩‍💻\nComment 2 line 14 日本語 é 👩‍💻\nComment 2 line 15 日本語 é 👩‍💻\nComment 2 line 16 日本語 é 👩‍💻\nComment 2 line 17 日本語 é 👩‍💻\nComment 2 line 18 日本語 é 👩‍💻\nComment 2 line 19 日本語 é 👩‍💻\nComment 2 line 20 日本語 é 👩‍💻\nComment 2 line 21 日本語 é 👩‍💻\nComment 2 line 22 日本語 é 👩‍💻\nComment 2 line 23 日本語 é 👩‍💻\nComment 2 line 24 日本語 é 👩‍💻\nComment 2 line 25 日本語 é 👩‍💻\nComment 2 line 26 日本語 é 👩‍💻\nComment 2 line 27 日本語 é 👩‍💻\nComment 2 line 28 日本語 é 👩‍💻\nComment 2 line 29 日本語 é 👩‍💻\nComment 2 line 30 日本語 é 👩‍💻\n",
+              "changeLog": [],
+              "createdUser": {
+                "id": 7,
+                "name": "Comment author"
+              },
+              "created": "2026-03-01T00:00:00Z",
+              "updated": "2026-03-02T00:00:00Z"
+            }
+          ]
+        },
+        {
+          "status": 500
+        },
+        {
+          "commentItems": [
+            {
+              "id": 3,
+              "content": "**Fresh comment** test-secret\u001b]52;c;bad\u0007",
+              "changeLog": [
+                {
+                  "field": "limitDate",
+                  "originalValue": null,
+                  "newValue": "2026-04-01"
+                },
+                {
+                  "field": "assigner",
+                  "originalValue": "old",
+                  "newValue": "new"
+                },
+                {
+                  "field": "futureField",
+                  "originalValue": {
+                    "nested": [
+                      true,
+                      null
+                    ]
+                  },
+                  "newValue": 999999999999999999999999999999
+                }
+              ],
+              "createdUser": {
+                "id": 7,
+                "name": "Comment author"
+              },
+              "created": "2026-03-01T00:00:00Z",
+              "updated": "2026-03-02T00:00:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    "/api/v2/issues/B-1": {
+      "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Comment demo issue\", \"description\": \"Issue body unchanged\", \"issueType\": {\"name\": \"Task\"}, \"priority\": {\"name\": \"Medium\"}, \"assignee\": {\"name\": \"自分\"}, \"status\": {\"name\": \"Open\"}, \"resolution\": {\"name\": \"Done\"}, \"startDate\": \"2026-01-01\", \"dueDate\": \"2026-02-02\", \"milestone\": [{\"name\": \"v1\"}, {\"name\": \"v2\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\", \"url\": \"https://evil.invalid/test-secret\"}"
+    }
+  }
+}

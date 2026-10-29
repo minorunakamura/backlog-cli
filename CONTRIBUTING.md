@@ -18,9 +18,9 @@ cargo audit --version
 RatatuiはCrossterm 0.29 backendを明示しています。共有単行入力はtui-input **=0.15.5**の
 Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語入力で早期実端末受入を行い、採用しました。全端末/IMEでの一致を保証するものではありません。`bl-cli project list` と候補一覧3コマンド、
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
-`bl` のプロジェクト選択・通常/横断検索ダイアログ・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・ブラウザ起動・focus・layout・端末復元も実装しています。
+`bl` のプロジェクト選択・通常/横断検索ダイアログ・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・コメント閲覧・ブラウザ起動・focus・layout・端末復元も実装しています。
 共有単行入力部品を製品のkeyword欄へ組み込み、開発専用の実端末確認経路も維持しています。
-TUIのコメント取得・書込みフォーム・editorは後続Work Itemの範囲です。
+TUIの書込みフォーム・editorは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -375,7 +375,7 @@ SH
   cat "$root/open-args"
 ```
 
-成功基準は `code:0`、`restored:true`、空stderr、9 GETのみ、`open-args`は引数数1と設定originの`/view/B-3`のみです。
+成功基準は `code:0`、`restored:true`、空stderr、10 GETのみ、`open-args`は引数数1と設定originの`/view/B-3`のみです。
 初期連続選択はB-3だけを取得し、100x24/40x12のGで`Local body line 30`へ到達、R失敗時はその位置を保持、
 次のRは通知を消して再取得し、成功時に先頭へ戻ります。そのままGで`Refreshed body [REDACTED]`を表示します。
 Ctrl+O失敗も中央popupに一度だけ表示され、B-3の選択を保持します。
@@ -475,3 +475,72 @@ Shell→TestBackend試験は100x12も含め、ラベル右の空欄/選択値・
 横断時はh/lまたはTab→Project→具体project Enterで通常復帰/作成先確定、cは同じ案内のみ、nは次ページです。
 実IMEでは変換確定Enter非適用→次Enter一回適用を製品で必須確認します。端末が通常Enterとして送る
 IME確定をアプリは識別できないため、独自の時間/文字種推測はせず、失敗なら未完了として判断へ戻してください。
+
+## TUIコメント閲覧の検証 (#18)
+
+```sh
+cargo test --locked --test comment_preview
+cargo test --locked --lib tui::tests::
+cargo test --locked --test tui_process comment_
+cargo test --locked --test tui_shell --test issue_comment
+```
+
+`tests/tui_process.rs` は実`bl`+PTY+ローカルHTTPSで、20件のID境界paging、
+両方向の隣接取得・exclusive境界・巨大ID・空終端・最古への1 GET、null履歴／本文同居・既知／未知fieldと
+任意JSON、R失敗の選択／scroll保持と成功交換、選択変更の即時消去、遅延成功／失敗・新busy・Esc取消を確認します。
+Shellの入力／TestBackend試験はCommentの固定作者／JST／空行、100×24の14／6配置と本文Rect共用、
+j/k・Unicode折返し・長名省略と全文／resize再判定・clamp・focus保持・g/Gの本文scroll非実行を確認します。
+削除のliteral RGB fg(255,255,255)／bg(128,0,0)／取り消し線、従来の追加Black／Green、NO_COLORの全cell fg／bg Resetと記号をcell単位で検証します。
+本文TABの`⇥`可視化（通常Comment／Detail／固定行overflow全文も含む）と変換後secret再検査、
+色あり差分の変更改行`↵`の赤bg＋取り消し線／緑bgと実改行保持も公開preview・描画cellで確認します。
+`tests/comment_preview.rs` の公開preview試験ではJSTのoffset・年/月/日跨ぎ・閏日・小数秒・不正値、
+行＋grapheme差分・Unicode／空白／TAB／末尾改行の内容再構成、空/同値/非文字列、既知／description／未知fieldの前だけ・後だけ・両方nullの`未設定`表示、
+入れ子null／文字列null／空文字／0／false／巨大数値と原値不変、9,999／10,000／10,001 scalar、
+伏字化前countと組立secretの最終投影再検査を確認します。通常本文／CLI／JSONには超過例外を広げません。
+`tests/issue_comment.rs`はCLIの従来のnull表示とJSONのnull／文字列型保持を確認します。
+枠titleはidle／focusで余分な空白・`|`なし、Loading／空一覧／終端／取消／失敗popupと通知消去を既存Shell／PTYで検証します。
+本文・履歴の`|`、R失敗のscroll保持・成功交換・古い応答の非破壊、総GET数は維持します。
+比較は既存取得taskで準備し、UI draw／completeでは比較しません。50msは共有deadlineによる近似の目安で、厳密な時間上限ではありません。
+依存追加は`time =0.3.55`（default-features=false, parsing/formatting）と`similar =2.7.0`（unicode）のみ。
+新しいtimezone設定・cache・永続化はありません。Paragraphのscrollは既存のu16（65,535 wrapped行）上限です。
+Service公開`comment_page`は`CommentOrder::Asc/Desc`を受け、既存`comment_list`は降順固定のままです。
+共通`comment` formatterの安全表示を利用し、TUI previewとCLI固定表示は分離します。null履歴だけのページに記法GETは不要です。
+一覧試験のpreview fixtureには明示的な空comments応答を置き、server全体の404は隠しません。
+`browse_request_counts`／`browse_requests`はpreview（commentsも含む）を除外する一覧向け計数です。
+コメント／focusの通信数は総`request_counts`とHTTPS受信記録で照合してください。
+
+### release blのローカルHTTPS再現
+
+実サービス／利用者config／API keyを使用しません。上記release build後、リポジトリ直下から実行します。
+
+```sh
+(
+  repo="$PWD"
+  tui="$repo/target/aarch64-apple-darwin/release/bl"
+  root=$(mktemp -d)
+  server=
+  trap 'if [ -n "$server" ]; then kill "$server" 2>/dev/null || :; wait "$server" 2>/dev/null || :; fi; rm -rf "$root"' EXIT
+  cp "$repo/tests/fixtures/tui_comment.json" "$root/response.json"
+  cp "$repo/tests/fixtures/tui_comment_steps.json" "$root/steps.json"
+  python3 "$repo/tests/fixtures/https_server.py" "$root" > "$root/port" & server=$!
+  while [ ! -s "$root/port" ]; do
+    kill -0 "$server" 2>/dev/null || exit 1
+    sleep 0.1
+  done
+  mkdir -p "$root/backlog" "$root/.backlog"
+  printf '{"profiles":{"default":{"spaceUrl":"https://localhost:%s","apiKeyEnv":"TEST_KEY"}}}\n' "$(cat "$root/port")" > "$root/backlog/config.json"
+  printf '%s\n' '{"project":"B"}' > "$root/.backlog/settings.json"
+  (cd "$root" && env -i HOME="$root" XDG_CONFIG_HOME="$root" TEST_KEY=test-secret NO_COLOR=1 \
+    SSL_CERT_FILE="$root/tls/localhost-cert.pem" SHELL_STEPS_FILE="$root/steps.json" \
+    SHELL_REQUESTS_FILE="$root/requests" \
+    python3 "$repo/tests/fixtures/tty_shell.py" scripted "$tui")
+  cat "$root/requests"
+)
+```
+
+期待結果: `code:0`、`restored:true`、空stderr、13 GETのみ（comments 3、issue 3、project記法3、
+space/projects/count/list各1）。初期Comment 2からnでComment 1へ、jを15回で本文scrollし、R失敗通知をEnterで消しても
+その選択／scrollを保持、次のR成功でID 3の最新本文先頭へ交換します。Endは本文末尾の既知／未知履歴へ移動し（metadataは出しません）、
+H/LでIssueとCommentを往復してもscrollと総GET数を保持します。外部secret／OSCは出ず、`[REDACTED]`を表示します。
+このsequenceは自動手順用です。自由操作では応答段階を固定してください。PTY簡易画面は実端末の字幅／IME確認の代替ではありません。
+最新buildでの実端末と`https://lazybl.backlog.com/`の必須受入結果・未確認事項は[manual-acceptance.md](docs/testing/manual-acceptance.md)を参照してください。

@@ -1,0 +1,46 @@
+[
+  {
+    "wait": "Comment demo issue",
+    "keys": "l\rl",
+    "resize": [
+      20,
+      60
+    ]
+  },
+  {
+    "wait": "Comment 2 line 01",
+    "keys": "n"
+  },
+  {
+    "wait": "Comment 1 line 01",
+    "keys": "jjjjjjjjjjjjjjj"
+  },
+  {
+    "wait": "Comment 1 line 16",
+    "keys": "R"
+  },
+  {
+    "wait": "Failed:",
+    "keys": "\r"
+  },
+  {
+    "wait": "Comment 1 line 16",
+    "keys": "R"
+  },
+  {
+    "wait": "Fresh comment",
+    "keys": "\u001b[F"
+  },
+  {
+    "wait": "futureField",
+    "keys": "H"
+  },
+  {
+    "wait": "> Issue List",
+    "keys": "L"
+  },
+  {
+    "wait": "futureField",
+    "keys": "q"
+  }
+]

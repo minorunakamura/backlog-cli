@@ -1007,3 +1007,66 @@ fn resolved_search_pages_reuse_conditions_without_count_or_name_resolution() {
         assert_eq!(self::requests().len(), 6, "count failure must not become an empty page");
     });
 }
+
+#[test]
+fn comment_page_supports_ascending_and_descending_without_changing_cli_list_order() {
+    use backlog_cli::service::CommentOrder;
+    let item = |id| json!({"id":id,"content":null,"changeLog":[],"createdUser":{"name":"Author"},"created":"date","updated":"date"});
+    if library_process(
+        "comment_page_supports_ascending_and_descending_without_changing_cli_list_order",
+        json!({"routes":{
+            "/api/v2/issues/P-1/comments":{"commentItems":[item(1),item(2),item(3)]}
+        }}),
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let s = service();
+        for order in [CommentOrder::Asc, CommentOrder::Desc] {
+            for (limit, min, max) in [
+                (0, None, None),
+                (101, None, None),
+                (20, Some("0"), None),
+                (20, None, Some("-1")),
+                (20, Some("2"), Some("2")),
+            ] {
+                assert_eq!(
+                    s.comment_page("P-1", limit, min, max, order)
+                        .await
+                        .unwrap_err()
+                        .kind,
+                    "input"
+                );
+            }
+        }
+        assert!(requests().is_empty());
+        assert_eq!(
+            s.comment_page("P-1", 1, Some("1"), None, CommentOrder::Asc)
+                .await
+                .unwrap(),
+            json!({"items":[item(2)]})
+        );
+        assert_eq!(
+            s.comment_page("P-1", 1, None, Some("3"), CommentOrder::Desc)
+                .await
+                .unwrap(),
+            json!({"items":[item(2)]})
+        );
+        assert_eq!(
+            s.comment_list("P-1", 1, None, None).await.unwrap(),
+            json!({"items":[item(3)]})
+        );
+        let paths: Vec<_> = requests()
+            .iter()
+            .map(|r| r["path"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/api/v2/issues/P-1/comments?count=1&order=asc&minId=1",
+                "/api/v2/issues/P-1/comments?count=1&order=desc&maxId=3",
+                "/api/v2/issues/P-1/comments?count=1&order=desc"
+            ]
+        );
+    });
+}

@@ -1,5 +1,6 @@
 //! Read-only project, issue-list and detail browsing.
 mod browse;
+mod comment;
 mod detail;
 mod input;
 mod search;
@@ -134,17 +135,24 @@ impl Shell {
         self.browse.error_notice = None;
         let panel = self.panel_area(area, self.focus);
         let rows = panel.height.saturating_sub(2) as usize;
-        if self.focus == Focus::Detail {
-            self.browse.detail.key(
-                key.code,
-                Rect::new(
-                    0,
-                    0,
-                    panel.width.saturating_sub(2),
-                    panel.height.saturating_sub(3),
-                ),
-                &self.browse.secret,
-            );
+        if matches!(self.focus, Focus::Detail | Focus::Comment)
+            && !(self.focus == Focus::Comment && matches!(key.code, KeyCode::Char('g' | 'G')))
+        {
+            let body_area = Self::body_area(panel, self.focus);
+            let text = if self.focus == Focus::Comment {
+                self.browse
+                    .comment
+                    .projection(body_area.width, self.no_color, &self.browse.secret)
+                    .2
+            } else {
+                None
+            };
+            let document = if self.focus == Focus::Detail {
+                &mut self.browse.detail
+            } else {
+                &mut self.browse.comment.document
+            };
+            document.key(key.code, body_area, &self.browse.secret, text);
         }
         self.browse.key(key.code, self.focus, rows);
         match key.code {
@@ -213,7 +221,10 @@ impl Shell {
             Focus::Project => ("h/l Tab/S-Tab:Issue", "j/k Enter:select Ctrl+A:cross R"),
             Focus::Issue => ("h/l Tab/S-Tab:Project", "j/k p/n Enter:Detail / Ctrl+O R"),
             Focus::Detail => ("h/l Tab/S-Tab:Comment", "j/k PgUp/Dn g/G R Esc:Issue"),
-            Focus::Comment => ("h/l Tab/S-Tab:Detail", "Esc:Issue"),
+            Focus::Comment => (
+                "h/l Tab/S-Tab:Detail",
+                "j/k n:older p:newer g/G R Esc:Issue",
+            ),
         };
         let regions = "H:Left L:Right";
         let exits = "q:quit Ctrl+C:interrupt";
@@ -302,11 +313,26 @@ impl Shell {
                 Layout::vertical([Constraint::Percentage(35), Constraint::Min(0)]).split(columns[0])
                     [if focus == Focus::Project { 0 } else { 1 }]
             }
-            Focus::Detail | Focus::Comment => {
-                Layout::vertical([Constraint::Percentage(80), Constraint::Min(0)]).split(columns[1])
-                    [if focus == Focus::Detail { 0 } else { 1 }]
-            }
+            Focus::Detail | Focus::Comment => Layout::vertical([
+                Constraint::Length(
+                    columns[1]
+                        .height
+                        .saturating_sub((columns[1].height / 5).max(6)),
+                ),
+                Constraint::Min(0),
+            ])
+            .split(columns[1])[if focus == Focus::Detail { 0 } else { 1 }],
         }
+    }
+    fn body_area(panel: Rect, focus: Focus) -> Rect {
+        let inner = Block::default().borders(Borders::ALL).inner(panel);
+        let fixed = if focus == Focus::Comment { 3 } else { 1 };
+        Rect::new(
+            inner.x,
+            inner.y + fixed.min(inner.height),
+            inner.width,
+            inner.height.saturating_sub(fixed),
+        )
     }
     fn panel(&self, frame: &mut Frame<'_>, area: Rect, focus: Focus) {
         let title = match focus {
@@ -315,10 +341,17 @@ impl Shell {
             Focus::Detail => "Issue Detail",
             Focus::Comment => "Comment",
         };
+        let title = if focus == Focus::Comment {
+            format!("{title} {}", self.browse.comment_status().trim())
+                .trim_end()
+                .to_owned()
+        } else {
+            title.into()
+        };
         let label = if focus == self.focus {
             format!("> {title}")
         } else {
-            title.into()
+            title
         };
         let mut block = Block::default().borders(Borders::ALL).title(label);
         if focus == self.focus {
@@ -328,12 +361,45 @@ impl Shell {
             }
             block = block.border_type(BorderType::Double).border_style(style);
         }
-        if focus == Focus::Detail {
+        if matches!(focus, Focus::Detail | Focus::Comment) {
             let inner = block.inner(area);
             frame.render_widget(block, area);
-            let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
-            frame.render_widget(Paragraph::new(self.browse.detail_status()), rows[0]);
-            self.browse.detail.draw(frame, rows[1], &self.browse.secret);
+            let body_area = Self::body_area(area, focus);
+            if focus == Focus::Comment {
+                let (author, created, text) =
+                    self.browse
+                        .comment
+                        .projection(inner.width, self.no_color, &self.browse.secret);
+                let mut style = Style::default().add_modifier(Modifier::BOLD);
+                if !self.no_color {
+                    style = style.fg(Color::Cyan);
+                }
+                frame.render_widget(
+                    Paragraph::new(author).style(style),
+                    Rect::new(inner.x, inner.y, inner.width, 1.min(inner.height)),
+                );
+                frame.render_widget(
+                    Paragraph::new(created),
+                    Rect::new(
+                        inner.x,
+                        inner.y + 1.min(inner.height),
+                        inner.width,
+                        1.min(inner.height.saturating_sub(1)),
+                    ),
+                );
+                self.browse
+                    .comment
+                    .document
+                    .draw(frame, body_area, &self.browse.secret, text);
+            } else {
+                frame.render_widget(
+                    Paragraph::new(self.browse.detail_status()),
+                    Rect::new(inner.x, inner.y, inner.width, 1.min(inner.height)),
+                );
+                self.browse
+                    .detail
+                    .draw(frame, body_area, &self.browse.secret, None);
+            }
             return;
         }
         let content = self
@@ -1070,6 +1136,75 @@ mod tests {
     }
 
     #[test]
+    fn comment_document_j_k_wrap_resize_clamp_and_focus_preserve_text_without_using_g_g_as_body_ends()
+     {
+        use ratatui::backend::TestBackend;
+        fn screen(shell: &Shell, w: u16, h: u16) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect()
+        }
+        let mut shell = Shell::new(true);
+        shell.set_focus(Focus::Comment);
+        shell.browse.comment.document.replace(
+            (1..=30)
+                .map(|n| format!("Line {n:02} 日本語 e\u{301} 👩‍💻 wraps across narrow panels\n"))
+                .collect(),
+        );
+        let area = Rect::new(0, 0, 40, 12);
+        let press = |shell: &mut Shell, code| {
+            shell.key(KeyEvent::new(code, KeyModifiers::NONE), area);
+        };
+        let first = screen(&shell, 40, 12);
+        assert!(first.contains("Line 01"));
+        press(&mut shell, KeyCode::Char('j'));
+        assert_ne!(screen(&shell, 40, 12), first);
+        press(&mut shell, KeyCode::Char('k'));
+        assert_eq!(screen(&shell, 40, 12), first);
+        for _ in 0..100 {
+            press(&mut shell, KeyCode::Char('j'));
+        }
+        let bottom = screen(&shell, 40, 12);
+        assert!(bottom.contains("Line 30"));
+        for code in [KeyCode::Char('g'), KeyCode::Char('G')] {
+            press(&mut shell, code);
+            assert_eq!(
+                screen(&shell, 40, 12),
+                bottom,
+                "comment endpoints never scroll the body"
+            );
+        }
+        for code in [
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Tab,
+            KeyCode::BackTab,
+        ] {
+            press(&mut shell, code);
+            press(&mut shell, code);
+            assert_eq!(screen(&shell, 40, 12), bottom);
+        }
+        assert!(screen(&shell, 100, 60).contains("Line 30"));
+        let wide = screen(&shell, 200, 200);
+        assert!(
+            wide.contains("Line 01")
+                && wide.contains("wraps across narrow panels")
+                && wide.contains("Line 30"),
+            "first={} wrap={} last={}",
+            wide.contains("Line 01"),
+            wide.contains("wraps across narrow panels"),
+            wide.contains("Line 30")
+        );
+        assert!(shell.browse.requests.is_empty());
+    }
+
+    #[test]
     fn error_popup_wraps_inside_both_layouts_and_uses_bold_without_color_under_no_color() {
         use ratatui::backend::TestBackend;
         for no_color in [false, true] {
@@ -1332,7 +1467,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let mut shell = Shell::new(true);
         shell.focus = Focus::Detail;
-        shell.browse.detail.replace("Row\n".repeat(65_550));
+        shell.browse.detail.replace("Row\n".repeat(65_550).into());
         let area = Rect::new(0, 0, 40, 12);
         for code in [
             KeyCode::End,
@@ -1582,6 +1717,545 @@ mod tests {
                         .unwrap()
                         .contains("Terminal restoration failed: alternate screen")
                 );
+            }
+        }
+    }
+    #[test]
+    fn comment_title_uses_only_needed_spaces_and_preserves_body_pipes() {
+        use ratatui::backend::TestBackend;
+        use serde_json::json;
+        let config = Config {
+            origin: "https://example.backlog.com".parse().unwrap(),
+            api_key: "test-secret".into(),
+            editor: vec![],
+            settings: Default::default(),
+        };
+        for (width, height) in [(100, 24), (40, 12)] {
+            let mut shell = Shell::new(true);
+            let value = json!({"id":1,"content":"body | retained","createdUser":{"name":"Author"},"created":"2026-10-26T16:05:08Z","changeLog":[]});
+            shell.browse.comment.replace(
+                vec![comment::Entry {
+                    id: "1".into(),
+                    preview: crate::comment::preview(&value, "unknown", &config).unwrap(),
+                }],
+                comment::Direction::Latest,
+            );
+            let area = Rect::new(0, 0, width, height);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            // Enter the right column, then focus Comment through the actual key boundary.
+            for key in ['L', 'l'] {
+                shell.key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+            }
+            for focused in [true, false] {
+                if !focused {
+                    shell.key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::NONE), area);
+                }
+                // At compact width only the focused panel is visible.
+                if width == 40 && !focused {
+                    continue;
+                }
+                terminal.draw(|frame| shell.draw(frame)).unwrap();
+                let panel = shell.panel_area(area, Focus::Comment);
+                let buffer = terminal.backend().buffer();
+                let title: String = (panel.x..panel.right())
+                    .map(|x| buffer[(x, panel.y)].symbol())
+                    .collect();
+                let expected = if focused {
+                    "╔> Comment═"
+                } else {
+                    "┌Comment─"
+                };
+                assert!(title.starts_with(expected), "{title}");
+                assert!(!title.contains('|'), "{title}");
+            }
+            shell.key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE), area);
+            shell.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), area);
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let screen: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+            assert!(screen.contains("body | retained"), "{screen}");
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .all(|cell| (cell.fg, cell.bg) == (Color::Reset, Color::Reset))
+            );
+        }
+    }
+
+    #[test]
+    fn comment_fixed_rows_styles_and_body_scroll_share_the_viewport() {
+        use ratatui::backend::TestBackend;
+        use serde_json::json;
+        let config = Config {
+            origin: "https://example.backlog.com".parse().unwrap(),
+            api_key: "test-secret".into(),
+            editor: vec![],
+            settings: Default::default(),
+        };
+        for no_color in [false, true] {
+            let mut shell = Shell::new(no_color);
+            shell.set_focus(Focus::Comment);
+            let value = json!({"id":1,"content":null,"createdUser":{"name":"Author"},"created":"2026-10-26T16:05:08Z","changeLog":[{"field":"description","originalValue":"old\ntail","newValue":"new\ntail"}]});
+            shell.browse.comment.replace(
+                vec![comment::Entry {
+                    id: "1".into(),
+                    preview: crate::comment::preview(&value, "", &config).unwrap(),
+                }],
+                comment::Direction::Latest,
+            );
+            let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = |y| {
+                (41..99)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            };
+            assert!(row(18).starts_with("Author"));
+            assert!(row(19).starts_with("2026/10/27 01:05:08"));
+            assert!(row(20).trim().is_empty());
+            assert!(row(21).replace(' ', "").starts_with("詳細"));
+            assert!(buffer[(41, 18)].modifier.contains(Modifier::BOLD));
+            assert_eq!(
+                buffer[(41, 18)].fg,
+                if no_color { Color::Reset } else { Color::Cyan }
+            );
+            shell.key(
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                Rect::new(0, 0, 100, 24),
+            );
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(41, 18)].symbol(), "A");
+            assert_eq!(buffer[(41, 19)].symbol(), "2");
+            if no_color {
+                let row: String = (41..99).map(|x| buffer[(x, 21)].symbol()).collect();
+                assert!(row.starts_with("[-old-]{+new+}"), "{row}");
+                for cell in &buffer.content {
+                    assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset));
+                }
+            } else {
+                assert_eq!(
+                    (buffer[(41, 21)].fg, buffer[(41, 21)].bg),
+                    (Color::Rgb(255, 255, 255), Color::Rgb(128, 0, 0))
+                );
+                assert!(buffer[(41, 21)].modifier.contains(Modifier::CROSSED_OUT));
+                assert_eq!(
+                    (buffer[(44, 21)].fg, buffer[(44, 21)].bg),
+                    (Color::Black, Color::Green)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn comment_long_author_and_invalid_date_reflow_safely_on_resize() {
+        use ratatui::{backend::TestBackend, text::Line};
+        use serde_json::json;
+        let config = Config {
+            origin: "https://example.backlog.com".parse().unwrap(),
+            api_key: "abcd".into(),
+            editor: vec![],
+            settings: Default::default(),
+        };
+        for no_color in [false, true] {
+            let mut shell = Shell::new(no_color);
+            shell.set_focus(Focus::Comment);
+            let author = format!("{}e\u{301}👩‍💻TAIL", "日本語".repeat(10));
+            let invalid = format!("INVALID{}ENDDATE", "x".repeat(75));
+            let value = json!({"id":1,"content":"BODY sentinel","createdUser":{"name":author},"created":invalid,"changeLog":[{"field":"description","originalValue":"ab","newValue":"cd"}]});
+            shell.browse.comment.replace(
+                vec![comment::Entry {
+                    id: "1".into(),
+                    preview: crate::comment::preview(&value, "unknown", &config).unwrap(),
+                }],
+                comment::Direction::Latest,
+            );
+            let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let header: String = (1..39).map(|x| buffer[(x, 1)].symbol()).collect();
+            assert!(header.contains('…'));
+            assert!(!header.contains('\u{301}'));
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .all(|cell| !cell.symbol().contains('\x1b'))
+            );
+            let mut output = String::new();
+            for _ in 0..40 {
+                terminal.draw(|frame| shell.draw(frame)).unwrap();
+                output.extend(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .map(|c| c.symbol()),
+                );
+                shell.key(
+                    KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                    Rect::new(0, 0, 40, 12),
+                );
+            }
+            assert!(
+                output.contains("TAIL")
+                    && output.contains("ENDDATE")
+                    && output.contains("BODY sentinel")
+            );
+            assert!(!output.contains("abcd"));
+            // Width now fits the full author: duplicate author lines must disappear and end clamps.
+            let mut wide = Terminal::new(TestBackend::new(200, 60)).unwrap();
+            wide.draw(|frame| shell.draw(frame)).unwrap();
+            let buffer = wide.backend().buffer();
+            assert_eq!(buffer[(81, 52)].symbol(), "B");
+            let header: String = (81..199).map(|x| buffer[(x, 49)].symbol()).collect();
+            assert!(!header.contains('…'));
+            assert!(Line::from(author.as_str()).width() < 118);
+        }
+    }
+    #[test]
+    fn comment_warning_and_final_secret_projection_are_safe_in_every_rendered_cell() {
+        use ratatui::backend::TestBackend;
+        use serde_json::json;
+        let config = Config {
+            origin: "https://example.backlog.com".parse().unwrap(),
+            api_key: "abcd".into(),
+            editor: vec![],
+            settings: Default::default(),
+        };
+        for no_color in [false, true] {
+            for (old, new) in [
+                ("ab".to_owned(), "cd"),
+                (format!("HIDDEN{}", "x".repeat(9995)), "x"),
+            ] {
+                let mut shell = Shell::new(no_color);
+                shell.browse.secret = config.api_key.clone();
+                shell.set_focus(Focus::Comment);
+                let value = json!({"id":1,"content":"visible\u{1b}]52;c;bad\u{7}","createdUser":{"name":"Author"},"created":"2026-10-26T16:05:08Z","changeLog":[{"field":"description","originalValue":old,"newValue":new}]});
+                shell.browse.comment.replace(
+                    vec![comment::Entry {
+                        id: "1".into(),
+                        preview: crate::comment::preview(&value, "unknown", &config).unwrap(),
+                    }],
+                    comment::Direction::Latest,
+                );
+                let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+                let mut output = String::new();
+                for _ in 0..40 {
+                    terminal.draw(|frame| shell.draw(frame)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    output.extend(buffer.content.iter().map(|c| c.symbol()));
+                    if no_color {
+                        for cell in &buffer.content {
+                            assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset));
+                        }
+                    }
+                    if old.starts_with("HIDDEN") && !no_color {
+                        for cell in &buffer.content {
+                            if cell.symbol() == "変" {
+                                assert_eq!(cell.fg, Color::Yellow);
+                            }
+                        }
+                    }
+                    shell.key(
+                        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                        Rect::new(0, 0, 40, 12),
+                    );
+                }
+                assert!(
+                    !output.contains("abcd")
+                        && !output.contains("HIDDEN")
+                        && !output.contains('\u{1b}')
+                        && !output.contains('\u{7}')
+                );
+                assert!(output.contains("visible"));
+                if old.starts_with("HIDDEN") {
+                    assert!(output.contains("10,000"));
+                }
+            }
+        }
+    }
+    #[test]
+    fn tui_tabs_remain_visible_and_cannot_reassemble_secrets_in_comment_or_detail_cells() {
+        use ratatui::backend::TestBackend;
+        use serde_json::json;
+        for no_color in [false, true] {
+            for (secret, expected) in [("abcd", "ab⇥cd"), ("ab⇥cd", "[REDACTED]")] {
+                for source in ["description", "content", "author", "date", "detail"] {
+                    let config = Config {
+                        origin: "https://example.backlog.com".parse().unwrap(),
+                        api_key: secret.into(),
+                        editor: vec![],
+                        settings: Default::default(),
+                    };
+                    let mut shell = Shell::new(no_color);
+                    shell.browse.secret = secret.into();
+                    shell.set_focus(if source == "detail" {
+                        Focus::Detail
+                    } else {
+                        Focus::Comment
+                    });
+                    let mut value = json!({"id":1,"content":null,"createdUser":{"name":"Author"},"created":"2026-10-26T16:05:08Z","changeLog":[]});
+                    match source {
+                        "description" => {
+                            value["changeLog"] = json!([{"field":"description","originalValue":"ab\tcd","newValue":"ab\tcd"}])
+                        }
+                        "content" => value["content"] = json!("ab\tcd"),
+                        "author" => {
+                            value["createdUser"]["name"] =
+                                json!(format!("{}ab\tcd", "long ".repeat(12)))
+                        }
+                        "date" => value["created"] = json!("ab\tcd"),
+                        "detail" => shell.browse.detail.replace("ab\tcd".into()),
+                        _ => unreachable!(),
+                    }
+                    if source != "detail" {
+                        shell.browse.comment.replace(
+                            vec![comment::Entry {
+                                id: "1".into(),
+                                preview: crate::comment::preview(&value, "unknown", &config)
+                                    .unwrap(),
+                            }],
+                            comment::Direction::Latest,
+                        );
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+                    let mut output = String::new();
+                    for _ in 0..12 {
+                        terminal.draw(|frame| shell.draw(frame)).unwrap();
+                        let buffer = terminal.backend().buffer();
+                        output.extend(buffer.content.iter().map(|cell| cell.symbol()));
+                        if no_color {
+                            assert!(
+                                buffer
+                                    .content
+                                    .iter()
+                                    .all(|cell| (cell.fg, cell.bg) == (Color::Reset, Color::Reset))
+                            );
+                        }
+                        shell.key(
+                            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                            Rect::new(0, 0, 40, 12),
+                        );
+                    }
+                    assert!(!output.contains(secret), "{source}: {output}");
+                    assert!(output.contains(expected), "{source}: {output}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn comment_zero_width_graphemes_are_safe_in_fixed_rows_overflow_and_body_cells() {
+        use ratatui::backend::TestBackend;
+        use serde_json::json;
+        for no_color in [false, true] {
+            for (secret, expected) in [("abcd", "ab\\u{200b}cd"), ("ab\\u{200b}cd", "[REDACTED]")] {
+                let config = Config {
+                    origin: "https://example.backlog.com".parse().unwrap(),
+                    api_key: secret.into(),
+                    editor: vec![],
+                    settings: Default::default(),
+                };
+                for source in [
+                    "author",
+                    "date",
+                    "long author",
+                    "long date",
+                    "description",
+                    "content",
+                    "detail",
+                ] {
+                    let raw = "ab\u{200b}cd";
+                    let mut value = json!({"id":1,"content":"e\u{301} 👩‍💻","createdUser":{"name":"Author"},"created":"2026-10-26T16:05:08Z","changeLog":[]});
+                    let mut shell = Shell::new(no_color);
+                    shell.browse.secret = secret.into();
+                    shell.set_focus(if source == "detail" {
+                        Focus::Detail
+                    } else {
+                        Focus::Comment
+                    });
+                    match source {
+                        "author" => {
+                            value["createdUser"]["name"] = json!(format!("{raw} e\u{301} 👩‍💻"))
+                        }
+                        "date" => value["created"] = json!(raw),
+                        "long author" => {
+                            value["createdUser"]["name"] =
+                                json!(format!("{}{raw}", "long ".repeat(12)))
+                        }
+                        "long date" => value["created"] = json!(format!("{raw}{}", "x".repeat(80))),
+                        "description" => {
+                            value["changeLog"] =
+                                json!([{"field":"description","originalValue":raw,"newValue":raw}])
+                        }
+                        "content" => value["content"] = json!(format!("{raw} e\u{301} 👩‍💻")),
+                        "detail" => shell
+                            .browse
+                            .detail
+                            .replace(format!("{raw} e\u{301} 👩‍💻").into()),
+                        _ => unreachable!(),
+                    }
+                    let before = value.clone();
+                    shell.browse.comment.replace(
+                        vec![comment::Entry {
+                            id: "1".into(),
+                            preview: crate::comment::preview(&value, "unknown", &config).unwrap(),
+                        }],
+                        comment::Direction::Latest,
+                    );
+                    for (width, height) in [(40, 12), (100, 24)] {
+                        shell.key(
+                            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+                            Rect::new(0, 0, width, height),
+                        );
+                        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                        let mut output = String::new();
+                        for _ in 0..16 {
+                            terminal.draw(|frame| shell.draw(frame)).unwrap();
+                            let buffer = terminal.backend().buffer();
+                            let cells: String =
+                                buffer.content.iter().map(|cell| cell.symbol()).collect();
+                            assert!(!cells.contains(secret), "{source}: {cells}");
+                            output.push_str(&cells);
+                            if no_color {
+                                assert!(
+                                    buffer
+                                        .content
+                                        .iter()
+                                        .all(|cell| (cell.fg, cell.bg)
+                                            == (Color::Reset, Color::Reset))
+                                );
+                            }
+                            shell.key(
+                                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                                Rect::new(0, 0, width, height),
+                            );
+                        }
+                        assert!(output.contains(expected), "{source}: {output}");
+                        assert!(output.contains("e\u{301} 👩‍💻"), "{source}: {output}");
+                    }
+                    assert_eq!(value, before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn comment_zero_width_author_truncation_rechecks_reconstructed_secret() {
+        use ratatui::backend::TestBackend;
+        use serde_json::json;
+        let secret = format!("{}ab\\u{{200b}}cd…", "x".repeat(25));
+        let config = Config {
+            origin: "https://example.backlog.com".parse().unwrap(),
+            api_key: secret.clone(),
+            editor: vec![],
+            settings: Default::default(),
+        };
+        let value = json!({"id":1,"content":"BODY sentinel","createdUser":{"name":format!("{}ab\u{200b}cdTAIL", "x".repeat(25))},"created":"2026-10-26T16:05:08Z","changeLog":[]});
+        for no_color in [false, true] {
+            let mut shell = Shell::new(no_color);
+            shell.browse.secret = secret.clone();
+            shell.set_focus(Focus::Comment);
+            shell.browse.comment.replace(
+                vec![comment::Entry {
+                    id: "1".into(),
+                    preview: crate::comment::preview(&value, "unknown", &config).unwrap(),
+                }],
+                comment::Direction::Latest,
+            );
+            let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let cells: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(!cells.contains(&secret), "{cells}");
+            assert!(cells.contains("[REDACTED]"), "{cells}");
+        }
+    }
+
+    #[test]
+    fn comment_changed_trailing_newlines_keep_direction_in_rendered_cells() {
+        use ratatui::backend::TestBackend;
+        use serde_json::json;
+        for (no_color, secret) in [
+            (false, "test-secret"),
+            (true, "test-secret"),
+            (false, "line↵"),
+            (true, "line↵"),
+        ] {
+            for (old, new, color, marker) in [
+                ("line\n", "line", Color::Rgb(128, 0, 0), "[-"),
+                ("line", "line\n", Color::Green, "{+"),
+            ] {
+                let config = Config {
+                    origin: "https://example.backlog.com".parse().unwrap(),
+                    api_key: secret.into(),
+                    editor: vec![],
+                    settings: Default::default(),
+                };
+                let value = json!({"id":1,"content":null,"createdUser":{"name":"Author"},"created":"2026-10-26T16:05:08Z","changeLog":[{"field":"description","originalValue":old,"newValue":new}]});
+                let mut shell = Shell::new(no_color);
+                shell.browse.secret = secret.into();
+                shell.set_focus(Focus::Comment);
+                shell.browse.comment.replace(
+                    vec![comment::Entry {
+                        id: "1".into(),
+                        preview: crate::comment::preview(&value, "", &config).unwrap(),
+                    }],
+                    comment::Direction::Latest,
+                );
+                let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+                terminal.draw(|frame| shell.draw(frame)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let row: String = (1..39).map(|x| buffer[(x, 5)].symbol()).collect();
+                if no_color {
+                    assert!(row.starts_with(&format!("line{marker}")), "{row}");
+                    let next: String = (1..39).map(|x| buffer[(x, 6)].symbol()).collect();
+                    assert!(next.starts_with(if color == Color::Rgb(128, 0, 0) {
+                        "-]"
+                    } else {
+                        "+}"
+                    }));
+                    assert!(
+                        buffer
+                            .content
+                            .iter()
+                            .all(|cell| (cell.fg, cell.bg) == (Color::Reset, Color::Reset))
+                    );
+                } else if secret == "line↵" {
+                    assert!(row.starts_with("[REDACTED]"), "{row}");
+                    assert!(!row.contains(secret));
+                    assert!((1..39).all(|x| buffer[(x, 5)].bg == Color::Reset));
+                } else {
+                    assert!(row.starts_with("line↵"), "{row}");
+                    let cell = &buffer[(5, 5)];
+                    assert_eq!(cell.bg, color);
+                    assert_eq!(
+                        cell.fg,
+                        if color == Color::Rgb(128, 0, 0) {
+                            Color::Rgb(255, 255, 255)
+                        } else {
+                            Color::Black
+                        }
+                    );
+                    assert_eq!(
+                        cell.modifier.contains(Modifier::CROSSED_OUT),
+                        color == Color::Rgb(128, 0, 0)
+                    );
+                    for x in 1..5 {
+                        assert_eq!(buffer[(x, 5)].bg, Color::Reset);
+                    }
+                    assert!(!row.contains("[-") && !row.contains("{+"));
+                    assert!((1..39).all(|x| buffer[(x, 6)].symbol() == " "));
+                }
             }
         }
     }

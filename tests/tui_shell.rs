@@ -49,13 +49,13 @@ fn shell_shows_all_five_panels_only_at_the_full_layout_boundary() {
 }
 
 #[test]
-fn shell_full_layout_gives_detail_sixteen_rows_and_comment_four_rows() {
+fn shell_full_layout_gives_detail_fourteen_rows_and_comment_six_rows() {
     let shell = Shell::new(true);
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
     terminal.draw(|frame| shell.draw(frame)).unwrap();
     let buffer = terminal.backend().buffer();
-    // Right column spans rows 3..23: Detail gets 16 rows, Comment gets 4.
-    for (row, corner) in [(3, "┌"), (18, "└"), (19, "┌"), (22, "└")] {
+    // Right column spans rows 3..23: Detail gets 14 rows, Comment gets 6.
+    for (row, corner) in [(3, "┌"), (16, "└"), (17, "┌"), (22, "└")] {
         assert_eq!(buffer[(40, row)].symbol(), corner, "row {row}");
     }
 }

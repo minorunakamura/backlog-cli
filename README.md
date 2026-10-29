@@ -3,8 +3,8 @@
 Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
-`bl` はプロジェクト選択、通常/横断検索ダイアログ、課題一覧のページ巡回、選択追従プレビュー/詳細と再取得、ブラウザ起動、端末復元を利用できます。
-TUIのコメント取得・書込みフォーム・editor連携は未実装です。
+`bl` はプロジェクト選択、通常/横断検索ダイアログ、課題一覧のページ巡回、選択追従プレビュー/詳細・コメント閲覧と再取得、ブラウザ起動、端末復元を利用できます。
+TUIの書込みフォーム・editor連携は未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
 ```sh
@@ -12,7 +12,7 @@ cargo run --locked --bin bl -- --help
 cargo run --locked --bin bl-cli -- project list --json
 ```
 
-## TUIプロジェクト・課題一覧・詳細
+## TUIプロジェクト・課題一覧・詳細・コメント
 
 ```sh
 bl                  # default profile、stdin/stdoutの両方がTTY必須
@@ -64,6 +64,46 @@ NO_COLOR=1 bl        # 色なしでも二重枠・太字・>でfocusを表示
 - 通常画面ではqで終了0（極小サイズでも可）。検索dialogはEscで候補を閉じる／取消、Ctrl+Cで中断します。
   Ctrl+C（キー/SIGINT）は130、実行エラーは1。終了時にraw mode・表示属性・alternate screen・cursorを可能な限り復元し、
   復元失敗も通知します。SIGKILL/端末切断後は保証しません。
+
+### TUIコメント閲覧 (#18)
+
+Commentは選択課題の最新コメント／本文なし変更履歴を自動取得します（選択追従はDetailと同じ約150ms）。
+右側のh/l・Tab/Shift+TabでDetailとCommentを切替え、Escで読取りを取消してIssue Listへ戻ります。
+focus切替だけでは追加GETや取消を行いません。課題切替では旧本文を直ちに消し、旧応答を反映しません。
+
+- **n**: 1件古い側、**p**: 1件新しい側。ページ内は通信なし、境界で20件だけ取得します。
+  古い側は`order=desc`+exclusive `maxId`、新しい隣接側は`order=asc`+exclusive `minId`です。
+- **g**: 最新側、**G**: 最古側のページを直接取得して端の1件を表示します。
+  Gは昇順1ページだけで、途中の全件走査はしません。offset・total・件数API・全件自動取得は使いません。
+- **j/k**: 折返し本文のscroll。g/Gは本文の先頭／末尾ではなくコメントの端です。
+  本文・履歴をscrollし、投稿者／作成日時／空行の先頭3行は固定します。resize時も折返しとscroll上限を補正します。
+- **R**: 最新側ページを再取得し、全取得・安全表示の成功後だけ最新の1件と本文先頭へ交換します。
+  失敗時は元のコメント選択・本文・scrollを保持して通知します。Issue Listは変更しません。
+
+枠titleは通常`Comment`、focus時は`> Comment`です。取得中の`Loading... Esc: cancel`や終端・取消通知は必要な時だけ空白で続け、`|`を付けません（本文・履歴内の`|`は保持）。
+枠内は左揃えの投稿者（太字＋色、NO_COLORでは太字のみ）→作成日時→空行→本文です。
+長い投稿者は表示列／grapheme境界で`…`へ省略し、省略時だけscroll領域で全文を確認できます。
+resizeで省略要否を再判定します。100×24ではDetail 14行／Comment 6行で本文を最低1行表示します。
+TUIのComment createdとDetail CREATED／UPDATEDは固定JSTの`yyyy/MM/dd HH:mm:ss`です。
+不正な日時は安全な原値と「変換不可」を表示し、固定行に収まらない場合は原値をscroll領域に置きます。
+開始日・期限日・本文内の日付・CLI固定出力・JSONの日時は変更しません。
+TUIでは種別・ID・BODY／CHANGES見出し・末尾metadataを付けません（API本文そのものは削りません）。
+本文と履歴が同居する応答は空行で区切り、同じ1件に両方表示します。期限日`limitDate`・担当者`assigner`等は表示名へ変換し、
+未知fieldと任意JSONの前後値も安全表示します。通常本文はCLI／Detailと共通の記法変換を使います。
+
+`description`の文字列前後値は「詳細」として、安全化した表示用原文を行＋graphemeでinline比較します。
+削除は白文字（#FFFFFF）＋暗赤背景（#800000）＋取り消し線、追加は従来の黒文字＋緑背景、NO_COLOR時だけ`[-削除-]`／`{+追加+}`で表示します。
+空への変更／空から追加・同値も明示し、共通部分や空白・TAB・改行を省略しません。TUI本文のTABは`⇥`で可視化し、
+色あり差分の変更された改行は改行自体に加えて`↵`を削除／追加の装飾で表示します。非文字列は型を保持した前後値表示です。
+既知／詳細／未知fieldの変更前後値自体がJSON nullなら、TUIだけ引用符なしの`未設定`にします。
+入れ子のnull・文字列`"null"`・空文字・0・falseは置き換えません。例: `START DATE: 2026-11-01 -> 未設定`、
+`詳細: 未設定 -> ""`、`詳細: "null" -> 未設定`。他fieldの従来の文字列表示方法・API原値・CLI固定表示・JSONは変更しません。
+**限定例外**: 元API文字列のUnicode scalar数（改行・空白込み）の前後合計が10,000超なら、
+「詳細」と「変更内容が10,000文字を超えるため、差分を表示できません。」だけを表示し、scroll先にも前後本文を含めません。
+ちょうど10,000は比較対象です。これはTUI独自の表示基準で、Backlog WebやAPIの文字数制限・超過フラグとは同一ではありません。
+通常コメント・他の履歴・CLI／JSON・APIデータには適用しません。50ms目安の近似比較でも対象全文は保持し、秘匿を装飾より優先します。
+本文なし履歴だけのページでは記法確認のためのissue/project GETを追加しません。
+`c`／`e`による追加・編集は今回未実装です。最新buildでの#18受入結果と未確認事項は[手動受入記録](docs/testing/manual-acceptance.md)を参照してください。
 
 ### TUI検索ダイアログ (#17)
 
@@ -483,6 +523,8 @@ offsetは任意精度を保つ10進文字列で受け取り、返却値は数値
 `comment_list(&str, limit: u8, min_id: Option<&str>, max_id: Option<&str>)` は上記の1ページの
 `{"items":[...]}`、`comment_view(issue_id_or_key: &str, comment_id: &str)` は元objectを返します。
 入力と表示に必要な応答fieldを検証し、未知fieldや本文・履歴は表示前の原文で保持します。
+`comment_page(issue_id_or_key, limit, min_id, max_id, CommentOrder::Asc/Desc)` は同じ検証と返却形式で順序を選べます。
+TUIの隣接取得／最古取得に使い、CLI用`comment_list`の降順固定契約は変えません。
 `issue_text_formatting_rule(&str)` は対象課題のprojectIdだけを取得・検証し、既存のproject記法取得へ渡します。
 コメントJSON取得と独立しており、cwdのprojectや課題詳細の他fieldを要求しません。
 `issue_create(&Settings, IssueCreate)` はCLIと共通の作成入口です。`IssueCreate` は `project: Option<&str>`、

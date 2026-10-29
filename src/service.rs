@@ -97,6 +97,13 @@ pub struct CommentAdd<'a> {
     pub clear_resolution: bool,
 }
 
+/// Ordering for exclusive-ID comment pages; CLI lists remain descending.
+#[derive(Clone, Copy)]
+pub enum CommentOrder {
+    Desc,
+    Asc,
+}
+
 pub struct Service {
     api: Api,
 }
@@ -617,6 +624,18 @@ impl Service {
         min_id: Option<&str>,
         max_id: Option<&str>,
     ) -> Result<Value, Error> {
+        self.comment_page(issue_id_or_key, limit, min_id, max_id, CommentOrder::Desc)
+            .await
+    }
+    /// Fetch one comment page without count, offset, or automatic pagination.
+    pub async fn comment_page(
+        &self,
+        issue_id_or_key: &str,
+        limit: u8,
+        min_id: Option<&str>,
+        max_id: Option<&str>,
+        order: CommentOrder,
+    ) -> Result<Value, Error> {
         validate_issue_identifier(issue_id_or_key)?;
         if !(1..=100).contains(&limit) {
             return Err(Error::new("input", "Limit must be between 1 and 100"));
@@ -639,7 +658,17 @@ impl Service {
                 ));
             }
         }
-        let mut query = vec![("count", limit.to_string()), ("order", "desc".into())];
+        let mut query = vec![
+            ("count", limit.to_string()),
+            (
+                "order",
+                match order {
+                    CommentOrder::Desc => "desc",
+                    CommentOrder::Asc => "asc",
+                }
+                .into(),
+            ),
+        ];
         if let Some(id) = min_id {
             query.push(("minId", id.into()));
         }

@@ -76,6 +76,21 @@
     },
     "/api/v2/projects/2": {
       "body": "{\"textFormattingRule\":\"markdown\"}"
+    },
+    "/api/v2/issues/A-1/comments": {
+      "body": "[]"
+    },
+    "/api/v2/issues/B-1/comments": {
+      "body": "[]"
+    },
+    "/api/v2/issues/B-2/comments": {
+      "body": "[]"
+    },
+    "/api/v2/issues/B-3/comments": {
+      "body": "[]"
+    },
+    "/api/v2/issues/B-4/comments": {
+      "body": "[]"
     }
   }
 }
