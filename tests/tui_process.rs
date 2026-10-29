@@ -3077,12 +3077,14 @@ fn comment_full_layout_fixed_header_and_compact_body_tail_are_reachable() {
     let result = scripted(
         &h,
         json!([
-            {"wait":"Comment 2 line 01","keys":"Ll","resize":[20,60]},
-            {"wait":"> Comment","keys":"\u{1b}[F"},
+            {"wait":"Comment 2 line 01","keys":"L"},
+            {"wait":"> Issue Detail","keys":"l"},
+            {"wait":"> Comment","resize":[20,60]},
+            {"wait":"Comment 2 line 01","keys":"\u{1b}[F"},
             {"wait":"Comment 2 line 30","keys":"q"}
         ]),
     );
-    for index in [0, 2] {
+    for index in [0, 3, 4] {
         let screen = result["snapshots"][index].as_str().unwrap();
         for text in ["Comment author", "2026/03/01 09:00:00"] {
             assert!(screen.contains(text), "{text}: {result}");
@@ -3109,7 +3111,15 @@ fn comment_full_layout_fixed_header_and_compact_body_tail_are_reachable() {
             assert!(!comment.contains(removed), "{removed}: {result}");
         }
     }
-    assert_eq!(result["request_counts"][0], result["request_counts"][2]);
+    for (index, body) in [(3, "Comment 2 line 01"), (4, "Comment 2 line 30")] {
+        let screen = result["snapshots"][index].as_str().unwrap();
+        assert!(
+            screen.contains("> Comment") && screen.contains(body),
+            "{result}"
+        );
+        assert!(!screen.contains("Issue Detail"), "{result}");
+    }
+    assert_eq!(result["request_counts"][0], result["request_counts"][4]);
 }
 
 #[test]
