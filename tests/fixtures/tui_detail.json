@@ -34,6 +34,15 @@
           "body": "{\"textFormattingRule\":\"backlog\"}"
         }
       ]
+    },
+    "/api/v2/issues/B-1/comments": {
+      "body": "[]"
+    },
+    "/api/v2/issues/B-2/comments": {
+      "body": "[]"
+    },
+    "/api/v2/issues/B-3/comments": {
+      "body": "[]"
     }
   }
 }

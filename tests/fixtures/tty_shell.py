@@ -93,7 +93,7 @@ try:
                     requests_path = os.environ.get("SHELL_REQUESTS_FILE")
                     request_counts.append(len(open(requests_path).readlines()) if requests_path and os.path.exists(requests_path) else 0)
                     records = [json.loads(line) for line in open(requests_path)] if requests_path and os.path.exists(requests_path) else []
-                    browse_request_counts.append(sum(not re.fullmatch(r"/api/v2/(issues/[^/?]+|projects/[^/?]+)", record["path"]) for record in records))
+                    browse_request_counts.append(sum(not re.fullmatch(r"/api/v2/(issues/[^/?]+(?:/comments\?.*)?|projects/[^/?]+)", record["path"]) for record in records))
                     sent_at.append(time.time())
                     if "resize" in step:
                         height, width = step["resize"]

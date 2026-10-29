@@ -698,3 +698,66 @@ fn comment_help_global_flags_and_tty_keep_existing_noninteractive_contract() {
     }
     assert_eq!(h.requests().len(), 8);
 }
+
+#[test]
+fn cli_and_json_description_over_tui_limit_keep_all_values_and_raw_dates() {
+    let mut value = comment(3);
+    let old = format!("START{}END", "日".repeat(10_001));
+    value["changeLog"] = json!([{"field":"description","originalValue":old,"newValue":""}]);
+    let mut response = fixture();
+    response["routes"]["/api/v2/issues/P-1/comments/3"]["body"] = json!(value.to_string());
+    let h = Harness::new(response);
+    let output = h.run(&["issue", "comment", "view", "P-1", "3"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(&old));
+    assert!(text.contains("CREATED\t2026-10-01T01:02:03Z"));
+    assert!(!text.contains("10,000"));
+    assert_eq!(
+        success(&h.run(&["issue", "comment", "view", "P-1", "3", "--json"])),
+        value
+    );
+}
+
+#[test]
+fn cli_and_json_keep_null_values_distinct_from_strings_and_nested_nulls() {
+    let mut value = comment(3);
+    value["content"] = Value::Null;
+    value["changeLog"] = json!([
+        {"field":"startDate","originalValue":"2026-11-01","newValue":null},
+        {"field":"assigner","originalValue":null,"newValue":"null"},
+        {"field":"description","originalValue":null,"newValue":""},
+        {"field":"description","originalValue":"null","newValue":null},
+        {"field":"futureField","originalValue":{"x":null},"newValue":[1,null]},
+        {"field":"futureField","originalValue":0,"newValue":false},
+        {"field":"futureField","originalValue":null,"newValue":null}
+    ]);
+    let h = Harness::new(json!({"body":value.to_string()}));
+    let output = h.run(&["issue", "comment", "view", "P-1", "3"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).unwrap();
+    for expected in [
+        "START DATE\t2026-11-01 -> null\n",
+        "ASSIGNEE\tnull -> null\n",
+        "BODY\tnull -> \n",
+        "BODY\tnull -> null\n",
+        "futureField\t{\"x\":null} -> [1,null]\n",
+        "futureField\t0 -> false\n",
+        "futureField\tnull -> null\n",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
+    assert!(!text.contains("未設定"));
+    assert_eq!(
+        success(&h.run(&["issue", "comment", "view", "P-1", "3", "--json"])),
+        value
+    );
+    let requests = h.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|r| r["method"] == "GET" && r["path"] == "/api/v2/issues/P-1/comments/3")
+    );
+}

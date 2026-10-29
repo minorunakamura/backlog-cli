@@ -254,78 +254,6 @@ fn selections<'a>(names: &'a [String], ids: &'a [String]) -> Vec<Selection<'a>> 
         .collect()
 }
 
-fn comment_display(item: &Value, rule: &str, config: &Config) -> Result<String, Error> {
-    let secrets = &[config.api_key.as_str()];
-    let mut output = format!(
-        "ID\t{}\nTYPE\t{}\n",
-        safety::text(&item["id"].to_string(), secrets),
-        if item["content"].is_null() {
-            "CHANGE HISTORY"
-        } else {
-            "COMMENT"
-        }
-    );
-    for (label, value) in [
-        ("AUTHOR", &item["createdUser"]["name"]),
-        ("CREATED", &item["created"]),
-        ("UPDATED", &item["updated"]),
-    ] {
-        output.push_str(&format!(
-            "{label}\t{}\n",
-            safety::text(value.as_str().expect("validated comment field"), secrets)
-        ));
-    }
-    if let Some(content) = item["content"].as_str() {
-        output.push_str("BODY\n");
-        output.push_str(&body::display_with_origin(
-            content,
-            rule,
-            &config.origin,
-            secrets,
-        ));
-        output.push('\n');
-    }
-    if let Some(changes) = item["changeLog"]
-        .as_array()
-        .filter(|changes| !changes.is_empty())
-    {
-        output.push_str("CHANGES\n");
-        for change in changes {
-            let field = change["field"].as_str().expect("validated history field");
-            let label = match field {
-                "summary" => "TITLE",
-                "description" => "BODY",
-                "issueType" => "TYPE",
-                "priority" => "PRIORITY",
-                "status" => "STATUS",
-                "assigner" | "assignee" => "ASSIGNEE",
-                "resolution" => "RESOLUTION",
-                "startDate" => "START DATE",
-                "limitDate" | "dueDate" => "DUE DATE",
-                "milestone" => "MILESTONES",
-                _ => field,
-            };
-            let mut values = Vec::new();
-            for field in ["originalValue", "newValue"] {
-                let safe = safety::json(&change[field], secrets)?;
-                values.push(
-                    safe.as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| safe.to_string()),
-                );
-            }
-            output.push_str(&format!(
-                "{}\t{} -> {}\n",
-                safety::text(label, secrets),
-                values[0],
-                values[1]
-            ));
-        }
-    }
-    output.push('\n');
-    Ok(output)
-}
-
 fn write_stdout(value: &str) -> Result<(), Error> {
     io::stdout()
         .lock()
@@ -674,7 +602,7 @@ async fn run(args: &Args, config: &Config) -> Result<(), Error> {
                     String::new()
                 };
                 for item in items {
-                    output.push_str(&comment_display(item, &rule, config).map_err(
+                    output.push_str(&backlog_cli::comment::display(item, &rule, config).map_err(
                         |mut error| {
                             error.http_status = Some(200);
                             error

@@ -1,5 +1,6 @@
 use super::{
     Focus,
+    comment::{Comment, Direction, Entry},
     detail::{self, Detail},
     search::{self, Conditions, Dialog},
 };
@@ -8,7 +9,7 @@ use crate::{
     api::Api,
     config::Config,
     safety,
-    service::{Candidate, ResolvedIssueSearch, Service},
+    service::{Candidate, CommentOrder, ResolvedIssueSearch, Service},
 };
 use crossterm::event::KeyCode;
 use serde_json::{Number, Value};
@@ -74,6 +75,7 @@ enum Target {
     Projects,
     Issues,
     Detail,
+    Comments,
     Browser,
     Candidates,
 }
@@ -81,6 +83,11 @@ enum Target {
 pub(super) struct RequestId(Target, u64);
 
 enum Operation {
+    Comments {
+        key: String,
+        direction: Direction,
+        boundary: Option<String>,
+    },
     Candidates {
         project: String,
         field: usize,
@@ -110,6 +117,7 @@ pub(super) struct Request {
     operation: Operation,
 }
 enum Data {
+    Comments(String, Direction, Vec<Entry>),
     Candidates(Value),
     Detail(String, String),
     Browser,
@@ -138,6 +146,40 @@ impl Request {
         let initial = matches!(self.operation, Operation::Initial);
         let result = async {
             match self.operation {
+                Operation::Comments {
+                    key,
+                    direction,
+                    boundary,
+                } => {
+                    if !crate::service::issue_key(&key) {
+                        return Err(Error::new("invalid_response", "Invalid selected issue key"));
+                    }
+                    let service = Service::new(&config)?;
+                    let (min, max, order) = match direction {
+                        Direction::Latest => (None, None, CommentOrder::Desc),
+                        Direction::Oldest => (None, None, CommentOrder::Asc),
+                        Direction::Older => (None, boundary.as_deref(), CommentOrder::Desc),
+                        Direction::Newer => (boundary.as_deref(), None, CommentOrder::Asc),
+                    };
+                    let page = service.comment_page(&key, 20, min, max, order).await?;
+                    let items = page["items"].as_array().unwrap();
+                    let rule = if items.iter().any(|item| item["content"].is_string()) {
+                        service.issue_text_formatting_rule(&key).await?
+                    } else {
+                        String::new()
+                    };
+                    let items = items
+                        .iter()
+                        .map(|item| {
+                            let preview = crate::comment::preview(item, &rule, &config)?;
+                            Ok(Entry {
+                                id: item["id"].to_string(),
+                                preview,
+                            })
+                        })
+                        .collect::<Result<_, Error>>()?;
+                    Ok(Data::Comments(key, direction, items))
+                }
                 Operation::Candidates { project, field } => {
                     let candidate = match field {
                         0 => Candidate::Status { project: &project },
@@ -261,9 +303,11 @@ pub(super) struct Browse {
     projects_busy: Option<u64>,
     issues_busy: Option<u64>,
     detail_busy: Option<u64>,
+    comments_busy: Option<u64>,
     browser_busy: Option<u64>,
     candidates_busy: Option<u64>,
     pub(super) detail: Detail,
+    pub(super) comment: Comment,
     pub(super) requests: Vec<Request>,
     notice: String,
     pub(super) error_notice: Option<String>,
@@ -275,6 +319,7 @@ impl Browse {
             Target::Projects => self.projects_busy,
             Target::Issues => self.issues_busy,
             Target::Detail => self.detail_busy,
+            Target::Comments => self.comments_busy,
             Target::Browser => self.browser_busy,
             Target::Candidates => self.candidates_busy,
         }) == Some(id.1)
@@ -289,6 +334,8 @@ impl Browse {
         *self.busy(target) = Some(self.generation);
         if target == Target::Detail {
             self.detail.notice.clear();
+        } else if target == Target::Comments {
+            self.comment.document.notice.clear();
         } else {
             self.notice.clear();
         }
@@ -303,6 +350,7 @@ impl Browse {
             Target::Projects => &mut self.projects_busy,
             Target::Issues => &mut self.issues_busy,
             Target::Detail => &mut self.detail_busy,
+            Target::Comments => &mut self.comments_busy,
             Target::Browser => &mut self.browser_busy,
             Target::Candidates => &mut self.candidates_busy,
         }
@@ -335,12 +383,20 @@ impl Browse {
                 if response.target == Target::Detail {
                     self.detail.status = "Preview failed";
                 }
+                if response.target == Target::Comments {
+                    self.comment.document.status = "Comment preview failed";
+                }
                 self.error_notice = Some(notice);
                 return Ok(());
             }
         };
         let reset_detail = matches!(data, Data::Search(..));
         match data {
+            Data::Comments(key, direction, items) => {
+                if self.comment.document.key.as_ref() == Some(&key) {
+                    self.comment.replace(items, direction);
+                }
+            }
             Data::Candidates(items) => {
                 if let Some(dialog) = &mut self.dialog {
                     let choices = items
@@ -357,7 +413,7 @@ impl Browse {
             }
             Data::Detail(key, text) => {
                 if self.detail.key.as_ref() == Some(&key) {
-                    self.detail.replace(text);
+                    self.detail.replace(text.into());
                 }
             }
             Data::Browser => {}
@@ -419,11 +475,31 @@ impl Browse {
         let key = self.selected_key();
         if force || self.detail.key != key {
             self.detail_busy = None;
+            self.comments_busy = None;
             self.browser_busy = None;
+            self.comment.select(key.clone());
             self.detail.select(key);
         }
     }
     pub(super) fn tick(&mut self) {
+        if self
+            .comment
+            .document
+            .due
+            .is_some_and(|due| Instant::now() >= due)
+        {
+            self.comment.document.due = None;
+            if let Some(key) = self.comment.document.key.clone() {
+                self.request(
+                    Target::Comments,
+                    Operation::Comments {
+                        key,
+                        direction: Direction::Latest,
+                        boundary: None,
+                    },
+                );
+            }
+        }
         if self.detail.due.is_some_and(|due| Instant::now() >= due) {
             self.detail.due = None;
             if let Some(key) = self.detail.key.clone() {
@@ -436,13 +512,27 @@ impl Browse {
             self.request(Target::Browser, Operation::Browser { key });
         }
     }
-    pub(super) fn cancel_detail(&mut self) {
+    pub(super) fn cancel_previews(&mut self) {
+        if self.comments_busy.is_some() || self.comment.document.due.is_some() {
+            self.comment.document.status = "Comment preview cancelled";
+            self.comment.document.notice = "Cancelled; display retained".into();
+        }
+        self.comments_busy = None;
+        self.comment.document.due = None;
         if self.detail_busy.is_some() || self.detail.due.is_some() {
             self.detail.status = "Preview cancelled";
             self.detail.notice = "Cancelled; display retained".into();
         }
         self.detail_busy = None;
         self.detail.due = None;
+    }
+    pub(super) fn comment_status(&self) -> String {
+        let status = if self.comments_busy.is_some() {
+            "Loading... Esc: cancel"
+        } else {
+            ""
+        };
+        format!("{status} {}", self.comment.document.notice)
     }
     pub(super) fn detail_status(&self) -> String {
         let status = if self.detail_busy.is_some() {
@@ -515,10 +605,29 @@ impl Browse {
             (_, KeyCode::Esc) if self.projects_busy.is_some() || self.issues_busy.is_some() => {
                 self.projects_busy = None;
                 self.issues_busy = None;
-                self.cancel_detail();
+                self.cancel_previews();
                 self.browser_busy = None;
                 self.requests.clear();
                 self.notice = "Cancelled; display retained".into();
+            }
+            (Focus::Comment, KeyCode::Char('n' | 'p' | 'g' | 'G' | 'R')) => {
+                if matches!(code, KeyCode::Char('n' | 'p')) && self.comment.is_empty() {
+                    return;
+                }
+                self.comments_busy = None;
+                self.comment.document.due = None;
+                if let Some(key) = self.comment.document.key.clone()
+                    && let Some((direction, boundary)) = self.comment.navigate(code)
+                {
+                    self.request(
+                        Target::Comments,
+                        Operation::Comments {
+                            key,
+                            direction,
+                            boundary,
+                        },
+                    );
+                }
             }
             (Focus::Detail, KeyCode::Char('R')) => {
                 if let Some(key) = self.detail.key.clone() {
@@ -526,7 +635,7 @@ impl Browse {
                     self.request(Target::Detail, Operation::Detail { key });
                 }
             }
-            (_, KeyCode::Esc) => self.cancel_detail(),
+            (_, KeyCode::Esc) => self.cancel_previews(),
             (Focus::Project, KeyCode::Down | KeyCode::Char('j')) => {
                 self.position.move_by(true, self.projects.len(), rows)
             }

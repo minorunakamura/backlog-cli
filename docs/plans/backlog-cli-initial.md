@@ -4,7 +4,7 @@
 
 Rust製の共通libraryと、人向けTUI `bl`・非対話CLI `bl-cli`を新規開発する。Apple Silicon Macで、プロジェクト選択、課題検索・閲覧・作成・部分更新、コメント一覧・個別閲覧・追加・本文更新を安全に実行できる初版を作る。
 
-正式入力は [基本設計](../designs/backlog-cli.md)。特に「実行ファイル」「対象API」「profileと設定」「検索・名前解決・ページ送り」「TUIの画面・操作」「課題の項目・作成・更新」「課題コメント」「本文入力とeditor」「本文変換・表示の安全性」「JSON・通信・書込み結果」「品質・配布」を要求・受入条件として参照する。本Planは、その「後続の実装計画で具体化する事項」を補う。基本設計の目的・責務・対象外は変更しない。
+正式入力は [基本設計](../designs/backlog-cli.md)。特に「実行ファイル」「対象API」「profileと設定」「検索・名前解決・ページ送り」「TUIの画面・操作」「課題の項目・作成・更新」「課題コメント」「本文入力とeditor」「本文変換・表示の安全性」「JSON・通信・書込み結果」「品質・配布」を要求・受入条件として参照する。本Planは、その「後続の実装計画で具体化する事項」を補う。基本設計の目的・責務・対象外を維持し、表示方針は合意済みの再計画節に従って改訂する。
 
 ## 要件・決定事項
 
@@ -446,6 +446,212 @@ cargo-audit 0.22.2と既存正式コマンドを維持し、DB／registry失敗�
 
 正式保存・readback後、`taskflow-to-ticket` に本Planの正式パスと全文を渡し、既存Issue #17一件を再利用して検索の残作業と今回のfocus操作を一つの縦sliceとして実装・検証する分割案を別途確認する。Plan・tracker設定・分割・最終本文／保存先の公開承認を流用しない。既存タイトル・本文・OPEN状態・label・Blocked by／native関係は変更せず、明示承認された改訂コメントを追記する。保存公開・readback後、確定した参照で新しいRoot向けImplementation再開kickoffを提示して停止し、Implementationは開始しない。
 
+
+### Issue #18 再計画：Comment表示・TUI日時・詳細のinline差分
+
+#### 目的・正式入力・適用範囲
+
+[Issue #18](https://github.com/minorunakamura/backlog-cli/issues/18) の `REPLAN_REQUIRED` を受け、Commentの読みやすさを改善し、TUI全体の日時をJSTへ統一する。正式Planは本ファイルの改訂全文、基本設計は [docs/designs/backlog-cli.md](../designs/backlog-cli.md)「配置とフォーカス」「課題の項目」「課題コメント」「本文変換・表示の安全性」。今回の実装・検証には本節を適用する。旧来の種別文字ラベル必須・末尾metadata・本文保持の一般則と衝突する表示要求は、以下で明示した範囲だけ本節を優先する。初版全体・後続Issueの機能は取り込まない。
+
+#### 確認済みの現状・停止理由・根拠
+
+- Planning開始時、`CONTRIBUTING.md`, `README.md`, `docs/testing/manual-acceptance.md`, `src/bin/bl-cli.rs`, `src/lib.rs`, `src/service.rs`, `src/tui.rs`, `src/tui/browse.rs`, `src/tui/detail.rs`, `tests/fixtures/tty_shell.py`, `tests/fixtures/tui_detail.json`, `tests/fixtures/tui_search.json`, `tests/service.rs`, `tests/tui_process.rs` が変更済み。`src/comment.rs`, `src/tui/comment.rs`, `tests/fixtures/tui_comment.json`, `tests/fixtures/tui_comment_steps.json` がuntracked。部分実装・差分を保持し、commit / stash / 破棄を独断で行わない。
+- `src/comment.rs::preview` は種別・ID・投稿者・日時を一つのheadingへ連結し、BODY／CHANGESと末尾metadataを生成する。履歴は一律に前後値を `->` で並べる。`display` はCLI固定出力の入口なので、TUI変更をCLIへ波及させない。
+- `src/tui/comment.rs` はページ内選択とID境界、`src/tui/browse.rs` は20件ページと世代・busyを管理する。本文なし履歴だけなら記法確認GETをしない。`src/tui/detail.rs` はplain文書のwrap・scroll・resize補正を持つ。取得・選択の境界は維持する。
+- `src/tui.rs` は100×24で右領域20行をDetail 16行／Comment 4行へ分け、描画とscrollの領域を別箇所で算出する。`tests/tui_shell.rs` の16／4期待も改訂対象。新しい固定3行と本文には外枠最低6行が必要である。
+- default profileのoriginが `https://lazybl.backlog.com/` であることを確認し、既存releaseの `bl-cli --profile default --json issue comment view BLCLI-1 <id>` で読取りのみを行った。`839099888` は `content:null`, `changeLog[].field:"description"`, 旧値72 Unicode scalar→新値空文字。`839099889` は同fieldで空文字→72 scalar。createdは順に `2026-10-26T16:05:08Z`／`2026-10-26T16:05:10Z`。本文・API key・raw responseは記録せず、書込みなし。この観測はこの2件だけのもので、製品TUIの受入・任意のAPI値の完全性を保証しない。
+- [コメント一覧API](https://developer.nulab.com/ja/docs/backlog/api/2/get-comment-list/) と [コメント単件API](https://developer.nulab.com/ja/docs/backlog/api/2/get-comment/) の公開資料では、10,000文字制限・超過判定／切り詰めフラグ・description旧新値の常時全文返却は確認できない。Web画像の制限をAPI契約と同一視しない。
+- `docs/testing/manual-acceptance.md` のIssue #18記録には264テスト成功、fmt／Clippy／audit／release build、独立Reviewと指摘修正の履歴があるが、実端末・実Backlog受入は未完了。過去のチェック・Review・Code Review Approveを変更後差分へ流用しない。Planningではproduction codeを変更せず、`git diff --check` の終了0のみ確認した。
+
+#### 合意した設計変更と理由
+
+Rootの質問で利用者が以下を確認し、仕様整理の認識一致も確認した。基本設計の表示契約の改訂として扱う。
+
+1. **日時の範囲**：CommentだけでなくTUI全体のAPI作成・更新日時をJSTへ統一する。現在はComment createdとIssue Detail created／updatedが対象。開始日・期限日等の日付専用値、本文中の日付文字列、CLI固定出力、JSONは変更しない。
+2. **配置**：当初の枠上右揃えに代えて、枠内左揃えの「投稿者→日時→空行→本文」を採用する。先頭3行を固定し、n/pで日時位置を揺らさない。本文を初期表示するためComment外枠を最低6行に広げる。
+3. **ラベル廃止**：COMMENT／CHANGE HISTORYと表示ID、BODY／CHANGES、末尾のID／TYPE／AUTHOR／CREATED／UPDATEDをTUIのCommentから削除する。「コメント」「変更履歴」の種別文字ラベル必須を廃止し、本文と変更項目名付き履歴の構造で区別する。
+4. **詳細の差分**：`description` を「詳細」と表示し、行＋grapheme単位のinline差分を導入する。通常時は削除を赤系背景＋取り消し線、追加を緑系背景。NO_COLORの場合だけ文字記号を付ける。
+5. **10,000文字超の例外**：前後の合計が10,000超のdescription文字列ペアは、画像どおり「詳細」と警告だけにする。前後本文や隠れたscroll用コピーを表示文書に入れない。TUIで受信内容を全表示する従来要件への限定例外である。警告付き全文表示案は利用者が採用しなかった。APIデータ・CLI・JSON・通常コメント・他の変更項目には広げない。
+6. **設計更新の時期**：Plan全文の明示承認後、このPlanningで基本設計「配置とフォーカス」のComment最低高さ・TUI日時、「課題コメント」のラベル・縦配置・差分・超過例外、「本文変換・表示の安全性」の例外参照を整合する。他の設計方針は変更しない。README／CONTRIBUTING／今後の受入手順・製品・テストは新しいImplementationで整合し、過去の実測は保持する。新しいGLOSSARY・ADR・状態管理文書は作らない。
+
+#### 表示契約
+
+**日時**
+
+- APIのoffset付き日時を固定UTC+09:00へ変換し、`yyyy/MM/dd HH:mm:ss` の19列にする。OSのtimezone・現在時刻に依存せず、小数秒は表示しない。Commentはcreatedを使い、updatedを追加しない。Issue DetailのCREATED／UPDATEDの項目自体は維持する。
+- RFC3339として解釈できない値をUTC深夜等と推測して補完しない。安全な原値と変換不可表示を残し、panic・架空日時を出さない。Commentの固定行に収まらない原値は、日時行に変換不可を案内し、原値全文をscroll領域へ置く。Serviceの文字列validationやCLI／JSONを、この変更のためだけに厳格化しない。
+- 実APIを模した日時fixtureはoffset付きへ整合し、date-onlyや不正値は明示的なfallback試験に残す。
+
+**Commentの枠・固定行・本文**
+
+- 枠はCommentというパネル名・focus印・必要な取得状態／通知を維持し、種別・IDを出さない。内部IDは取得境界・選択・将来の編集対象識別に保持する。
+- 枠内先頭を投稿者1行、created日時1行、空行1行の固定領域とし、左揃えにする。投稿者は太字＋色、NO_COLORでは太字のみ。n/p/g/G・Rによる対象変更でも、同一サイズでは日時の行・開始列を固定する。本文scrollで先頭3行を動かさない。
+- 長い投稿者は安全化後にterminal表示列・grapheme境界で末尾を `…` にする。省略時だけscroll領域先頭に安全な全文を折返し表示する。resizeで省略要否を再判定し、省略していないときは重複させない。名前の改行・TABは固定行向けに単行化し、全文確認側では安全な内容を保持する。
+- 全パネル表示では従来の右側80／20分割を基本とし、Comment外枠を最低6行にclampして残りをDetailにする。100×24では14／6、Comment本文は最低1行。左側・Workspace・全／単一パネル境界・極小時保護は維持する。
+- 固定3行を除いた本文の**同じRect**を描画・折返し行数・scroll上限・page移動に用い、resize時にclampする。
+- 通常コメントは既存の記法判定・安全表示で見出しなしに表示する。同居する履歴は空行で区切り、同じ1件内で両方を表示する。履歴は変更項目名を残す。description以外は既存の既知field表示名と前後値を維持し、未知fieldも識別子と安全なJSON前後値を落とさない。API本文中の「BODY」等の文字を削除するのではない。
+
+**詳細のinline差分・超過時**
+
+- `changeLog[].field == "description"` かつ旧／新値が両方文字列の場合に適用する。コメントのcontentを前後値に代用しない。null・数値・配列・object等は空文字と同一視せず、「詳細」と型を保持した安全な前後値表示へfallbackする。
+- 元API文字列それぞれの `chars().count()`（Unicode scalar数、改行・空白込み）の合計が **10,000超** の場合だけ、次の表示にする。ちょうど10,000は比較対象。byte／grapheme数や安全化・伏字化後の長さでは判定しない。これはTUI独自基準で、Backlog Webの算定方法・API制約とは同一だと説明しない。
+
+  ```text
+  詳細
+  変更内容が10,000文字を超えるため、差分を表示できません。
+  ```
+
+  当該履歴の前後値を警告の後やscroll先へ含めない。通常時は警告色、NO_COLORでも同じ文言で判別可能にする。同居コメント本文・他の履歴・投稿者／日時・移動・Rは隠さない。自動展開・別画面・追加GETは作らない。
+- 合計10,000以下では各値全文を安全化した**表示用原文**で行比較し、対応する変更行内をgrapheme単位で比較する。Markdown／Backlog記法変換後の比較にせず、descriptionだけの履歴のための記法確認GETを追加しない。
+- 共通部分も省略せず、削除／追加区間を原順にinline表示する。空白・TAB・改行・末尾改行の有無を黙って捨てない。削除は可読な前景＋赤系背景＋取り消し線、追加は可読な前景＋緑系背景をRatatui styleで付け、外部ANSIを実行しない。
+- NO_COLORでは色装飾をなくし、削除を `[-削除内容-]`、追加を `{+追加内容+}` にする。これらの記号は通常の色あり表示には付けない。
+- 空への変更は「詳細（空へ変更）」＋削除区間、空から追加は「詳細（空から追加）」＋追加区間。同値は「詳細（変更なし）」＋安全な値、両方空文字は `（空）`。注記をAPI値へ混ぜない。
+- 近似budgetは1履歴50msを目安とし、行とgrapheme比較で同じdeadlineを共有する。similarのdeadlineは近似への切替であり、厳密な時間・メモリ上限や超過検出フラグではない。細粒度比較を続けられない範囲は削除／追加の塊として全文を保持する。10,000以下で警告だけへ落とす例外は追加しない。ページ分の比較はUI task内で同期実行せず、既存取得task側で準備する。
+
+#### 実装方針・影響範囲
+
+1. 新しいImplementationでIssue本文と全改訂コメント、本Plan・基本設計、現在の差分・untracked・受入履歴を直接確認し、部分実装を保持して続行する。
+2. `src/comment.rs` のTUI previewと `src/tui/comment.rs` に必要な最小限のstyled文書を持たせ、固定作者／日時をscroll本文から分離する。既存RatatuiのText／Line／Span・Paragraph／Wrapを再利用し、ANSI文字列・汎用文書framework・別表示モードは作らない。`comment::display` のCLI契約は維持する。
+3. `src/tui.rs` の右分割・固定行・body Rect・scroll計算、`src/tui/detail.rs` の必要なstyled文書対応と日時、`src/tui/browse.rs` のpreview受渡しを整合する。shared文書の変更でDetail本文・scrollを回帰させない。page・API順序・世代管理は再設計しない。
+4. 手書きの暦／Unicode差分エンジンを避け、`time = "=0.3.55"`（`default-features=false`, `parsing`／`formatting`）と `similar = "=2.7.0"`（`unicode`）を直接依存にする。time 0.3.55は既存lockfileにあり、local sourceのMSRV 1.88.0とparse／checked_to_offset／formatを確認済み。similarの [版固定API](https://docs.rs/similar/2.7.0/similar/struct.TextDiffConfig.html) に行／grapheme比較・deadlineがある。Rust 1.99.1・完全一致版・lockfile追跡を維持する。timezone DB・新規local-offset要求・macros・日時設定は不要。既存推移依存のfeatureを無断で削らない。
+5. TUI向け日時変換をComment createdとDetail created／updatedから共用し、API／JSON／送信値は原値のままにする。依存解決は上記追加に必要な差分だけとし、無関係な一括update・lockfile再生成をしない。同時ビルドと解決結果はPlanningでは未検証なのでImplementationで確認する。必要な推移依存・feature以外の変更や指定版変更が必要なら再計画する。
+6. `safety::text/json` で前後値全文を安全化してから分割し、Span単位だけの伏字化に置き換えない。さらにlabel・差分区間・NO_COLOR記号・投稿者省略等を組み立てた**最終テキスト投影**も検査する。secret `abcd` に対して旧 `ab`／新 `cd` を隣接表示すると、単独値が安全でもsecretを再構成し得る。該当結果は安全なplain表示へのfallback・redactionを許容し、危険なstyled片を残さない。内容・装飾より秘匿を優先し、両色モードを検証する。
+7. `tests/tui_shell.rs`, `tests/tui_process.rs`, `src/tui.rs` のTestBackend試験、必要な公開preview試験、comment／関連日時fixtureを整合する。`tests/issue_comment.rs` 等でCLI／JSON不変を検証する。README／CONTRIBUTINGの利用・再現説明と `docs/testing/manual-acceptance.md` の今後の手順・変更後実測を整合し、旧観測・hash・停止理由を保持する。表示のためだけにServiceや書込みAPIを変更しない。
+
+#### 完了条件
+
+- TUI作成・更新日時がJST書式で、Commentはcreatedを使う。日付専用値・CLI／JSON・原データを変えず、不正日時にpanic・架空値を出さない。
+- 投稿者・日時・空行の固定配置と不要表示廃止、100×24の14／6・40×12・極小保護、長い名前・resize・scroll・NO_COLORを満たす。
+- descriptionの行＋grapheme差分、背景／削除取り消し線、NO_COLORだけの記号、全削除／全追加・同値・10,000／10,001境界が仕様どおり。超過時は警告のみで前後本文を隠れたscroll先にも置かず、他の内容へ例外を広げない。
+- 通常本文・同居履歴・未知field・非文字列／null・空白／改行・日本語／結合文字／emojiを保持し、安全表示と組立前後のsecret検査を満たす。
+- n/p/g/G、exclusive ID両方向境界・巨大ID・最古の直接昇順取得、focus・本文scroll、R成功時だけ最新へ交換、失敗・取消・古い応答で選択／本文／scroll／busyを壊さない。全件取得や表示のための追加GETを増やさない。
+- 変更後の関連試験・正式チェック・release製品のローカルHTTPS／PTY・実端末／実Backlog受入を記録済み。未実施・失敗ならIssue #18は未完了。過去の264成功・Review・Code Review Approveで代替しない。
+- 基本設計・Plan・Issue受入条件・利用説明・テスト・今後の受入手順が整合し、後続Issueや初版全体の完了と混同しない。
+
+#### 動作確認方法
+
+既存 `tdd` Skillの失敗テスト→最小実装の縦sliceを使う。公開seamは、共通libのpreview／安全表示入口（差分の意味・原値不変、実端末の見え方は捕捉しない）、公開Shellの入力→TestBackendと実bl→PTY（配置・cell style・操作・端末復元、OSの描画差は捕捉しない）、既存HTTPSのHTTP境界（GET・paging・状態保持、実API全データ保証ではない）、実CLIのstdout／JSON／終了コード（既存契約非変更）とする。private構造・task数固定試験や新harnessは不要。
+
+- 日時：UTC／非UTC offset、JSTの日／月／年跨ぎ・閏日・小数秒、不正・date-only・変換範囲外を既知の期待値で試す。対象2件は `2026/10/27 01:05:08`／`2026/10/27 01:05:10`。日付専用値・CLI／JSON不変も確認する。
+- 配置：100×24の枠座標と本文1行以上、40×12、極小往復、n/pと本文scroll中の固定行座標、長い日本語・結合文字・emoji名の省略と全文到達、resizeでの再判定・clamp。投稿者太字／色とNO_COLORの全cell fg／bg Resetを確認する。
+- 差分：途中の挿入／削除／置換・複数行・繰返し・空白／TAB／改行のみ・末尾改行、日本語・結合文字・ZWJ emoji、空への変更／空から追加・同値、非文字列／null・未知field／巨大数値・本文との同居を確認する。近似時の分割形状を固定せず、10,000以下で安全な前後値を再構成できる内容保持をassertする。
+- 上限：合計9,999／10,000／10,001、多byte文字・結合文字・改行、伏字化前カウント。超過値のsentinelが画面・scroll先に出ず、同居本文・他の履歴は消えない。通常コメントやCLI／JSONは10,000超でもこの例外を適用しない。
+- 安全性：全文のAPI key、Span境界、旧 `ab`／新 `cd` による `abcd` 再構成、HTML／ESC／OSC／制御文字を両色モードの描画cellまで確認する。原データ・送信値は不変。
+- 結合回帰：既存comment fixture／stepsで移動順・両境界・最古GETの呼出数、g/Gと本文scroll、R成功／失敗・cancel・課題切替後応答逆転を確認する。背景・取り消し線はPTYのplain screenだけで合格にせず、TestBackendのcell styleをassertする。
+- 実端末：変更後release hash、端末名／版・macOS・NO_COLOR有無、100×24／40×12／極小で、固定行・JST・空行・本文・差分／警告・折返し／末尾scroll・n/p/g/G/Rをユーザー確認する。赤背景＋取り消し線／緑背景の可読性とNO_COLOR記号を目視し、未対応端末の装飾を自動PTYで保証しない。
+- 実Backlog：profile origin `https://lazybl.backlog.com/` を確認し、変更後TUIでBLCLI-1の `839099888`／`839099889` の全削除／全追加・JSTを確認する。他の実コメント・本文なし履歴・前後／最新／最古／Rも従来どおり確認する。10,000超・部分差分・未知fieldはharnessで検証でき、データ準備の書込みを要求しない。APIにない前後値を現在本文から推測補完しない。
+- 記録先は既存 `docs/testing/manual-acceptance.md`。Issue・build・origin・対象ID・手順・結果・未確認事項を残し、key・機密本文・raw responseを記録しない。準備／変更／復元は別途明示許可なしに行わず、実サービスに障害・過大負荷を発生させない。
+
+```sh
+cargo test --locked --test tui_shell
+cargo test --locked --test tui_process
+cargo test --locked --test issue_comment
+cargo test --locked --lib
+cargo fmt --all -- --check
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+cargo audit --file Cargo.lock
+cargo build --locked --release --target aarch64-apple-darwin --bins
+git diff --check
+```
+
+cargo-audit 0.22.2と正式コマンドを維持する。新依存・必要なfeature解決後に監査し、監査前後のlockfile不変、DB／registry取得失敗・timeout・警告・終了コードを記録する。変更後releaseと更新済みHTTPS／PTYでGETのみ・追加通信なし・secret非表示・端末復元を確認する。実端末／実Backlog受入をharness成功やPlanningのAPI読取りで代替しない。
+
+#### 制約・対象外・Planningの受渡し
+
+新しい設定・永続状態・履歴管理・別画面・avatar／スター／メニュー等のBacklog画面全体再現・差分永続cache・外部pager・独自diff／日時エンジン・他Issueのc/e／書込みフォーム／editor・実Backlog書込み・push／merge／release／deployを追加しない。CLI／JSON契約・API取得範囲・書込み確度・既存キーは維持する。TUI超過例外をAPIデータの破棄へ転用しない。
+
+受信した値の表示が対象であり、任意の長さでAPI旧新値が常に全文取得できることやWebとの完全一致は保証しない。既存Paragraphのu16 scroll上限（65,535 wrapped行）等の既知の限界を無制限対応済みと説明しない。通常の長文・上限境界fixtureの末尾到達を確認する。端末の文字幅・取り消し線差、近似差分の分割差は実端末受入と内容保持試験で扱う。
+
+Plan全文をPlannotatorへ提出し、明示承認後に同じ正式パスへ保存・readback、合意した基本設計の箇所を整合する。正式Planのパスと全文を `taskflow-to-ticket` へ渡す。既存Issue #18一件を再利用して残作業と今回の改訂を実装・検証する分割案を別途確認し、最終改訂コメント本文・公開先の承認も別に得る。新規Issue・label・依存関係を増やさず、元のIssueタイトル・本文・状態・Blocked by／native関係と既存実Backlog受入コメントを維持する。正式保存・公開とreadback後、確定参照で新しいRoot向けImplementation再開kickoffを提示して停止し、Implementationは開始しない。
+
+
+### Issue #18 再計画：削除差分の視認性・未設定表示・Comment枠
+
+#### 目的・正式入力・優先関係
+
+[Issue #18](https://github.com/minorunakamura/backlog-cli/issues/18) の追加の `REPLAN_REQUIRED` に対応する。正式Planは本ファイルの改訂全文。直前の「Issue #18 再計画：Comment表示・TUI日時・詳細のinline差分」、基本設計 [課題コメント](../designs/backlog-cli.md#課題コメント)、Issue本文・既存の実Backlog受入コメント・既存の表示改訂コメントを正式入力とする。
+
+今回変更するのは、削除差分の配色、TUI変更履歴のnull表示、Comment枠の区切りの3点だけ。本節は既存の「非descriptionの前後値表示維持」「非文字列／nullの表示」のうち、下記で明示するnullの表示だけを置き換える。従来の赤系背景＋取り消し線、緑系背景、NO_COLOR、JST、固定行、10,000文字超の限定例外、取得・paging・安全表示・実環境受入等は維持する。過去の調査・実測は当時の履歴であり書き換えない。
+
+#### 停止理由・確認済みの原因と根拠
+
+- 利用者の実端末観測：削除差分の赤背景と文字のコントラストが低く読めない。報告された見え方をRootが同じ実端末で再観測したものではない。現行 `src/comment.rs::description` は削除を `Color::White` 前景＋`Color::Red` 背景＋`CROSSED_OUT` に固定する。基本色は端末paletteの影響を受けるため、現在のcell style確認だけでは可読性を保証できない。
+- Rootは既存 `description_empty_equal_and_typed_fallbacks_keep_notes_outside_api_values` と `tui::tests::comment_fixed_rows_styles_and_body_scroll_share_the_viewport` を完全名で各1件実行し、各終了0を確認した。後者はWhite／Redと取り消し線を現にassertしている。これは旧表示の根拠であり、改善後の可読性の受入ではない。
+- `src/comment.rs::preview` は非descriptionのnullをJSONの `to_string()` により `null` と表示する。descriptionの非文字列fallbackも同様。上記公開preview試験は `詳細: null -> ""` と `詳細: "null" -> null` を現在の期待値にしている。文字列同士のdescriptionだけはinline比較へ進む。CLIは別入口 `comment::display`／`content` であり、TUIだけの修正が可能。
+- `src/tui.rs::Shell::panel` は `Comment | {comment_status()}` を無条件に生成する。`src/tui/browse.rs::comment_status` はbusyもnoticeもない場合に空白を返すため、通常時も不要な `|` が残る。状態の取得失敗ではなくtitleの組立が原因。
+- 同じ `src/comment.rs` 内で、NO_COLORの削除記号生成と色あり変更改行の `↵` 可視化も背景Red／Greenを判定している。削除styleだけの変更は、削除記号・末尾改行の方向表示を壊す。既存のUnicode内容再構成試験とTestBackend cell試験もこの色に依存するため、同時に整合させる。
+- 既存の `docs/testing/manual-acceptance.md`「#18 改訂・指摘修正後のRoot再検証」には281成功等と実端末／実Backlog受入未完了が記録されている。今回のPlanningでは本番APIに接続せず、製品・テスト・fixture・設定・依存を編集していない。過去の成功・Review・Code Review Approveを変更後の承認へ流用しない。
+
+#### 合意した変更・要件
+
+Rootの質問に対し、利用者は以下の範囲と基本設計の更新時期を確認した。「値が丸ごとnull」とobject／arrayの内部のnullの違いは具体例を示して確認済み。
+
+1. **削除差分の視認性**：赤系背景＋取り消し線という既存要件を維持して高コントラスト化する。実装の採用配色は `Color::Rgb(255,255,255)`（#FFFFFF）前景＋`Color::Rgb(128,0,0)`（#800000）背景＋`CROSSED_OUT`。端末基本色名ではなく明示RGBを使い、追加側のBlack／Greenと通常文字は今回変更しない。Planningの小さな数値計算では、このRGBペアのsRGB相対輝度によるcontrast ratioは約10.95:1だった。数値は選定根拠にとどめ、取り消し線・実端末の色再現・実際の可読性の保証にしない。NO_COLORでは従来の色なし `[-削除-]`／`{+追加+}` を維持する。
+2. **null表示の範囲**：TUI Commentの `changeLog[].originalValue`／`newValue` 自体がJSON nullなら、その表示用値を引用符なしの `未設定` にする。既知項目・description・未知fieldのすべてに適用する。API原値の型で判定し、文字列置換やJSON内部の再帰変換はしない。
+   - `startDate: "2026-11-01" -> null` は `START DATE: 2026-11-01 -> 未設定`。
+   - descriptionの `null -> ""` は `詳細: 未設定 -> ""`、`"null" -> null` は `詳細: "null" -> 未設定`。片方がnullならinline差分や空本文の見出しへ進めない。
+   - 未知fieldも同じnull規則とし、識別子と残りの安全な前後値を保持する。
+   - object／array内のnull（例 `{"x":null}`、`[1,null]`）はそのまま。文字列 `"null"` は未設定へ変換しない。空文字・数値0・falseも未設定にしない。descriptionの型を保つJSON引用と、他fieldの既存の文字列表示方法は維持し、全fieldの引用方式を一括変更しない。
+   - 通常本文、content自体のnull、作者／日時、Issue Detail、API／Serviceのデータ・validation、CLI固定表示、JSON出力・送信値には適用しない。秘匿が必要な場合は既存の安全表示を優先する。
+3. **Comment枠**：アプリが枠titleに生成する `|` を削除する。通常時は `Comment`（focus時は `> Comment`）。取得中は `Comment Loading... Esc: cancel`、通知時は `Comment No more comments` や `Comment Cancelled; display retained` のように必要な文字列を空白で区切る。状態／通知が空なら区切り用空白も付けない。本文や履歴の値に含まれる `|` は削除しない。focus枠・エラーpopup・失敗／取消／終端の通知内容と発生条件・消去規則を維持する。
+4. **基本設計の整合**：本Plan全文の明示承認後、このPlanningで `docs/designs/backlog-cli.md`「課題コメント」の削除可読性、null表示の範囲、Comment枠の必要な状態／通知と区切りの記述だけを整合する。他の設計箇所・Domain境界は変更しない。README／CONTRIBUTING、今後の受入手順、製品・テスト・fixtureは別のImplementationで整合し、過去の観測・hash・停止記録を保持する。新しいGLOSSARY／ADRは作らない。
+
+#### 実装方針・影響範囲
+
+- 新しいImplementation Rootは、Issue #18本文と全改訂コメント、本Planの両Issue #18節・基本設計、現在の全差分とuntracked・受入履歴を直接確認する。既存部分実装・未コミット変更を保持し、独断でcommit／stash／破棄しない。今回の3点だけでなくIssue #18の残る必須受入までを同じWork Itemで完了させる。
+- `src/comment.rs::preview` の表示用値組立で元のJSON nullを扱う最小分岐を追加する。既存 `safety::json/text` と、最終文書・NO_COLOR文書のsecret再検査を保つ。CLIの `display`／`content` へこの変換を共通化しない。descriptionの文字列同士の差分・10,000境界・取得task内準備は再設計しない。
+- 同ファイルの削除styleと、NO_COLOR／変更改行の削除判定を整合する。必要なら削除背景を同ファイル内の小さな定数で共用し、変更箇所の漏れを防ぐ。色変更のために文書型・差分engine・意味判定frameworkを新設しない。内容再構成・末尾改行・TAB可視化・投影後redactionを維持する。
+- `src/tui.rs::Shell::panel` のComment titleだけで、空状態を含む区切りを整える。必要なら `src/tui/browse.rs::comment_status` の空白組立も最小修正する。唯一のcallerを再確認し、busy／世代／paging／noticeの状態管理やAPI取得順を変更しない。`src/tui/comment.rs` のprojection・固定行・scrollは回帰確認対象で、不要な編集はしない。
+- `tests/comment_preview.rs` の公開preview、`src/tui.rs` のShell→TestBackend cell、`tests/tui_process.rs` の実bl→PTY／HTTPSを更新・拡張する。色に依存する旧新値再構成・TAB・末尾改行の全期待値を漏れなく整合する。`tests/tui_shell.rs` の配置と `tests/issue_comment.rs` のCLI／JSON不変も回帰確認する。既存fixture／stepsを再利用し、必要な入力と期待値だけを追加する。
+- README／CONTRIBUTINGの該当するComment表示・再現説明と `docs/testing/manual-acceptance.md` の今後の受入手順・変更後の実測を整合する。新依存・Cargo設定・lockfile・exportの変更は不要。全callerはImplementation開始時の差分で再確認する。
+
+#### 制約・対象外
+
+元Issue #18と前節の制約・安全性を維持する。新しい配色設定・theme切替・端末検出／自動補正・色fallback用の新機構、永続状態、追加GET、全件取得、通知の廃止、API／CLI／JSONのnull変換、JSONの再帰変換、文字列のnull置換、他Issueのc/e・フォーム・editorは追加しない。NO_COLORは既存機構を用いる。
+
+実Backlogへの書込み・検証データの準備／変更／復元は別の明示許可が必要であり、このPlan・Issueの承認に含めない。認証情報を別の場所から補わず、key・機密本文・raw responseを記録しない。実サービスへの意図的な障害・過大負荷、push／merge／release公開／deploy、既存変更の破棄を行わない。PlanningではImplementationを開始しない。
+
+#### 完了条件
+
+- 削除が指定した白文字＋暗赤背景＋取り消し線となり、追加・通常文字・NO_COLOR記号・変更改行・TAB・安全表示が回帰していない。利用者の実端末で削除文字が読み取れることを確認済み。RGBやcell assertの成功だけでは合格にしない。
+- 既知／description／未知fieldの前後値自体がnullなら未設定。入れ子null・文字列null・空文字・0・falseと区別し、原データ・CLI・JSONが不変。
+- 通常・focus・取得中・終端・取消のComment枠にアプリ生成の `|` がなく、必要な取得状態・通知と既存エラーpopupが残る。本文等の `|` は保持する。
+- 既存のn/p/g/G・R成功時だけ交換・失敗／取消／古い応答による本文／選択／scroll／busyの非破壊、JST・固定行・14／6配置・resize／極小保護・10,000境界を維持し、総GET数を増やさない。
+- 関連試験・正式チェック・変更後releaseのローカルHTTPS／PTY・必須の実端末／実Backlog受入を再実行して結果を記録する。未実施・失敗ならIssue #18は未完了とし、過去の281成功等やReview・Code Review Approveを流用しない。
+- Plan・基本設計・Issue追補・該当説明・テスト・今後の受入手順が整合し、過去の履歴・未コミット部分実装を保持する。初版全体や後続Issueの完了と混同しない。
+
+#### 動作確認方法
+
+既存 `tdd` Skillによる、一つの失敗テスト→最小実装の縦sliceを使う。公開seamは前節と同じ。公開 `comment::preview`／`display` は値・style・原値非改変・安全表示（実端末の読みやすさは捕捉しない）、Shellの入力→TestBackendはtitle・cell装飾・配置（OS描画差は捕捉しない）、実bl→既存PTY／ローカルHTTPSは操作・通信・状態保持・復元（実APIの全データや実端末の可読性は捕捉しない）、CLIプロセスはstdout／JSON／終了コードの既存契約を確認する。内部関数の形やtask数に依存するテスト・新harnessは作らない。
+
+- **色の回帰**：削除foreground／backgroundを期待RGBのliteralでassertし、取り消し線も確認する。全削除／部分置換／改行のみ削除・末尾改行／日本語・結合文字・emoji・TABを両モードで検証する。NO_COLORの全cell fg／bg Reset、削除／追加記号、変更改行の方向と元の改行、旧新値の内容再構成を維持する。色変更による内容欠落やsecret再構成を検出し、定数と同じ定数を比べるだけの試験にしない。
+- **nullの回帰**：startDate、assigner等の既知field・description・未知fieldで、前だけ／後だけ／両方nullを試す。`詳細: 未設定 -> ""`、`詳細: "null" -> 未設定`、`START DATE: 2026-11-01 -> 未設定` を既知の期待値にする。入れ子object／arrayのnull・文字列null・空文字・0・false・巨大数値・本文同居を確認する。API入力Valueが前後で不変、CLI固定表示は従来のnull、JSONはnull型と文字列型を保持することをassertする。
+- **titleの回帰**：100×24と40×12、focusあり／なし、idle／Loading／空一覧／No more comments／取消／失敗popupで、titleに生成 `|` がなく必要な状態／通知は消えないことを確認する。本文・履歴内の `|` は残る。R失敗時の本文／選択／scroll保持、R成功交換、取消、課題切替後の古い成功／失敗と新busyを既存試験で再確認する。
+- **安全・境界**：API key・Span境界のsecret再構成、null表示やlabelと前後値の組立後再検査、外部ANSI／OSC無害化、TAB・変更改行・10,000／10,001の限定例外を既存境界で確認する。表示変換のためだけの追加通信なしを総GET数・HTTP記録で照合する。
+- **実端末／実Backlog**：変更後releaseのhash、端末名／版・macOS・NO_COLORの有無、100×24／40×12／極小を記録し、削除文字と取り消し線が読めること・追加との区別・折返し／scroll・JST固定行・title／取得状態／通知・n/p/g/G/Rを利用者と確認する。profile origin `https://lazybl.backlog.com/` を確認し、変更後TUIでBLCLI-1の `839099888`／`839099889` の全削除／全追加と既存のコメント／本文なし履歴を確認する。開始日等のnull履歴は既存の読取り可能なデータがあれば使い、特殊値・未知field・null境界はharnessで検証できるため書込みによる準備を要求しない。必須の実Backlog受入自体はharnessで代替しない。読めない場合や認証不足・未実施は未完了として理由と再開条件を残す。
+- 記録先は既存 `docs/testing/manual-acceptance.md`。過去の受入・hash・停止記録を消さず、今回の手順・結果・未確認事項を区別する。前節の必須受入を省略しない。
+
+```sh
+cargo test --locked --test comment_preview
+cargo test --locked --lib tui::tests::
+cargo test --locked --test tui_process comment_
+cargo test --locked --test tui_shell --test issue_comment
+cargo fmt --all -- --check
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+cargo audit --file Cargo.lock
+cargo build --locked --release --target aarch64-apple-darwin --bins
+git diff --check
+```
+
+cargo-audit 0.22.2と既存正式コマンドを維持する。各終了コード・警告・失敗・環境制約を記録し、監査前後でlockfile不変を確認する。製品の変更後に全チェック・必要な独立Review・Code Reviewの承認を取り直す。TestBackend／PTYの成功と実端末の可読性受入を区別する。
+
+#### Planningの保存・Work Item受渡し・終了
+
+本Plan改訂全文をPlannotatorへ提出し、明示Approve後に同じ正式パスへ保存・readbackし、合意した基本設計箇所だけを整合する。正式Planのパスと全文を `taskflow-to-ticket` へ渡す。既存Issue #18一件を再利用し、残る実装・受入と今回の3点を同じ新しいImplementationセッションで確認する案を別途承認する。作業内容はBug Fixであり、既存Featureタイトルやlabelを変更する理由にはしない。
+
+Plan承認・tracker設定承認・分割承認・最終追補本文と公開先の保存公開承認を分ける。新規Issue・label・依存関係は増やさず、既存タイトル・本文・OPEN状態・Blocked by／native関係・過去コメントを変更しない。明示承認した改訂コメントだけをIssue #18へ追記する。正式Plan保存・Work Item承認・公開とreadbackの成立後に、確定Issue参照・cwd・改訂Planと部分実装保持を明記した新しいRoot向けImplementation再開kickoffを提示して停止する。実装・Worker起動・merge／release／deployは行わない。
 
 ## 開発順序と受渡し
 

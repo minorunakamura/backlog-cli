@@ -79,7 +79,7 @@ fn bl_loads_real_space_and_projects_using_selected_profile_and_restores_on_q() {
         "Issue List",
         "Issue Detail",
         "Comment",
-        "Not implemented",
+        "Select an issue",
     ] {
         assert!(screen.contains(text), "missing {text}: {result}");
     }
@@ -310,6 +310,7 @@ fn browsing_routes() -> Value {
         let key = format!("B-{n}");
         routes["routes"][format!("/api/v2/issues/{key}")] =
             json!({"body":detail_issue(&key, "Preview body").to_string()});
+        routes["routes"][format!("/api/v2/issues/{key}/comments")] = json!({"body":"[]"});
     }
     routes
 }
@@ -806,7 +807,7 @@ fn detail_issue(key: &str, body: &str) -> Value {
         "description":body,"issueType":{"name":"Task"},"priority":{"name":"Medium"},
         "assignee":null,"status":{"name":"Open"},"resolution":null,"startDate":null,
         "dueDate":null,"milestone":[{"name":"v1"},{"name":"v2"}],
-        "created":"2026-01-01","updated":"2026-02-02",
+        "created":"2026-01-01T00:00:00Z","updated":"2026-02-02T00:00:00Z",
         "url":"https://evil.invalid/test-secret"})
 }
 fn detail_routes() -> Value {
@@ -862,10 +863,13 @@ fn preview_debounces_selection_and_enter_reuses_safely_rendered_detail() {
     );
     assert!(output.contains("[REDACTED]"), "{result}");
     let requests = h.requests();
-    assert_eq!(requests.len(), 6, "{requests:?}");
-    assert_eq!(requests[4]["path"], "/api/v2/issues/B-3");
-    assert_eq!(requests[5]["path"], "/api/v2/projects/2");
-    let debounce = requests[4]["at"].as_f64().unwrap() - result["sent_at"][1].as_f64().unwrap();
+    assert_eq!(requests.len(), 7, "{requests:?}");
+    let detail = requests
+        .iter()
+        .find(|r| r["path"] == "/api/v2/issues/B-3")
+        .unwrap();
+    assert!(requests.iter().any(|r| r["path"] == "/api/v2/projects/2"));
+    let debounce = detail["at"].as_f64().unwrap() - result["sent_at"][1].as_f64().unwrap();
     assert!(
         (0.12..1.0).contains(&debounce),
         "expected approximately 150ms debounce, got {debounce}"
@@ -983,7 +987,7 @@ fn detail_reload_replaces_only_after_issue_and_rule_success_and_keeps_list_focus
         "dismissal must retain scroll: {result}"
     );
     assert_eq!(browse_requests(&h).len(), 4, "{result}");
-    assert_eq!(h.requests().len(), 11, "{result}");
+    assert_eq!(h.requests().len(), 12, "{result}");
 }
 
 #[test]
@@ -1023,7 +1027,7 @@ fn selection_change_hides_other_body_immediately_and_late_preview_cannot_clear_n
             result["snapshots"][3].as_str().unwrap().contains("B-3"),
             "{result}"
         );
-        assert_eq!(h.requests().len(), 8, "{result}");
+        assert_eq!(h.requests().len(), 11, "{result}");
     }
 }
 
@@ -1141,7 +1145,7 @@ fn browser_error_popup_survives_cancelled_old_response_resize_and_clears_on_sele
         "j also clears the old notification: {result}"
     );
     assert_eq!(browse_requests(&h).len(), 4, "{result}");
-    assert_eq!(h.requests().len(), 9, "{result}");
+    assert_eq!(h.requests().len(), 11, "{result}");
 }
 
 #[test]
@@ -1202,7 +1206,7 @@ fn closed_detail_reload_cannot_replace_document_or_busy_after_escape_and_resize_
             {"wait":"Loading... Esc: cancel","keys":"\u{1b}"},
             {"wait":"> Issue List","pause":0.6,"keys":"\r"},
             {"wait":"Retained line 30","resize":[12,40]},
-            {"wait":"Retained line 18","keys":"G"},
+            {"wait":"Retained line 20","keys":"G"},
             {"wait":"Retained line 30","keys":"g"},
             {"wait":"TITLE: Detail B-1","keys":"G"},
             {"wait":"Retained line 30","resize":[60,160]},
@@ -1223,7 +1227,7 @@ fn closed_detail_reload_cannot_replace_document_or_busy_after_escape_and_resize_
             .contains("TITLE: Detail B-1"),
         "{result}"
     );
-    assert_eq!(h.requests().len(), 7, "{result}");
+    assert_eq!(h.requests().len(), 8, "{result}");
 }
 
 #[test]
@@ -1253,7 +1257,7 @@ fn superseded_detail_reload_failure_cannot_clear_new_reload_busy() {
         "{result}"
     );
     assert!(!snapshot.contains("Failed:"), "{result}");
-    assert_eq!(h.requests().len(), 9, "{result}");
+    assert_eq!(h.requests().len(), 10, "{result}");
     assert_eq!(browse_requests(&h).len(), 4);
 }
 
@@ -1277,7 +1281,7 @@ fn preview_rejects_a_different_issue_response_without_showing_its_body_or_fetchi
             .contains("Wrong issue body")
     );
     assert!(result["screen"].as_str().unwrap().contains("B-1"));
-    assert_eq!(h.requests().len(), 5, "{result}");
+    assert_eq!(h.requests().len(), 6, "{result}");
 }
 
 #[test]
@@ -1298,7 +1302,7 @@ fn documented_detail_fixture_runs_through_real_bl_without_opening_browser() {
         std::fs::read_to_string(h.root.join("open-args")).unwrap(),
         format!("1\n{}/view/B-3\n", h.origin)
     );
-    assert_eq!(h.requests().len(), 9, "{result}");
+    assert_eq!(h.requests().len(), 10, "{result}");
     assert!(!result["stdout"].as_str().unwrap().contains("test-secret"));
     assert!(
         result["snapshots"][5]
@@ -2671,13 +2675,13 @@ fn region_keys_preserve_selection_history_scroll_and_inflight_detail_reload_with
     );
     for index in 0..=7 {
         assert_eq!(
-            result["request_counts"][index], 6,
+            result["request_counts"][index], 7,
             "settled focus must not add any GET: {result}"
         );
     }
     for index in 8..=11 {
         assert_eq!(
-            result["request_counts"][index], 7,
+            result["request_counts"][index], 8,
             "focus must not duplicate/cancel reload: {result}"
         );
         assert!(
@@ -2690,7 +2694,7 @@ fn region_keys_preserve_selection_history_scroll_and_inflight_detail_reload_with
     }
     for index in 12..=15 {
         assert_eq!(
-            result["request_counts"][index], 8,
+            result["request_counts"][index], 9,
             "completed focus must not add any GET: {result}"
         );
     }
@@ -2714,7 +2718,7 @@ fn region_keys_preserve_selection_history_scroll_and_inflight_detail_reload_with
             "{result}"
         );
     }
-    assert_eq!(h.requests().len(), 8, "{result}");
+    assert_eq!(h.requests().len(), 9, "{result}");
 }
 
 #[test]
@@ -2841,5 +2845,536 @@ fn region_keys_work_during_startup_and_empty_projects_and_ctrl_c_still_restores(
             if interrupt { 1 } else { 2 },
             "{result}"
         );
+    }
+}
+
+fn comment_item(id: u128, content: Value, changes: Value) -> Value {
+    json!({"id":id.to_string().parse::<serde_json::Number>().unwrap(),"content":content,
+        "changeLog":changes,"createdUser":{"id":7,"name":"Comment author"},
+        "created":"2026-03-01T00:00:00Z","updated":"2026-03-02T00:00:00Z"})
+}
+
+#[test]
+fn comment_initial_preview_shows_latest_null_history_with_no_formatting_get() {
+    let mut routes = detail_routes();
+    routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"commentItems":[
+        comment_item(1,json!(null),json!([])),
+        comment_item(999999999999999999999999999999,json!(null),json!([
+            {"field":"limitDate","originalValue":null,"newValue":"2026-04-01"},
+            {"field":"assigner","originalValue":"old","newValue":"new"},
+            {"field":"futureField","originalValue":{"nested":[true,null]},"newValue":999999999999999999999999999999_u128.to_string().parse::<serde_json::Number>().unwrap()}
+        ]))
+    ]});
+    routes["routes"]["/api/v2/issues/B-1/comments"]["commentItems"][1]["createdUser"]["name"] =
+        json!("Comment author test-secret\u{1b}]52;c;bad\u{7}");
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"l\rl","resize":[20,60]},
+            {"wait":"futureField","keys":"q"}
+        ]),
+    );
+    let screen = result["screen"].as_str().unwrap();
+    for expected in [
+        "Comment author",
+        "2026/03/01 09:00:00",
+        "DUE DATE",
+        "ASSIGNEE",
+        "futureField",
+        "999999999999999999999999999999",
+    ] {
+        assert!(screen.contains(expected), "missing {expected}: {result}");
+    }
+    let output = result["stdout"].as_str().unwrap();
+    assert!(!output.contains("test-secret") && !output.contains("\x1b]52"));
+    assert!(output.contains("[REDACTED]"));
+    let requests = h.requests();
+    let comments: Vec<_> = requests
+        .iter()
+        .filter(|r| r["path"].as_str().unwrap().contains("/comments"))
+        .collect();
+    assert_eq!(comments.len(), 1, "{requests:?}");
+    assert!(
+        comments[0]["path"]
+            .as_str()
+            .unwrap()
+            .contains("count=20&order=desc")
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"] == "/api/v2/issues/B-1")
+            .count(),
+        1,
+        "null history must not fetch formatting issue"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"] == "/api/v2/projects/2")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn comment_history_has_visible_field_value_separators_without_metadata() {
+    let mut routes = detail_routes();
+    routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"commentItems":[
+        comment_item(1, Value::Null, json!([
+            {"field":"limitDate","originalValue":null,"newValue":"2026-04-01"},
+            {"field":"assigner","originalValue":"old","newValue":"new"},
+            {"field":"foo","originalValue":"bar | kept","newValue":"baz"},
+            {"field":"foob","originalValue":"ar","newValue":"az"}
+        ]))
+    ]});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"l\rl","resize":[24,80]},
+            {"wait":"foob: ar -> az","keys":"q"}
+        ]),
+    );
+    let screen = result["snapshots"][1].as_str().unwrap();
+    assert!(screen.contains("╔> Comment═"), "{screen}");
+    for expected in [
+        "DUE DATE: 未 設 定  -> 2026-04-01",
+        "ASSIGNEE: old -> new",
+        "foo: bar | kept -> baz",
+        "foob: ar -> az",
+        "Comment author",
+        "2026/03/01 09:00:00",
+    ] {
+        assert!(screen.contains(expected), "missing {expected}: {screen}");
+    }
+}
+
+#[test]
+fn comment_pages_use_exclusive_huge_id_boundaries_and_oldest_is_one_direct_ascending_get() {
+    let base = 999999999999999999999999999000_u128;
+    let mut routes = detail_routes();
+    routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"commentItems":(1..=45).map(|n|
+        comment_item(base+n,json!(null),json!([{"field":"history","originalValue":null,"newValue":format!("History {n:02}")}]))
+    ).collect::<Vec<_>>()});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"l\rl","resize":[20,60]},
+            {"wait":"History 45","keys":"n".repeat(20)},
+            {"wait":"History 25","keys":"n".repeat(20)},
+            {"wait":"History 05","keys":"n".repeat(5)},
+            {"wait":"No more comments","keys":"p"},
+            {"wait":"History 02","keys":"g"},
+            {"wait":"History 45","keys":"G"},
+            {"wait":"History 01","keys":"p".repeat(20)},
+            {"wait":"History 21","keys":"p".repeat(20)},
+            {"wait":"History 41","keys":"p".repeat(5)},
+            {"wait":"No more comments","keys":"p"},
+            {"wait":"No more comments","keys":"q"}
+        ]),
+    );
+    let requests = h.requests();
+    let paths: Vec<_> = requests
+        .iter()
+        .filter_map(|r| r["path"].as_str().filter(|p| p.contains("/comments")))
+        .collect();
+    let prefix = "/api/v2/issues/B-1/comments?count=20&order=";
+    assert_eq!(
+        paths,
+        vec![
+            format!("{prefix}desc"),
+            format!("{prefix}desc&maxId={}", base + 26),
+            format!("{prefix}desc&maxId={}", base + 6),
+            format!("{prefix}desc&maxId={}", base + 1),
+            format!("{prefix}desc"),
+            format!("{prefix}asc"),
+            format!("{prefix}asc&minId={}", base + 20),
+            format!("{prefix}asc&minId={}", base + 40),
+            format!("{prefix}asc&minId={}", base + 45)
+        ]
+    );
+    for index in [4, 10, 11] {
+        let screen = result["snapshots"][index].as_str().unwrap();
+        assert!(screen.contains("╔> Comment No more comments═"), "{screen}");
+        assert!(!screen.contains("Comment |"), "{screen}");
+    }
+    // Latest/oldest are comment endpoints, never document Home/End; repeated empty end is local.
+    assert_eq!(result["request_counts"][5], result["request_counts"][4]);
+    assert_eq!(
+        result["request_counts"][7].as_u64().unwrap(),
+        result["request_counts"][6].as_u64().unwrap() + 1
+    );
+    assert_eq!(result["request_counts"][11], result["request_counts"][10]);
+    assert!(requests.iter().all(|r| r["method"] == "GET"));
+    assert_eq!(browse_requests(&h).len(), 4);
+}
+
+#[test]
+fn comment_reload_failure_keeps_selection_and_body_scroll_then_success_replaces_only_comment() {
+    let h = Harness::new(serde_json::from_str(include_str!("fixtures/tui_comment.json")).unwrap());
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        serde_json::from_str(include_str!("fixtures/tui_comment_steps.json")).unwrap(),
+    );
+    for index in [3, 5] {
+        let screen = result["snapshots"][index].as_str().unwrap();
+        assert!(
+            screen.contains("Comment 1 line 16") && !screen.contains("Comment 1 line 01"),
+            "{result}"
+        );
+    }
+    let fresh = result["snapshots"][6].as_str().unwrap();
+    for expected in ["Comment author", "2026/03/01 09:00:00", "Fresh comment"] {
+        assert!(fresh.contains(expected), "{expected}: {result}");
+    }
+    let history = result["snapshots"][7].as_str().unwrap();
+    for expected in [
+        "DUE DATE",
+        "ASSIGNEE",
+        "futureField",
+        "nested",
+        "999999999999999999999999999999",
+    ] {
+        assert!(history.contains(expected), "{expected}: {result}");
+    }
+    assert!(
+        result["snapshots"][9]
+            .as_str()
+            .unwrap()
+            .contains("futureField"),
+        "focus preserves comment scroll: {result}"
+    );
+    assert_eq!(
+        result["request_counts"],
+        json!([4, 9, 9, 9, 10, 10, 13, 13, 13, 13])
+    );
+    assert_eq!(browse_requests(&h).len(), 4);
+    let output = result["stdout"].as_str().unwrap();
+    assert!(!output.contains("test-secret") && !output.contains("\x1b]52"));
+    assert!(output.contains("[REDACTED]"));
+    let requests = h.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"].as_str().unwrap().contains("/comments"))
+            .count(),
+        3
+    );
+    assert!(requests.iter().all(|r| r["method"] == "GET"));
+}
+
+#[test]
+fn comment_full_layout_fixed_header_and_compact_body_tail_are_reachable() {
+    let h = Harness::new(serde_json::from_str(include_str!("fixtures/tui_comment.json")).unwrap());
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Comment 2 line 01","keys":"Ll","resize":[20,60]},
+            {"wait":"> Comment","keys":"\u{1b}[F"},
+            {"wait":"Comment 2 line 30","keys":"q"}
+        ]),
+    );
+    for index in [0, 2] {
+        let screen = result["snapshots"][index].as_str().unwrap();
+        for text in ["Comment author", "2026/03/01 09:00:00"] {
+            assert!(screen.contains(text), "{text}: {result}");
+        }
+        let comment = if index == 0 {
+            screen
+                .lines()
+                .skip(17)
+                .take(6)
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            screen.to_owned()
+        };
+        for removed in [
+            "COMMENT",
+            "CHANGE HISTORY",
+            "#2",
+            "AUTHOR:",
+            "CREATED:",
+            "UPDATED:",
+            "CHANGES",
+        ] {
+            assert!(!comment.contains(removed), "{removed}: {result}");
+        }
+    }
+    assert_eq!(result["request_counts"][0], result["request_counts"][2]);
+}
+
+#[test]
+fn comment_selection_clears_old_document_and_late_initial_response_cannot_clear_new_busy() {
+    for old_status in [200, 500] {
+        let mut routes = detail_routes();
+        routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"commentItems":[comment_item(1,json!(null),json!([{"field":"initial","originalValue":null,"newValue":"INITIAL COMMENT"}]))]});
+        routes["routes"]["/api/v2/issues/B-2/comments"] = json!({"commentItems":[comment_item(2,json!(null),json!([{"field":"old","originalValue":null,"newValue":"OLD COMMENT MUST NOT APPEAR"}]))],"header_delay":0.5,"status":old_status});
+        routes["routes"]["/api/v2/issues/B-3/comments"] = json!({"status":500,"header_delay":0.9});
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"Issue 01","keys":"l\rl","resize":[20,60]},
+                {"wait":"INITIAL COMMENT","keys":"HjL"},
+                {"wait":"B-2","pause":0.2,"keys":"HjL"},
+                {"wait":"B-3","pause":0.6,"keys":""},
+                {"wait":"Comment preview failed","keys":"q"}
+            ]),
+        );
+        for index in [2, 3, 4] {
+            assert!(
+                !result["snapshots"][index]
+                    .as_str()
+                    .unwrap()
+                    .contains("INITIAL COMMENT"),
+                "selection must clear old document immediately: {result}"
+            );
+        }
+        let pending = result["snapshots"][3].as_str().unwrap();
+        assert!(
+            pending.contains("B-3") && pending.contains("Loading... Esc: cancel"),
+            "{result}"
+        );
+        assert!(
+            !result["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("OLD COMMENT MUST NOT APPEAR"),
+            "{result}"
+        );
+        assert!(
+            !pending.contains("Failed:"),
+            "old error must not affect new selection: {result}"
+        );
+        let requests = h.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["path"].as_str().unwrap().contains("/comments"))
+                .count(),
+            3
+        );
+    }
+}
+
+#[test]
+fn comment_superseded_reload_and_escape_keep_current_document_and_new_busy_without_focus_gets() {
+    let mut routes = detail_routes();
+    let item = |id, text| {
+        comment_item(
+            id,
+            json!(null),
+            json!([{"field":"history","originalValue":null,"newValue":text}]),
+        )
+    };
+    routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"sequence":[
+        {"commentItems":[item(1,"Retained comment")]},
+        {"status":500,"header_delay":0.4},
+        {"commentItems":[item(2,"Fresh comment")],"header_delay":0.9},
+        {"commentItems":[item(3,"Cancelled comment MUST NOT APPEAR")],"header_delay":0.6}
+    ]});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"l\rl","resize":[20,60]},
+            {"wait":"Retained comment","keys":"R"},
+            {"wait":"Loading... Esc: cancel","keys":"R"},
+            {"wait":"Loading... Esc: cancel","pause":0.5,"keys":""},
+            {"wait":"Fresh comment","keys":"R"},
+            {"wait":"Loading... Esc: cancel","keys":"\u{1b}"},
+            {"wait":"> Issue List","keys":"L"},
+            {"wait":"Fresh comment","pause":0.7,"keys":"h"},
+            {"wait":"> Issue Detail","keys":"l"},
+            {"wait":"Fresh comment","keys":"q"}
+        ]),
+    );
+    let pending = result["snapshots"][3].as_str().unwrap();
+    assert!(
+        pending.contains("Retained comment")
+            && pending.contains("Loading... Esc: cancel")
+            && !pending.contains("Failed:"),
+        "{result}"
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("Cancelled comment MUST NOT APPEAR"),
+        "{result}"
+    );
+    for i in [7, 9] {
+        let screen = result["snapshots"][i].as_str().unwrap();
+        assert!(
+            screen.contains("Fresh comment") && !screen.contains("Loading... Esc: cancel"),
+            "{result}"
+        );
+    }
+    let counts = &result["request_counts"];
+    assert_eq!(counts[5], counts[6]);
+    assert_eq!(counts[6], counts[9], "Esc/focus must not add any GET");
+    assert_eq!(
+        h.requests()
+            .iter()
+            .filter(|r| r["path"].as_str().unwrap().contains("/comments"))
+            .count(),
+        4
+    );
+    assert_eq!(browse_requests(&h).len(), 4);
+}
+
+#[test]
+fn comment_description_inline_and_over_limit_warning_do_not_add_formatting_gets() {
+    let mut routes = detail_routes();
+    routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"commentItems":[
+        comment_item(1,Value::Null,json!([{"field":"description","originalValue":format!("HIDDEN{}", "x".repeat(9995)),"newValue":"x"},{"field":"other","originalValue":null,"newValue":"other visible"}])),
+        comment_item(2,Value::Null,json!([{"field":"description","originalValue":"common old\nlast\n","newValue":"common new\nlast\n"}]))
+    ]});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"l\rl","resize":[20,60]},
+            {"wait":"common [-old-]{+new+}","keys":"n"},
+            {"wait":"10,000","keys":"\u{1b}[F"},
+            {"wait":"other visible","keys":"q"}
+        ]),
+    );
+    assert!(!result["stdout"].as_str().unwrap().contains("HIDDEN"));
+    let requests = h.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"].as_str().unwrap().contains("/comments"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"] == "/api/v2/issues/B-1")
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"] == "/api/v2/projects/2")
+            .count(),
+        1
+    );
+    assert_eq!(result["request_counts"][1], result["request_counts"][3]);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["restored"], true);
+}
+
+#[test]
+fn detail_jst_created_updated_do_not_change_start_due_or_body_dates() {
+    let mut routes = detail_routes();
+    let mut issue = detail_issue("B-1", "Body 2026-12-31T23:59:59Z");
+    issue["created"] = json!("2026-12-31T23:59:59.987Z");
+    issue["updated"] = json!("2024-03-01T00:30:00+14:00");
+    issue["startDate"] = json!("2026-12-31");
+    issue["dueDate"] = json!("2027-01-01");
+    routes["routes"]["/api/v2/issues/B-1"] = json!({"body":issue.to_string()});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Issue 01","keys":"l\r","resize":[24,80]},
+            {"wait":"Body 2026-12-31T23:59:59Z","keys":"q"}
+        ]),
+    );
+    let screen = result["screen"].as_str().unwrap();
+    for expected in [
+        "CREATED: 2027/01/01 08:59:59",
+        "UPDATED: 2024/02/29 19:30:00",
+        "START: 2026-12-31",
+        "DUE: 2027-01-01",
+        "Body 2026-12-31T23:59:59Z",
+    ] {
+        assert!(screen.contains(expected), "{expected}: {result}");
+    }
+}
+
+#[test]
+fn comment_empty_loading_cancel_error_titles_retain_states_without_generated_pipes() {
+    for (width, height) in [(100, 24), (40, 12)] {
+        let mut routes = detail_routes();
+        routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"sequence":[
+            {"commentItems":[]},
+            {"commentItems":[],"header_delay":0.5},
+            {"status":500,"header_delay":0.5}
+        ]});
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"Issue 01","keys":"l\rl","resize":[height,width]},
+                {"wait":"No comments","keys":"R"},
+                {"wait":"> Comment Loading... Esc: cancel","keys":"\u{1b}"},
+                {"wait":"> Issue List","keys":"L"},
+                {"wait":"> Comment Cancelled; display retained","keys":"R"},
+                {"wait":"> Comment Loading... Esc: cancel","keys":""},
+                {"wait":"Failed:","keys":"\r"},
+                {"wait":"╔> Comment═","keys":"q"}
+            ]),
+        );
+        for index in [1, 7] {
+            let screen = result["snapshots"][index].as_str().unwrap();
+            assert!(
+                screen.contains("╔> Comment═") && screen.contains("No comments"),
+                "{screen}"
+            );
+            assert!(
+                !screen.contains("Loading...") && !screen.contains("Cancelled;"),
+                "{screen}"
+            );
+        }
+        for index in [2, 5] {
+            let screen = result["snapshots"][index].as_str().unwrap();
+            assert!(
+                screen.contains("╔> Comment Loading... Esc: cancel═"),
+                "{screen}"
+            );
+        }
+        assert!(
+            result["snapshots"][4]
+                .as_str()
+                .unwrap()
+                .contains("╔> Comment Cancelled; display retained═")
+        );
+        assert!(result["snapshots"][6].as_str().unwrap().contains("Failed:"));
+        assert!(
+            result["snapshots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|screen| !screen.as_str().unwrap().contains("Comment |"))
+        );
+        let requests = h.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["path"].as_str().unwrap().contains("/comments"))
+                .count(),
+            3
+        );
+        assert_eq!(requests.len(), 9, "no title-only GETs: {requests:?}");
+        assert!(requests.iter().all(|r| r["method"] == "GET"));
     }
 }
