@@ -1569,3 +1569,35 @@ Root自身の実Backlog観測ではなく、Rootはprofile originのみ確認し
 最終Code Review gateはこの記録後にRootが別途呼び、toolのskippedまたは明示Approveを確認するまで最終完了とはしない。
 GitHub Actions・実IME専用ignored試験・配布／公開は未実施。既存u16 scroll上限、近似diffのdeadline、
 他端末の字幅・装飾差、PTY総budgetによるタイミング依存の残余リスクは維持する。merge／release公開／deployは行わない。
+
+### #18 / PR #49 CI失敗後のテスト同期修正
+
+対象revisionは `6f87dbca1a98965370ebc0966313a00291e4974d` + 本テスト／記録の未コミット差分。
+CI run `40920054323` / job `123610524797`（ログ `/tmp/backlog49-ci-failed.log`）では
+`tui_process` が64成功・1失敗。`comment_full_layout_fixed_header_and_compact_body_tail_are_reachable` は
+8秒期限に達し、未実行stepは `> Comment` 待ちのEndと末尾30行目待ちのq、最終画面は `> Project List` だった。
+終了待ちではなくfocus前提が未成立だった。修正前のRoot単独1+20回、8並列80回は全成功し、ローカルでは再現していない
+（`/tmp/backlog49-repro.uyzjBN/`、`/tmp/backlog49-parallel-repro.Q4rqC1/`）。
+
+同stepの `Ll` + resizeを分け、L→Detail描画→l→Comment描画→resize→本文描画→Endと既存waitで同期する。
+full初期／compact先頭・末尾の投稿者・JST、compactのComment focusと末尾30行目、初期／末尾のGET数不変をassertする。
+製品・driver・fixture・依存・CI・仕様は変更せず、timeout延長・retry・skip・sleep追加も行わない。
+
+- `cargo test --locked --test tui_process comment_full_layout_fixed_header_and_compact_body_tail_are_reachable -- --exact`：終了0、1成功。続けて同コマンド20回もすべて終了0（`/tmp/backlog49-worker-sync.6yf3z7/`）。
+- `cargo fmt --all -- --check`：初回1（assertの折返しのみ）、整形後0。
+- `git diff --check`：終了0。
+
+ローカルの再現可能なRED→GREENやCI根因の確定、修正後CI合格を主張しない。
+Rootが変更後に `cargo fmt --all -- --check`、`cargo test --locked --test tui_process`（65成功）、
+`cargo test --locked --all-targets`（288成功・0失敗・実IME用1 ignored）、
+`cargo clippy --locked --all-targets -- -D warnings`、`git diff --check` を再実行し、すべて終了0・警告なし。
+ログは `/tmp/backlog49-root-checks.p6hn44/`。
+正式チェックとは別に、既存releaseをローカルHTTPS／PTYでこの5stepから直接起動し、
+投稿者・JST・full／compact先頭／末尾、Comment focus、9 GET不変、終了0・端末復元成功・stderr空を確認した
+（`/var/folders/04/cs5vwntd34d_fdbtdczbxg000000gn/T/backlog18-root-direct.vhuz4wre/ci-synchronized-layout/`）。
+既存8caseも同じreleaseで再成功。製品・依存の変更がないためaudit／release再buildは追加していない。
+本修正では実端末／実Backlog操作・書込みは行わず、過去の受入・hash記録はそのまま保持する。
+fresh Correctness Review `9c3d8308-04c9-45e9-b64a-46583c44dfe7` と
+fresh Ponytail Review `717fd902-fd05-42bd-8747-96ba3c1591e1` は、対象差分の指摘なし。
+Rootも差分と公開入口の実行結果を照合し、検証条件の維持・同期修正の範囲を確認した。
+修正後のCI結果は、変更を反映して再実行するまで未確認とする。
