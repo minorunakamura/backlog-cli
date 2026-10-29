@@ -18,9 +18,9 @@ cargo audit --version
 RatatuiはCrossterm 0.29 backendを明示しています。共有単行入力はtui-input **=0.15.5**の
 Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語入力で早期実端末受入を行い、採用しました。全端末/IMEでの一致を保証するものではありません。`bl-cli project list` と候補一覧3コマンド、
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
-`bl` のプロジェクト選択・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・ブラウザ起動・focus・layout・端末復元も実装しています。
-共有単行入力部品と開発専用の実端末確認経路を実装していますが、製品shellには入力欄を追加していません。
-TUIのコメント取得・書込み・検索/フォームへの入力組込み・editorは後続Work Itemの範囲です。
+`bl` のプロジェクト選択・通常/横断検索ダイアログ・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・ブラウザ起動・focus・layout・端末復元も実装しています。
+共有単行入力部品を製品のkeyword欄へ組み込み、開発専用の実端末確認経路も維持しています。
+TUIのコメント取得・書込みフォーム・editorは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -394,5 +394,84 @@ fixtureはqueryの `minId` / `maxId` を正整数として比較して境界自�
 `get-headers-sent` / `post-headers-sent` / `patch-headers-sent` も生成するため、事前GETと書込みheadersを区別できます。
 実API keyは使わないでください。
 
-現段階では実Backlogへの接続/書込み、実IME/TUI受入、配布tar.gz/SHA-256作成や公開は行いません。
+このローカルharnessは実Backlogへの接続/書込み、実IME/TUI受入、配布tar.gz作成や公開を行いません。
+Issue #17以降の担当機能では承認済みPlanの実Backlog受入が別途必須です。未実施を完了扱いにしません。
 editorの権限検査後のfile変更や、将来起動時のOSによる最終実行可否までは保証しません。
+
+### 検索ダイアログ (#17)
+
+`tests/tui_process.rs` の `search_dialog_` / `cross_project_dialog_` は実製品 `bl` + PTY/HTTPS境界で、
+設定初回/適用済み値/clear/reopen/R、4条件複数選択/巨大ID、編集時count/listなし・適用時query一致、
+失敗/取消時のdraft・一覧/履歴/選択保持、古いcandidate/applyの成功/失敗と新busy非破壊、
+横断keyword/self/空白拒否/複数project/通常復帰/c案内を検証します。
+中央72x18/38x10と重ねpopup、一行候補の最小縦scroll、左右のgrapheme安全な全文確認、
+標準編集優先/Enterの役割/Repeat・Release・modified Enter非適用、成功/空候補のdialog内再利用、
+GET回数・取得中重複なし・clear/cache hit/閉鎖後の古い応答無効化・貼付け全欄伏字/原文保持・
+tiny時編集禁止・Ctrl+C優先/端末復元も同じ境界で確認します。実IME/実サービス権限は保証しません。
+
+```sh
+cargo test --locked --test tui_process search_dialog_
+cargo test --locked --test tui_process cross_project_dialog_
+cargo test --locked --lib tui::tests::search_dialog_
+```
+
+release製品を直接再現する場合は、release build後に以下を実行できます（実API key不要、GETのみ）。
+一時rootのHTTPS trustは子processだけに渡し、設定・fake key・TLSはsubshell終了時に削除します。
+
+```sh
+(
+  repo="$PWD"
+  tui="$repo/target/aarch64-apple-darwin/release/bl"
+  root=$(mktemp -d)
+  server=
+  trap 'if [ -n "$server" ]; then kill "$server" 2>/dev/null || :; wait "$server" 2>/dev/null || :; fi; rm -rf "$root"' EXIT
+  cp tests/fixtures/tui_search.json "$root/response.json"
+  cp tests/fixtures/tui_search_steps.json "$root/steps.json"
+  mkdir -p "$root/backlog" "$root/.backlog"
+  python3 tests/fixtures/https_server.py "$root" > "$root/port" & server=$!
+  while [ ! -s "$root/port" ]; do
+    kill -0 "$server" 2>/dev/null || exit 1
+    sleep 0.1
+  done
+  printf '{"profiles":{"default":{"spaceUrl":"https://localhost:%s","apiKeyEnv":"TEST_KEY"}}}\n' "$(cat "$root/port")" > "$root/backlog/config.json"
+  printf '%s\n' '{"project":"B","issue":{"list":{"status":["open"]}}}' > "$root/.backlog/settings.json"
+  (cd "$root" && env -i HOME="$root" XDG_CONFIG_HOME="$root" TEST_KEY=test-secret NO_COLOR=1 \
+    SSL_CERT_FILE="$root/tls/localhost-cert.pem" SHELL_STEPS_FILE="$root/steps.json" \
+    SHELL_REQUESTS_FILE="$root/requests" python3 "$repo/tests/fixtures/tty_shell.py" scripted "$tui")
+  cat "$root/requests"
+)
+```
+
+成功基準は `code:0`、`restored:true`、空stderr、26 snapshots、28 GETのみ、count/list各5回です。
+各countとlistはcount/offset以外が同一queryです。最初は設定open、次はkeyword+2状態+Alice+巨大IDのv1、
+clear後はstatus/keywordなし、横断ではselfのみ・project/statusなし、最後は具体Bの通常openへ戻ります。
+snapshots[9]と[10]は状態・担当者・マイルストーンの値欄が空欄（`Any`や旧選択値なし）、
+clearのcount/listにkeyword/statusId/assigneeId/milestoneIdがないことを照合します。
+[13]は認証ユーザー候補「自分」（簡易VT復元では `自 分`）、
+[14]は `Alpha result` と `Beta result`、[18]は `Returned issue` です。内部値selfはassigneeId=7に解決されます。
+[18]でpreview完了を待ってから100x24へ戻しL→Detail、l→Comment、H→Issue、L→Comment、
+40x12へresize後もComment、H→Issue、L→Commentを[19]〜[25]で確認します。
+`request_counts[18..26]` がすべて同じ（総GET数28）で、移動だけによるGET増加がないことを照合します。
+Detailを除外する `browse_request_counts` だけで追加GETゼロを判断しないでください。
+raw stdoutに `test-secret` がないことも確認してください。順序で応答が進むfixtureなので自由操作には使わず、
+実端末で任意操作する場合は応答を固定してください。実Backlogと実IME/キー衝突の必須受入手順・未実施記録は
+[manual-acceptance.md](docs/testing/manual-acceptance.md#検索ダイアログ-17) にあります。
+
+メインの大文字H/L（NONEまたはSHIFTのPress）は左/右の最終focusへ復帰し、同じ側はno-opです。
+初期左Project/右Detail、内部h/l・Tab/Shift+Tab・Enter/Esc・検索成功の確定focusも記憶します。
+Issue Enterは常にDetail、右Escは読取り取消+Issueのままです。resize/project/通常・横断検索で記憶をresetしません。
+新キーは通信や選択/条件/履歴/scrollを変えず、空状態・読取り中も有効です。dialog/popup/適用中/極小では背面に流さず、
+入力中のH/Lは文字。Ctrl/Alt等併用・Repeat/Releaseの拒否では通知も不変、有効キーは同側no-opでも通知を消します。
+`cargo test --locked --test tui_shell` と `cargo test --locked --test tui_process region_` で
+公開Shell/実blの復帰・入力保護・通知・総GET数・遅延R継続・scroll/選択/履歴・Ctrl+C130/復元を再確認できます。
+
+検索は初期キーワードfocusで、Tab（逆はShift+Tab）により状態→担当者→マイルストーンへ移ります。
+キーワード内のCtrl+A/E/B/F/K/U/W/H/Y等は標準編集です。欄外だけCtrl+K/S/A/Gが直接focus、Ctrl+Uが全clearです。
+修飾なしPress Enterはキーワード/閉じた項目では検索、候補内では閉じるだけ、候補失敗中ではretryだけです。
+Ctrl+F検索と条件全文のPgUp/PgDn操作はありません。長い値は左右で確認します。
+選択値はラベルの右に一行、未選択の値欄は空欄です（一覧summaryのkeyword `Any`と横断の「利用不可」は別です）。
+fixtureには長い日本語/結合文字/emoji候補も含みます。100x24の最大72x18、40x12の38x10とpopupを確認してください。
+Shell→TestBackend試験は100x12も含め、ラベル右の空欄/選択値・左右全文・focus印・keyword cursor復帰を確認します。
+横断時はh/lまたはTab→Project→具体project Enterで通常復帰/作成先確定、cは同じ案内のみ、nは次ページです。
+実IMEでは変換確定Enter非適用→次Enter一回適用を製品で必須確認します。端末が通常Enterとして送る
+IME確定をアプリは識別できないため、独自の時間/文字種推測はせず、失敗なら未完了として判断へ戻してください。

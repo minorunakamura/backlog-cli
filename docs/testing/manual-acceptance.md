@@ -333,3 +333,591 @@ Correctness / Ponytailの独立fresh Reviewを実施し、通知popup修正後�
 
 実端末で正確な40x12/極小境界の目視は行わず、その境界はTestBackend/PTYで検証しました。新たな実IME受入、実OSブラウザ起動・ログイン、実Backlog接続/書込み、GitHub Actions、配布物作成/公開は未実施です。
 実端末の最終通常入力確認にはRoot専用の一時launcherと固定応答の段階切替を用い、製品のdebug flagや永続設定は追加していません。
+
+## 検索ダイアログ (#17)
+
+### workerの実装・自動観測（2026-10-29 UTC）
+
+対象はHEAD `88ffbe7` + #17未コミット差分です。#16の受入記録は変更していません。
+通常4条件の検索・専用横断検索を実装し、単行入力をkeywordへ組み込みました。
+共通Service/API/設定schema/依存/Planは変更していません。実key・ユーザー設定を読まず、
+実サービスへの接続/書込み、GitHub操作、commit/push/merge/release/deployは行っていません。
+**この節は自動観測と再現手順であり、#17の必須実Backlog/実IME受入の成功記録ではありません。**
+
+TDD seamは既存の実 `bl` の入力→描画/PTYとHTTPS送受信です。private task/function形状には固定していません。
+各行は一つの失敗試験→必要な実装→同コマンドの成功を実測しました（redはすべて終了101、greenは0）。
+
+| `cargo test --locked --test tui_process <filter>` のfilter | red時の観測 / greenの確認 |
+| --- | --- |
+| `search_dialog_edits_keyword` | dialogが開かず待機timeout → 初回status/keyword文字衝突・clear/reopen/R、count/listは適用時だけ |
+| `search_dialog_multiselects` | candidate欄未実装で待機timeout → 4条件OR/AND・任意精度ID・count/list同query。同filterで全条件summary非表示のred→greenも実施 |
+| `cross_project_dialog` | Ctrl+A未実装 → 空白拒否・keyword/self・既定値非流用・A/B両project結果・通常復帰・c案内 |
+| `search_dialog_compact_wraps` | 40x12で長い条件末尾へ到達不可 → PgUp/PgDnで全文・focus移動でkeywordを再表示、candidate移動と日本語原文保持 |
+| `search_dialog_first_open` | 初期count失敗後にdialogが開かない → 設定値を使って再適用可能 |
+| `search_dialog_edits_keyword`（キー案内追補） | keyword中に誤ったq終了案内 → modalの案内から除外。qは文字のまま |
+| `search_dialog_space_deselects` | 重複した設定statusが1回のSpaceで解除されない → 既定値重複を除き、解除適用後もstatus再挿入なし |
+
+追加の回帰は失敗count/list・取消時の旧page 2/選択/履歴とdraft保持、遅延candidate/applyの成功/失敗による
+新draft/busy非破壊、candidate失敗の明示/retry、送信中の編集/二重適用拒否、貼付けのspace正規化・全欄伏字/送信原文保持、
+Alt/Ctrl+Enter非適用、40x12/39x11復帰、Ctrl+C優先130/端末復元を確認しました。
+既存preview/detail/browser/paging/R/NO_COLORの試験も維持しています。
+
+| チェック | workerの観測 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 再開後0 / 20 suite、234件成功、実IME専用1件ignored。中断した前回実行とは区別し、下記追補に実測を記録 |
+| `cargo clippy --locked --all-targets -- -D warnings` | 初回101: 新規2箇所のcollapsible-if。修正後0、警告なし |
+| `cargo audit --file Cargo.lock` | 0 / cargo-audit 0.22.2、224依存・1381 advisory、警告/脆弱性報告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0、両binaryはMach-O arm64 |
+| `git diff --check` / stagedなし | 0 / stagedなし |
+| release製品 `bl` + ローカルHTTPS/PTY | 0 / 19 snapshots、28 GETのみ、count/list各5回でcount/offset以外のquery一致、stderr空、復元成功、secret出力なし |
+
+最初の全対象test実行は233成功/1 ignoredで、取消された接続に対するPython HTTPS fixtureの
+`BrokenPipeError` tracebackが1件出ましたが、Cargo終了0・該当試験成功でした。サーバーへのintentional cancellationと
+製品のstderrを区別し、警告を隠していません。最終再実行はworker timeoutで中断し、234件成功という先行記載は未確認だったため訂正しました。再開後の完走結果は下に追記します。
+lockfileのSHA-256は監査前後とも `0b5c7a872566c900fcbbd060bb07ddd1760eb69127359c11dcba5fc43c16c4d6`、HEADと同じです。
+
+直接再現はCONTRIBUTINGの「検索ダイアログ (#17)」にある一時root/server/subshellを実行してください。
+`tests/fixtures/tui_search.json` と `tui_search_steps.json` はdebugの自動試験でも同じ手順を実行します。
+最初は通常Bの設定open、次にkeyword+2状態+Alice+巨大ID v1、clear/reopenを40x12で確認、
+self横断でA/B結果、cの案内、具体BのEnterで通常openへ戻ります。
+このsequence fixtureは固定手順用です。自由操作の実端末確認では応答を固定してください。
+PTY簡易VT復元は日本語の間に空白が見える場合があり、実字幅/IMEの保証ではありません。
+条件全文scrollはParagraphと同じ65,535折返し行までで、超える部分の末尾到達は未保証（原文不変）です。
+
+### #17 必須の実Backlog・実IME/キー衝突の受入（未実施 / Root・ユーザーが実施）
+
+接続先は承認済みPlanどおり **`https://lazybl.backlog.com/`**。
+利用者のterminal内でprofileのspaceUrlがこのoriginか確認し、準備済みのconfig/API keyを使用してください。
+keyやconfigの内容をこの記録・画面capture・会話へ貼らないでください。設定の変更や課題/コメントの書込みは不要です。
+対象は最新の改訂実装検証節に記録した変更後release `bl` を直接TTY起動します。実施時のbinary SHA-256・macOS・terminal版・IME・
+profileの非機密識別子・対象project/課題の非機密識別子・実施者・日時を追記してください。
+
+1. Projectの具体projectをEnterで確定。Issueへ移り `/`。初期focusはキーワード、初回は設定status。
+   Tabで状態→担当者→マイルストーン→キーワード、Shift+Tabで逆順に移動し、実候補を取得する。
+   欄外だけCtrl+K/S/A/Gで直接focus。候補popupは親内・最大60x10、元の項目配置は動かないこと。
+   上下/j/k・Spaceで複数選択/解除。候補Enter/Escは閉じるだけ、閉鎖後Space/上下/j/kは再表示だけ。
+   表示内の移動で先頭行が変わらず、上下端を越えた時だけ最小scrollすること。
+2. 非機密keywordと候補を選び、キーワードまたは閉じた項目で修飾なしEnter。count/list両成功後だけ
+   Issueへfocusし、total/結果・`K:/S:/A:/G:`が切り替わること。失敗/取消は旧一覧・選択・履歴を保持する。
+   候補失敗中Enterは再取得だけ、成功した空候補は失敗と区別する。Tab周回/閉鎖再表示/clearで成功候補を再利用する。
+3. キーワード欄外でCtrl+U。focusを保ったままpopupが閉じ全条件が空になること。Enterで適用し、
+   `/`とRでも設定statusが戻らないこと。keyword内のCtrl+Uではkeywordだけを削除し、他の条件は維持する。
+   別draftをEsc取消し、再度開くと最後の適用値だけが残ること。dialog閉鎖後は候補を新規取得する。
+4. ProjectのCtrl+Aで横断検索。Tab/Shift+Tabはkeywordと担当者「自分」だけを循環し、Ctrl+S/Gは無効。
+   keywordか自分で適用し、Issue/Detailに結果を表示すること。空白のみかつ自分なしは失敗で旧一覧を保持。
+   横断画面とcはh/lまたはTab→Project→具体project Enterを案内し、count/list両成功後だけ通常復帰/作成先確定する。
+   cは書込みなし、nは次ページ。**複数projectの実サービス確認は環境制約で対象外**、自動試験で確認する。
+5. keywordで `qhljkRc/` が文字になり、Ctrl+A/E/B/Fの移動、Ctrl+K/U/W/Hの削除とCtrl+Y貼戻しを確認。
+   Ctrl+S/G等を入力中に横取りしない。欄外Ctrl+Fは何もしない。100x24で中央72x18、40x12で38x10、
+   極小ではq/Ctrl+C以外の編集/適用を拒否し、復帰後のfocus・値・cursorが保たれること。
+   長い日本語/結合文字/ZWJ emojiの候補と複数選択済み値を左右で末尾まで確認し、選択印が常に残ること。
+   IME未確定文字/変換候補が実cursorへ追従し、**変換確定Enterでは検索せず、次Enterで一度だけ検索**すること。
+   候補変更・取消・再変換と英数字後Enterも確認。Crosstermにcomposition情報はなく、端末側処理に依存する。
+   誤適用した環境では未完了・停止して操作方式の判断へ戻す。自動PTY/raw tty Probeを代用しない。
+6. ローカルfixtureのfake文字列だけでpaste CRLF/TAB正規化・全欄伏字を目視し、**実keyは貼らない**。
+   Alt/Ctrl+Enterは非適用（端末が区別できる場合）。適用中は編集/移動/clear/重複Enterを拒否し、Esc取消は可能。
+   Ctrl+Cは編集中/適用中も130で終了し、通常shellへ復元すること。OS/IME受信前の未確定文字の秘匿は保証しない。
+
+現時点の結果: **すべて未実施**（Root/利用者の準備中）。workerの自動PTY成功や#14/#16の過去の実端末成功を
+この#17の実Backlog/実IME受入へ流用していません。通信障害/逆転/複数projectはローカルHTTPSで確認し、
+実サービスへ意図的な障害・過大負荷は発生させないでください。必須確認の完了と独立reviewまでは#17を完了/merge可能扱いにしません。
+
+### #17 worker再開後の最終ローカル検証（2026-10-29 02:28 UTC）
+
+ユーザー承認による同じworkerの再開後、中断時点の差分を保持し、未確認だった234件成功の先行記載をまず訂正しました。
+追加機能や探索的拡張・製品コードの変更はせず、以下を最初から完走しました。
+
+| 実行 | 終了コード / 実測 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | **0 / 20 suite、234件成功、1 ignored**。全suite完走、warning/fixture tracebackなし |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / 警告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 / 最後の既定値重複解除変更を含む、両binary Mach-O arm64 |
+| 変更後release製品のローカルHTTPS/PTY直接検証 | 0 / 19 snapshots、28 GETのみ、count/list各5回でquery一致、stderr空・端末復元成功・secret出力なし |
+| `git diff --check` / stagedなし / Cargo・Plan差分なし | 0 / stagedなし、Cargo.toml・Cargo.lock・Plan不変 |
+
+コマンドごとの終了コードは `/tmp/issue17-resumed-exits.log`、全文出力は
+`/tmp/issue17-resumed-{fmt,all-targets,clippy,build,direct}.log`、直接PTY結果は
+`/tmp/issue17-resumed-release-pty.json` に記録しました（一時ログは永続成果物ではありません）。
+直接再現手順はCONTRIBUTINGの上記subshellと同じです。検証用のserver/一時TLS/fake設定は終了時に削除しました。
+
+最終release SHA-256:
+
+- `bl`: `1c5cede0161009baf5028b4ed3ea00ca3ebe9bd224488b5fd2a2e43a530d8209`
+- `bl-cli`: `5e604da3e59ff3636b7754bf9fe9c1afdfedb100de874f90fde61d34fd3b76ca`
+
+監査はCargo不変・前回成功ログありのためRoot指示どおり再実行していません。
+利用者terminalで実BacklogへのCLI接続成功がRootから報告されていますが、workerは実key/configを読まず、
+サービスへの接続/書込みも行っていません。このCLI成功を#17のTUI実受入へ代用しません。
+**残件はRoot/ユーザーによる上記TUIの実Backlog・実IME/キー衝突受入と独立reviewです。#17全体の完了・merge可能宣言はしていません。**
+
+### #17 accepted review findings の修正・再検証（2026-10-29 02:54 UTC）
+
+上記02:28 UTCのbuildと検証は**修正前buildの履歴**として保持しています。
+その成功結果・SHA-256を今回の変更後buildの検証へ流用していません。利用者による旧buildの手動確認は
+Rootから一時停止を案内済みです。今回の対象は次の4件だけで、Service/Cargo/設定仕様/Planは変更していません。
+
+| 受理済み指摘 | 公開PTY/HTTPS境界でのred → green |
+| --- | --- |
+| 初回count失敗後の既定status解除 | `search_dialog_first_open` が `[x] open` 待機timeout（101）→ 一意な候補名だけIDへ整合、1回のSpaceで解除しcount/list双方にstatusIdなし（0）。既定名が曖昧/不在なら未解決のまま明示エラー、検索非送信も確認 |
+| Project未確定のhighlightから検索できる | `search_dialog_cannot_search` と、初回失敗後highlightをB→Aへ動かす `search_dialog_first_open` が各101 → 確定済み対象だけをfallbackに使い各0。設定なし・Enterなしの `/`/Ctrl+Fは検索なし、確定済みBの失敗後はhighlightがAでもBの再編集/適用が可能。適用済み検索がある場合は別project確定失敗後も元projectが優先する回帰も0 |
+| selfの表示 | `cross_project_dialog_` が「自分」候補待機timeout（101）→ 候補/適用済み条件の表示だけ「自分」、内部の `Selection::Name("self")` を維持しmyself ID 7で送信（0） |
+| resize後のfocus行が非表示 | `search_dialog_resize_reveals` がMilestone待機timeout（101）→ 100x24でCtrl+G後40x12へ縮小して `>Milestone: Any` を表示（0）。39x11で編集/適用を拒否、復帰後もfocus表示・日本語keyword原文/挿入cursor位置を保持し、送信値 `日本語Xqhljk` をcount/listで確認 |
+
+redは各sliceの最小製品修正より前に実行しました。日本語の簡易PTY復元は全角文字間に空白/旧描画の文字が
+残る制限があるため、candidate待機は `[ ] 自 分`、適用済み条件は「Assignee: 自」・「分」の表示と
+`self` 非表示を確認しています。実端末字幅/IMEの保証に置き換えていません。
+
+| 変更後の実行 | 終了コード / 実測 |
+| --- | --- |
+| `cargo test --locked --test tui_process search_dialog_` | 0 / 16成功 |
+| `cargo test --locked --test tui_process cross_project_dialog_` | 0 / 1成功 |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0 / **20 suite、238成功、実IME専用1 ignored**。warning/fixture tracebackなし |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / 警告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 / 両binary Mach-O arm64 |
+| 変更後release `bl` の直接HTTPS/PTY fixture（CONTRIBUTING #17のsubshell + 結果assert） | 0 / 19 snapshots、28 GETのみ、count/list各5回でcount/offset以外のquery一致。「自分」候補とassigneeId=7、通常/複数条件/clear/横断/通常復帰を確認。stderr空・復元成功・secret出力なし、fixture server stderrも空 |
+| `git diff --check` / stagedなし / Cargo・Service・Plan差分なし | 0 / stagedなし、対象外の既存差分を保持 |
+
+今回のrelease SHA-256:
+
+- `bl`: `c1a5126e4d09e19c98e3342a49e6bb02bddf0d23cbf0f6c4048a3fcf2c05c84a`
+- `bl-cli`: `d78417c540900df60630f88333e1313a817244085b1bdc33ec5e2dbbe75a499f`
+
+検証ログは `/tmp/issue17-corrections/` の `red-*.log` / `green-*.log`、`focused-search.log`、
+`focused-cross.log`、`fmt.log`、`all-targets.log`、`clippy.log`、`build.log`、`direct.log`、
+`direct-server.log`。直接PTY結果は `release-pty.json`、HTTP記録は `direct-requests.jsonl` です。
+これらは一時成果物です。実key/configには触れず、直接検証のfake設定/TLS/serverは終了時に削除しました。
+
+**監査記録の留意点:** 以前の `cargo audit` 終了0という履歴だけで「完全clean」と判断しないでください。
+Root指摘の `/tmp/issue17-root/audit.log` にはyanked registry照会timeoutがあり、上記先行記録の
+「警告/脆弱性報告なし」を全照会成功の根拠にはできません。Cargo不変のため今回workerは指示どおり再監査せず、
+Rootの独立再確認に委ねています。
+
+**実Backlog TUIと実端末IME/キー衝突の必須受入は引き続きすべて未実施（UNPERFORMED）です。**
+利用者のCLI接続成功やこのローカルmock検証を受入成功へ代用していません。変更後buildについてRootの独立reviewと
+利用者/Rootの実TUI受入が必要です。Issue #17完了・merge可能とは宣言しません。
+既定statusごとの候補GET反復の最適化は今回非採用のため未変更です。
+
+
+### #17 改訂Planに基づく検索dialog実装・ローカル再検証（2026-10-29 05:29 UTC）
+
+対象はHEAD `88ffbe7` + 保持した既存未コミット差分 + 今回の改訂実装です。
+上の旧キー/PgUp・PgDn/旧hashの実測は履歴であり、今回の受入へ流用していません。
+正式Issue本文と改訂コメント `issuecomment-6488296513`、Planの改訂節と基本設計を直接確認しました。
+Plan/designの既存差分は今回の開始時と一致し、共有入力・Service/API・Cargo/設定を変更していません。
+実Backlogへの接続/書込み、実key/configの参照、commit/stash/push/merge/配布公開は行っていません。
+
+実装は編集優先dispatch、修飾なしPress Enterの文脈別処理、中央dialog/日本語4項目/重ねpopup、
+成功候補（空配列含む）のdialog寿命内再利用、左右のgrapheme安全な全文確認、一行候補の最小縦scroll、
+横断一覧/cのProjectへの移動・通常復帰/作成先案内です。候補名のLF/TABも表示copyだけ可視escapeし、
+escape生成後もsecret検査します。旧応答の完全一致検査とcount/list成功後だけの交換を維持しました。
+
+TDDの観測（各filterは既存の実bl入力→PTY/HTTPSまたはShell入力→TestBackend描画のseam）:
+
+| filter | red → green（終了コード） |
+| --- | --- |
+| `search_dialog_keyword_standard_editing` | Ctrl編集が検索/focusに奪われ、`Xabc de`待機timeout 101 → 標準編集を優先し、Enter後だけcount/list・原文一致 0 |
+| `search_dialog_is_centered` | 指定矩形の左上が枠でなく `n`、101 → 100x24で72x18・40x12で38x10、親内popupと閉鎖前後のkeyword位置/cursor維持 0 |
+| `cross_project_dialog_compact` | 40x12で復帰/作成先案内がなくtimeout 101 → h/lまたはTab→Project→Enter、c案内、n次ページ、通常検索失敗/取得中も横断page 2保持 0 |
+| `search_dialog_short_wide` | 100x12でkeyword枠とhelpが重なり `│`（期待 `└`）、101 → 高さ不足時は縦配置にして枠とhelpを分離 0 |
+| `search_dialog_candidate_horizontal`（LF/TAB追補） | 可視escapeへ到達できずassert失敗101 → 一行copyのescape、Unicode/結合文字/ZWJと選択印・複数選択全文・secret非表示 0 |
+
+候補cache試験の**初回redはEsc+Tab同時送信がAlt+Tabと解釈される試験手順不備を含み、cache実装のred証拠とはしません**。
+キーを別stepに修正して0を確認後、試験感度を別途検証しました。cache hitだけを一時無効化するとstatus GETが
+期待2に対し5で101（`cache-disabled-red.log`）、同じ製品sourceを復元すると0（`cache-restored-green.log`）。
+この実験は事前TDDの証拠と混同しません。無効化コードは残していません。
+候補取得中の同項目再focusで重複なし、空成功再利用、clear後focus/cache保持、dialog閉鎖後再取得をHTTP回数で確認。
+古い成功/失敗の失効はcache hit・popup close・clear・keyword・dialog close・applyの6経路を各2ケース実行し、
+後着結果を保存せず、現候補/エラー/新busyを壊さないことと、戻った時の新GETを確認しました。
+既定status重複解除・曖昧/不在の検証エラー・未確定project禁止・自分の内部self・resize/tinyでのcursor保持も維持しています。
+
+最終製品コードに対するチェック:
+
+| コマンド | 終了コード / 観測 |
+| --- | --- |
+| `cargo test --locked --test tui_process search_dialog_` | **0 / 19成功**（最終は他コマンドと同時起動せず順次実行） |
+| `cargo test --locked --test tui_process cross_project_dialog_` | 0 / 2成功 |
+| `cargo test --locked --lib tui::tests::` | **0 / 15成功・実IME専用1 ignored**（最終は順次実行） |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | **0 / 20 suite、246成功・1 ignored**。下記のfixture接続reset tracebackを記録 |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / Rust warningなし |
+| `cargo audit --file Cargo.lock` | 0 / cargo-audit 0.22.2、DB 1381 advisories・224依存。今回ログにはDB/registry timeout、warning、脆弱性報告なし。過去のtimeout履歴を消さず、終了0だけを根拠にしていない |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 / 両binary Mach-O arm64 |
+| CONTRIBUTINGの一時root/HTTPS/PTY手順を変更後releaseで直接実行 + 結果assert | 0 / 19 snapshots、28 GETのみ、count/list各5回のquery一致、stderr空・端末復元・secret/OSC出力なし。直接fixture server stderrも空 |
+| `git diff --check` / stagedなし | 0 / stagedなし。Plan/designの継承差分不変、Cargo.lock SHA-256も従来と同じ |
+
+**途中の失敗・警告は最終成功と分けて記録します。** 最終コードのall-targetsは全成功ですが、
+HTTPS fixture threadのbody送信で `ConnectionResetError: [Errno 54] Connection reset by peer` のtracebackが1件ありました
+（`final-all-targets.log:357-386`、`https_server.py:80`）。キャンセルでclient側がread taskを中断する検証中の
+harness stderrと整合し、製品のstderrやテスト失敗ではありません。独立原因確認はRootへ引き継ぎます。
+このためharnessの無関係な変更や全体再実行はしていません。
+その後focused/lib/直接fixture/clippyを別processで同時実行した回に、searchの取消保持・貼付け試験2件と
+既存early-SIGINT試験1件がPTYの8秒timeoutで101になりました。製品変更なしで順次再実行し、search19件と
+lib15件がそれぞれ0でした。並行負荷/タイミング依存の可能性はありますが、確定原因と断言せずRootへ報告します。
+
+release SHA-256（今回の変更後build）:
+
+- `bl`: `9ae941290ded500063dff62a1eee1018556c3b635460dda3450a34c2e8c32869`
+- `bl-cli`: `fe0407304acde6cbc21dfe63bcd6bcd62ab58bc986c152cb460ea3ec6d3bc92e`
+
+直接fixtureのstatus/users/versions GETは各3/1/1回です（statusは初期通常解決・dialog・通常復帰）。
+count/listの5組は、通常B/open → keyword+open/closed+Alice+巨大ID v1 → 全clear → 自分のみ横断 → B/open通常復帰。
+全組でcount/offset以外のqueryが一致し、横断はproject/statusなし・assigneeId=7です。
+
+一時ログは `/tmp/issue17-worker/`。最終証拠は `serial-focused-search.log`, `final-focused-cross.log`,
+`serial-lib-tui.log`, `final-fmt.log`, `final-all-targets.log`, `final-clippy.log`, `audit.log`,
+`final-build.log`, `final-build-sha256`, `final-direct.log`, `release-pty.json`, `direct-requests.jsonl`,
+`direct-server.log`, `final-diff-check.log`、終了コード履歴は `exits` です。
+red/greenと途中失敗ログも同directoryに残しています。一時TLS/fake設定/serverは直接fixture終了時に削除しました。
+
+**実端末のIME/目視・実Backlog TUI受入は未実施のままです。** 上の新しい必須手順をRoot/利用者が
+実施してください。環境（macOS、端末名/版、IME、keyboard設定）を推測せず、実測時に記録します。
+独立reviewとRootの再検証も未完了で、Issue #17全体の完了・承認・merge可能とは宣言しません。
+
+### #17 Root再検証・ユーザー確認と追加表示feedback（2026-10-29、表示変更前）
+
+この節は上の履歴を置き換えず、その後Rootが得た結果を追記します。対象は表示feedback変更前の
+release `bl` SHA-256 `9ae941290ded500063dff62a1eee1018556c3b635460dda3450a34c2e8c32869` です。
+Rootはsearch19件・cross2件・tui-lib15件+ignored1件・all-targets246件+ignored1件、fmt、clippy、
+cargo-audit 0.22.2、release build、diff-checkをすべて終了0で再確認しました。
+Rootの今回ログにはfixture tracebackや監査timeoutはなく、直接release HTTPS/PTY fixtureも
+19画面・28 GET・count/list各5回の同query・端末復元・空stderr・secret非表示を確認しました。
+根拠は `/tmp/issue17-root-revised/`。これらは以下の表示変更後の検証には流用しません。
+
+Rootはdefault profileのoriginが `https://lazybl.backlog.com/` であることを確認しました。
+API key環境はAgent側にはなく、ユーザーの実端末で製品TUIを確認しました。
+実Backlogの候補・検索適用/クリア/結果・横断・通常復帰と、実IME/編集/表示について質問し、
+ユーザーから「動作は問題ない」「IME/表示等の質問はすべて成功」と回答を得ました。
+これはユーザー申告による確認であり、生ログ/機密本文は記録していません。実Backlogへの書込みはありません。
+環境はMacbook Pro M1 / macOS 26 / macOS標準IME / 101 keyboard。
+端末アプリ名・版、remap有無、非機密の対象IDは不明で、推測して補いません。
+
+追加feedback「状態、担当者、マイルストーンの選択しているものが下側。ラベルの横に表示できないか」
+「Anyは空白でもよい」を採用しました。上段の状態/担当者、次段のマイルストーン、枠付きkeyword、
+中央寸法/popup/全文scrollは保持し、値だけラベル右の一行へ、未選択の候補値欄だけ空欄へ変更します。
+一覧summaryのkeyword `Any`、横断の「利用不可」は対象外です。**表示変更後のユーザー再受入待ち**です。
+
+### #17 ラベル右表示・空値feedbackのworker検証（2026-10-29）
+
+製品変更は `Conditions::value` の空選択文字列とdrawの値位置だけです。配置寸法やキー、IME、
+安全表示、候補cache/世代、検索の原子的交換は変更していません。Plan/designの継承差分も維持しました。
+Shell key→TestBackend描画の新規試験で、変更前は100x24の選択値がラベルと同じ行にないため失敗（101）、
+最小変更後は成功（0）。100x24/40x12/100x12で厳密な空値欄、ラベル右の選択値、長い日本語/結合文字/emojiの
+左右全文、focus印、水平scroll中の候補選択印、popup閉鎖からkeywordへ戻ったcursor位置を確認しました。
+既存候補試験の選択印/grapheme保持も成功。通常3項目の同一行表示は実製品PTYで確認しました。
+PTYのAny待機はkeywordラベル待機へ変更するだけでなく、空値画面のAny/旧選択値不在と
+clear後count/listのkeyword/status/assignee/milestone条件なしを照合しました。
+簡易VT復元のwide文字の残留セルは厳密空白判定に使わず、空白セル自体はTestBackendで検証します。
+
+| 変更後に順次実行した確認 | 結果 |
+| --- | --- |
+| `cargo test --locked --test tui_process search_dialog_` | 0 / 19成功 |
+| `cargo test --locked --test tui_process cross_project_dialog_` | 0 / 2成功 |
+| `cargo test --locked --lib tui::tests::` | 0 / 16成功・実IME専用1 ignored |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / warningなし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| CONTRIBUTING直接release HTTPS/PTY fixture + 結果assert | 0 / 19画面・28 GETのみ・count/list各5回同query・復元・空stderr・secret/OSC非表示。server stderr空 |
+| `git diff --check` / stagedなし | 0 / stagedなし |
+
+直接fixtureでは100x24と40x12のclear画面にAny/旧選択値がないこと、clear queryに4条件がないこと、
+選択query・self横断・具体Bの通常open復帰も照合しました。候補status/users/versions GETは3/1/1回で従来と同じです。
+今回の変更後release SHA-256:
+
+- `bl`: `068a2bc877637b8718b9ef3b50f15e6d071378dab7313cb7c5fcc4734bc97a9d`
+- `bl-cli`: `647a5203a9b8123ebabd0c3da2be74f499a42daee11f9d7237fa59e17466cfa2`
+
+途中の新規TestBackend試行でwide文字継続セルの空白を除かない期待が1件失敗しました。期待を正規化してから
+正式redを取得しています。選択印の確認を追加した中間lib試験でも、popup閉鎖後のwide文字継続セルを
+文字として読んだ期待が1件失敗（101）。画面列幅で継続セルを飛ばす読取りへ補正し、最終16件は全成功です。
+最初のPTY追加assertは簡易VTの残留セルを厳密空白と誤認し4件失敗（101）、
+同回に取消検証中のHTTPS fixtureで `ConnectionResetError: [Errno 54] Connection reset by peer` のtracebackが1件ありました。
+harnessは変更せず上記の観測境界を分けて補正し、最終search19件は全成功・tracebackなしでした。
+最終実行でPTY timeoutはなく、製品stderrと直接fixture server stderrも空です。
+
+一時根拠は `/tmp/issue17-inline-feedback/` の `red.log`, `green.log`, `search.log`, `cross.log`,
+`tui-lib.log`, `fmt.log`, `clippy.log`, `build.log`, `sha256`, `direct.log`, `release-pty.json`,
+`direct-requests.jsonl`, `direct-server.log`, `diff-check.log`。一時TLS/設定/serverは回収済みです。
+変更後の全体test/auditはRootが独立実行するためworkerでは繰り返していません。
+実端末での変更後表示（100x24/40x12/100x12、ラベル右・空欄・左右全文・popup/resize/cursor）、
+端末metadataの補完、Root全体check・独立review・ユーザーApproveが未完了です。
+実Backlog/実IME操作はworkerでは行わず、Issue #17全体の受入完了とは宣言しません。
+
+### #17 表示修正後のRoot検証・ユーザー再受入（2026-10-29）
+
+対象はHEAD `88ffbe7` + 継承した差分 + 本Issueの改訂実装と表示feedback修正です。
+release `bl` SHA-256は `068a2bc877637b8718b9ef3b50f15e6d071378dab7313cb7c5fcc4734bc97a9d`、
+`bl-cli` は `647a5203a9b8123ebabd0c3da2be74f499a42daee11f9d7237fa59e17466cfa2`。
+変更前のチェック・Review・Approveを本差分へ流用せず、Rootが以下を順次実行しました。
+
+| コマンド | 終了コード / 実測 |
+| --- | --- |
+| `cargo test --locked --test tui_process search_dialog_` | 0 / 19成功 |
+| `cargo test --locked --test tui_process cross_project_dialog_` | 0 / 2成功 |
+| `cargo test --locked --lib tui::tests::` | 0 / 16成功・実IME専用1 ignored |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0 / 20 suite・247成功・1 ignored。今回Root実行にfixture tracebackなし |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / warningなし |
+| `cargo audit --version` / `cargo audit --file Cargo.lock` | 各0 / 0.22.2、1381 advisory・224依存。今回ログにDB/registry timeout・警告・脆弱性報告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| `git diff --check` | 0 |
+| 変更後release + HTTPS/PTY直接実行 | 0 / 19画面・28 GETのみ・count/list各5組同query、端末復元、製品stderr/server stderr空、secret/OSC非表示 |
+
+実行は06:06〜06:11 UTC。監査前後のCargo.lock SHA-256はともに
+`0b5c7a872566c900fcbbd060bb07ddd1760eb69127359c11dcba5fc43c16c4d6` で不変です。
+直接fixtureでは100x24/40x12のclear値欄にAny/旧選択値がなく、clear queryに4条件なし、
+選択時の巨大ID・自己担当だけの横断・具体Bの通常復帰を照合しました。
+候補status/users/versionsのGETは3/1/1回。根拠ログは `/tmp/issue17-root-inline/`。
+先行worker実行の接続reset traceback・並行負荷時のPTY timeoutは上の履歴どおり保持し、
+今回の成功をそれらが起きなかったことの証明や恒久的な非再発保証とはしません。
+
+ユーザーは変更前buildで指定originの実候補・通常検索適用/全解除/結果・横断/c案内/通常復帰について
+「動作は問題ない」、IME確定Enter非適用→次Enter適用、変換変更/取消/再変換、標準編集、
+100x24/40x12/極小復帰、長い値/popup、終了後shellについて「すべて成功」と回答しました。
+その後は値の表示位置と空欄だけを変更し、上記の新buildを再起動して確認してもらいました。
+変更後のラベル右表示・未選択空欄・左右全文・popup・狭幅resize・入力cursorの質問にも
+「すべて問題なし」と回答しています。これは利用者による実端末の操作・目視結果で、
+自動PTYやPlanning Probeを実IME受入に代用したものではありません。
+
+接続先は `https://lazybl.backlog.com/`、profileは `default`（Rootが設定originを確認）。
+実データ識別子は未提供のため記録せず、API key・機密本文・画面captureは取得/記録していません。
+実Backlogへの書込みは行っていません。複数project間の実サービス確認は既存環境制約で対象外、
+ローカルHTTPSのA/B横断試験で確認しました。
+環境はユーザー回答のMacbook Pro M1 / macOS 26 / macOS標準IME / 101 keyboard / remapなし / Ghostty。
+端末版はユーザー未申告ですが、Rootは実行中の `/Applications/Ghostty.app/Contents/MacOS/ghostty` と
+同appのInfo.plistの版 **1.3.1 (15212)** を確認しました。細かなIME設定は未提供で推測していません。
+
+独立した2つのfresh ReviewとCode Review gateは、この記録時点では未完了です。
+これらの完了前にIssue #17全体を完了・承認済み・merge可能とは扱いません。
+
+#### #17 fresh独立Reviewの完了・採用指摘の最小修正（2026-10-29）
+
+上の「未完了」は記録時点の履歴です。その後、RootによるfreshなCorrectness/Ponytail Reviewの2件が完了し、
+P0/P1はありませんでした。Rootは以下の3件だけを採用し、今回修正しました。最終taskflow Code Review gateは
+まだ未実施で、Rootが担当します。過去のチェック・Review・Approveを今回のsummary変更後へ流用しません。
+
+- 一覧のkeyword summaryがUnicode scalar値の10文字で切られ、結合文字・ZWJ emojiを途中で切断する指摘。
+  `Conditions::summary` の短縮・省略判定だけを既存Ratatui `Line::styled_graphemes` に変更しました。
+  secret/controlの全文検査、原文query、キー/IME/候補cache/世代/検索条件/配置は変更していません。
+- READMEの「keyword編集中を除きq終了」は候補focus/closed/applying中の実動作と不一致でした。
+  コードは変えず、通常画面のq終了（極小サイズでも可）と検索dialogのEsc候補閉鎖/取消・Ctrl+C中断に修正しました。
+- 実Backlog受入の対象データ識別子は、ユーザーから提示された **課題キー `BLCLI-1`** として補完します。
+  先行の「未提供」は当時の履歴として保持します。URLへの接続、本文・タイトルの取得、機密の追加記録はしていません。
+
+実blへの入力→PTY描画/ローカルHTTPSの新規1試験で、ZWJ/結合文字の10grapheme境界は全体保持・省略なし、
+11graphemeは全体保持して省略、日本語の11grapheme短縮、境界外のsecret/controlの全文伏字を確認しました。
+7入力すべてでcount/listの原文keyword query不変・GETのみ・空stderr・端末復元をassertしています。
+簡易VT decoderは結合文字を落とすため、resizeによる全描画のraw summaryからcursor位置指定だけを除いて照合しました。
+最終試験を変更前の製品に戻すと失敗（101、ZWJ途中切断）、最小修正後は成功（0）でした。
+試験作成中にはANSIの空白省略/位置指定と日本語文字数の期待を補正した中間失敗があり、製品の追加変更はしていません。
+
+| summary変更後に順次実行した確認 | 終了コード / 実測 |
+| --- | --- |
+| `cargo test --locked --test tui_process search_dialog_keyword_summary_preserves_ten_graphemes_and_redacts_before_abbreviating -- --exact` | 0 / 新規1試験・7入力成功（変更前は101） |
+| `cargo test --locked --test tui_process search_dialog_` | 0 / 20成功 |
+| `cargo test --locked --test tui_process cross_project_dialog_` | 0 / 2成功 |
+| `cargo test --locked --lib tui::tests::` | 0 / 16成功・実IME専用1 ignored |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / warningなし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| CONTRIBUTINGの直接release HTTPS/PTY fixture + 結果assert | 0 / 19画面・28 GETのみ・count/list各5組同query・選択/clear/self横断/通常復帰・secret/control非表示・端末復元・製品/server stderr空 |
+| `git diff --check` / stagedなし | 0 / stagedなし |
+
+summary変更後release SHA-256:
+
+- `bl`: `d11f4c7f4fa6971ed0926233282ed91c4eaecfa257e49ec8beaacf064de9c5dc`
+- `bl-cli`: `0090f1de25bfe2a472d17f848c787c7fbdfcc9aacb3a9f988da6fe7e60ee5eba`
+
+今回の根拠は `/tmp/issue17-summary-review/` の `red-final.log`, `green-final.log`, `search.log`, `cross.log`,
+`tui-lib.log`, `fmt.log`, `clippy.log`, `build.log`, `sha256`, `direct.log`, `release-pty.json`,
+`direct-requests.jsonl`, `direct-server.log`, `diff-check.log`。直接fixtureの一時TLS/設定/serverは回収済みです。
+全体test/auditはRootが独立実行するためworkerでは繰り返していません。summary変更後の実Backlog/実IME操作も
+実行しておらず、先行のユーザー受入を新buildの確認と読み替えません。Rootによる最終チェック・必要な影響限定review・
+Code Review gateを経るまでは、Issue #17全体の完了・承認済みとは宣言しません。
+
+#### #17 summary修正後のRoot検証・受入と追加キー要望（2026-10-29）
+
+Rootは最終summary修正後の製品を07:28〜07:33 UTCに再検証しました。対象release `bl`は
+`d11f4c7f4fa6971ed0926233282ed91c4eaecfa257e49ec8beaacf064de9c5dc`、`bl-cli`は
+`0090f1de25bfe2a472d17f848c787c7fbdfcc9aacb3a9f988da6fe7e60ee5eba` です。
+
+- `cargo test --locked --test tui_process search_dialog_`: 0 / 20成功。
+- `cargo test --locked --test tui_process cross_project_dialog_`: 0 / 2成功。
+- `cargo test --locked --lib tui::tests::`: 0 / 16成功・実IME専用1 ignored。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、
+  `cargo build --locked --release --target aarch64-apple-darwin --bins`、`git diff --check`: すべて0。
+- `cargo test --locked --all-targets`: 0 / 20 suite・248成功・1 ignored。今回ログにwarning/fixture tracebackなし。
+- `cargo audit --version` / `cargo audit --file Cargo.lock`: 各0、0.22.2、1381 advisory・224依存。
+  DB/registryの取得timeout、warning、脆弱性報告なし。監査前後のCargo.lock SHA-256はともに
+  `0b5c7a872566c900fcbbd060bb07ddd1760eb69127359c11dcba5fc43c16c4d6` で不変。
+- Rootの変更後release直接HTTPS/PTY確認: 0 / 19画面・28 GET・count/list各5組の条件一致、
+  空欄/clear query/自己担当横断/通常復帰/端末復元/secret非表示・製品とserverのstderr空。
+- 追加のrelease直接確認3入力（10境界の結合文字、11境界のZWJ emoji、省略範囲外secret）も成功。
+  実製品の一覧要約・原文count/list query・GETのみ・端末復元・空stderrを照合。
+  一時TLS/config/serverは回収済み。根拠は `/tmp/issue17-root-final/` の各log/results.json/PTY記録。
+
+Rootは採用した3指摘の実差分と上記結果を直接確認しました。summaryの局所的な既存API利用と
+資料訂正だけでキー/通信/状態境界を変更していないため、全体fresh Reviewの無条件再実行はしていません。
+未採用の製品修正指摘はありません。
+ユーザーはこの最終buildを同じdefault profile・BLCLI-1の環境で再起動し、実候補/通常適用・クリア・結果/
+横断基本動作/IME確定Enter非適用→次Enter適用・emoji要約の質問に「動き、emojiは問題なかった」と回答しました。
+以前のbuildの受入を最終buildの成功へ読み替えず、新たなユーザー回答として記録します。
+接続先・端末・対象課題・複数project実サービスの既存制約は直前の記録どおりです。実サービスへの書込みなし。
+
+同じ回答で「Shift+L, Shift+Hで左と右を切り替えたい」という追加要望がありました。
+承認済み基本設計の左右内部h/l・Issue List→DetailのEnter・右→Issue ListのEscに対する新しい操作契約で、
+検索dialogの改訂範囲には含まれていません。Rootは新キーを実装せず `REPLAN_REQUIRED` として停止しました。
+新キーの方向、Project/Commentからの移動先、既存Enter/Escとの併存、入力/modal/極小時の扱いは再計画で確定します。
+正式Plan/Work Itemは変更せず、既存未コミット/untrackedと部分実装を保持しています。
+追加仕様が未承認のため最終taskflow Code Review gateには未提出で、Issue #17をREADY_FOR_MERGEとは扱いません。
+
+#### #17 Shift+H/L改訂後の再受入手順（今回のbuild用）
+
+上記の旧build受入・hash・追加仕様未承認による停止は履歴として保持します。
+正式改訂Planの新キーを今回実装しましたが、変更後製品の実端末・実IME・実Backlog受入は**未実施**です。
+先行buildのユーザー回答を今回の成功へ読み替えず、Rootとユーザーが新buildで以下を確認してください。
+
+1. 新release `bl` のSHA-256、端末名/版、macOS、IME/keyboard設定、TERM/NO_COLORを記録します。
+   実Backlogは既存手順の `https://lazybl.backlog.com/` originと読取り範囲を確認し、API key/機密本文を記録しません。
+   複数projectの実サービス確認は従来の環境制約どおり対象外、ローカルHTTPSで補います。書込みは不要です。
+2. 100x24と40x12でProject→L→Detail→l→Comment→H→Project→L→Comment。
+   左をIssueへ切替後の復帰、h/l・Tab/Shift+Tabの内部切替を試し、同じ側のH/Lではtoggleしないことを確認します。
+   初期左Project/右Detail、Issue Enterは右記憶に関係なくDetail、右Escは読取り取消+Issue、次Lは最後の右へ戻ります。
+   画面のH:Left/L:Rightと内部h/l/Tab/S-Tab、文脈のEnter/Esc、q/Ctrl+Cが判別できることも確認します。
+3. resize/極小往復・project切替・通常/横断検索でも右Comment記憶を保持します。
+   極小中はH/Lが効かず、取消/検索失敗では背面不変、検索成功はIssue/左記憶Issueになることを確認します。
+4. 読取り完了後とDetailの遅延R中にH/L往復し、本文scroll・課題選択/条件/ページ履歴を保ち、
+   応答が取消されず表示されることを確認します。総GETの増加ゼロはローカルHTTPS/PTyで検証します。
+   有効H/Lはエラー通知を消して移動し、同側no-opでも消します。Ctrl/Alt併用のH/Lは通知を消しません。
+5. 検索keywordのH/Lは文字、候補popup/適用中は背面不変。既存の編集優先・候補cache・全clear・長い値の左右確認・
+   通常復帰案内を再確認します。実IMEの変換確定Enter非適用→次Enter一回適用、候補変更/取消/再変換を必須確認し、
+   誤検索なら未完了として停止します。PTYは実IME受入の代替ではありません。
+6. q=0/Ctrl+C=130（入力中/通信中も優先）、通常画面・cursor・入力編集・termiosの復元を確認します。
+   Commentの実データ取得や後続フォーム/editorは今回の完成対象ではありません。
+
+ローカルrelease直接再現はCONTRIBUTINGの既存HTTPS/PTY手順を使います。
+更新fixtureは検索19画面にH/Lと内部l・resizeの7画面を加えた26画面、総GET28/count・list各5回です。
+[18]〜[25]の総 `request_counts` が一定であることを照合します（Detailを除外するbrowse数で代用しません）。
+
+#### #17 Shift+H/L実装後のworker自動検証（2026-10-29 08:57 UTC）
+
+実装はShellの左右focus記憶・確定focus設定・専用dispatchに限定しました。
+Browseへ新キーを流さず、通信/選択/条件/世代は変更しません。既存の検索部分実装を保持し、
+候補取得失敗時のpopup案内だけEnter retry/Esc閉鎖へ整合しました（動作変更なし）。
+メインfooterは既存の全体1行/compact3行のまま短縮し、panel配置/高さは変えていません。
+
+公開Shell→TestBackendと実bl→既存PTY/ローカルHTTPSで、TDDの縦sliceを観測しました。
+以下の短縮filterは各1試験を実行しています。
+
+| RED → 最小実装 → GREENコマンド | 終了コード / 根拠 |
+| --- | --- |
+| `cargo test --locked --test tui_shell shell_uppercase_region_keys` | 101（最初のLでProjectのまま）→0 / `red-navigation.log`, `green-navigation.log` |
+| `cargo test --locked --test tui_shell shell_region_guidance` | 101（H:Left案内なし）→0 / `red-guidance.log`, `green-guidance.log` |
+| `cargo test --locked --test tui_process search_dialog_candidate_failure_is_not_empty_success_and_can_be_retried` | 101（失敗時もEnter/Esc閉鎖と案内）→0 / `red-retry-help.log`, `green-retry-help.log` |
+
+追加のprocess試験作成中に、popupを閉じるEscとdialog取消Escを分ける必要と、
+R成功後は先頭へ戻り本文が画面外になる期待の誤りによる中間失敗がありました。
+期待/stepを補正し、製品の追加変更はしていません（`process-region-first.log` → `process-region-second.log`）。
+その後、通常project B→Aの実切替も追加して成功しました（`process-region-project.log`）。
+通知の有効/拒否キー・全移動元/内部切替・初期/同側/Enter/Esc・入力/popup/適用保護・
+成功/失敗/取消・横断/通常検索・project切替・resize/極小・NO_COLOR・初期通信/空project・
+Ctrl+C130/復元・既存ページ2選択保持を回帰試験で確認しました。
+遅延Detail R中の総GET数は7のまま、応答完了後は8で一定、取得完了後の左右往復は6のままです。
+本文末尾scroll・課題選択/検索条件/履歴も保持し、同じ遅延R応答が取消なしで反映されました。
+
+| 変更後の正式チェック | 終了コード / 実測 |
+| --- | --- |
+| `cargo test --locked --test tui_shell` | 0 / 8成功 |
+| `cargo test --locked --test tui_process` | 0 / 55成功 |
+| `cargo test --locked --lib tui::tests::` | 0 / 17成功、実IME専用1 ignored |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0 / 20 suite、255成功、1 ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 / warningなし |
+| `cargo audit --version` | 0 / cargo-audit 0.22.2維持 |
+| `cargo audit --file Cargo.lock` | 0 / 1381 advisory・224依存、DB/registry timeout・warning・脆弱性報告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| CONTRIBUTINGの直接release HTTPS/PTY + 結果assert | 0 / 26画面、28 GETのみ、count/list各5組の条件一致、clear/self横断/通常復帰、100x24/40x12の領域復帰、移動中の総GET不変、secret/OSC非表示、製品/server stderr空、q=0/端末復元 |
+| `git diff --check` / stagedなし | 0 / stagedなし |
+
+監査前後のCargo.lock SHA-256はともに
+`0b5c7a872566c900fcbbd060bb07ddd1760eb69127359c11dcba5fc43c16c4d6` で不変です。
+今回のrelease SHA-256:
+
+- `bl`: `0c2038d888ce16d2f0332438249cd5281692acb0efcd56e8a4d1d07dfed20a98`
+- `bl-cli`: `b832db595339069beb2aee8697cc625b1fe0e0f957e018377b9d96be1abf673d`
+
+根拠は `/tmp/issue17-focus-root/` の上記RED/GREENログ、`tui-shell.log`, `tui-process.log`,
+`tui-lib.log`, `fmt.log`, `all-targets.log`, `clippy.log`, `audit-version.log`, `audit.log`,
+`lock-before`, `lock-after`, `build.log`, `release-sha256`, `release-pty.json`, `direct-requests.jsonl`,
+`direct-assert.log`, `direct-server.log`, `diff-check.log`, `staged-files` です。
+直接検証はCONTRIBUTINGの更新済み手順と同じ既存fixture/driverを使用し、一時TLS/config/serverは回収済みです。
+Plan/基本設計/Cargo.toml/Cargo.lockおよびbrowse.rsはworker開始時から不変、既存未コミット/untrackedを保持しました。
+commit/stash/reset・GitHub更新/push/merge/release/deployは行っていません。
+
+**未完了**: 新buildの実端末・実IME・実Backlog受入、Rootの独立再検証・Review/最終gate。
+今回workerは実profile/API keyの読取りも実Backlog接続も行っていません。
+上の自動成功をIssue #17の全体完了や最終承認へ読み替えません。
+
+#### #17 Shift+H/L改訂後のRoot再検証（2026-10-29）
+
+Rootはworker終了後に実差分とfocus変更の全製品経路を確認し、同じ変更後releaseに対して独立再実行しました。
+`tui_shell` 8件、`tui_process` 55件、`tui::tests::` 17件成功/実IME専用1 ignored、
+全対象20 suite・255成功/1 ignored。fmt、Clippy（`-D warnings`）、release両binary build、
+`git diff --check` はすべて終了0でした。Cargoの60秒超の進捗表示は既存body timeout試験で、
+試験は成功し、warning/fixture tracebackはありません。
+監査も終了0、cargo-audit 0.22.2・1381 advisory・224依存、DB/registry照会成功、
+timeout・警告・脆弱性報告なし。Cargo.lockは上記hashで監査前後不変です。
+
+Rootの変更後release直接HTTPS/PTYも終了0。26画面・28 GETのみ、count/list各5組の条件一致、
+clear query・self横断・通常復帰、H/L往復の総GET増加ゼロ、secret/OSC非表示、
+空の製品/driver/server stderr、q=0・端末復元をassertしました。一時TLS/config/fake key/serverは回収済みです。
+初回の結果assertは背面一覧の正当な `K:Any` までdialogの空欄と一括判定して失敗しました。
+製品不具合ではなくRootの検証範囲の誤りで、値欄に限定して再実行し成功しました。製品変更はありません。
+根拠は `/tmp/issue17-focus-root-final/` の `checks.json`、各チェックlog、`release-pty.json`、
+`direct-requests.jsonl`、`direct-result.log`、`direct-server.log` です。release hashは上記worker記録と一致します。
+
+Rootは現在のdefault profileのspaceUrlが `https://lazybl.backlog.com/` originであることを値を限定して確認しました。
+このRoot環境に認証環境変数はなく、実サービス接続・API key取得・書込みは行っていません。
+変更後buildの実端末・実IME・実Backlog受入はユーザー確認待ちです。
+独立した2件のfresh Reviewと最終Code Review gateも未完了で、現時点でIssue #17を完了とは扱いません。
+
+#### #17 Shift+H/L改訂後releaseのユーザー受入（2026-10-29）
+
+Rootが上記hash `0c2038d888ce16d2f0332438249cd5281692acb0efcd56e8a4d1d07dfed20a98` のreleaseを指定し、
+`./target/aarch64-apple-darwin/release/bl --profile default` を普段の認証設定済み実端末から起動するよう依頼しました。
+ユーザーは今回のbuildに対する次の二つの確認群へ、それぞれ **「すべて問題なし」** と回答しました。
+
+- Project→L→Detail→l→Comment→H→Project→L→Comment、Issueを左の最終focusとした復帰、
+  同じ側no-op、Issue Enter→Detail／右Esc→Issue、100x24／40x12／極小往復のfocus・案内・選択／scroll保持、
+  q終了・入力中Ctrl+Cとshell／端末復元。
+- 実候補・通常検索適用／クリア／結果・横断→通常復帰・標準編集・H/L文字入力・popup、
+  実IMEの変換確定Enterでは検索せず次Enterで一回検索、候補変更・取消・再変換。
+
+環境と非機密の対象識別子への回答は **「前回と同じ」**。
+前回の明示記録に対応するGhostty 1.3.1、macOS 26、macOS標準IME、101 keyboard・remapなし、
+課題キー `BLCLI-1`、default profile／`https://lazybl.backlog.com/` を今回のユーザー申告として記録します。
+今回操作端末のTERM／NO_COLORの具体値は未取得で、推測しません（自動試験のNO_COLOR検証とは区別）。
+過去buildの成功を流用せず、今回の質問とユーザー回答を受入根拠とします。画面capture・API key・機密本文は取得／記録せず、
+実Backlogへの書込みは行っていません。複数projectの実サービス受入は既存環境制約どおり対象外で、ローカルHTTPS試験で確認しました。
+
+この受入後にfresh Correctness／Ponytail Reviewを実施し、Rootが指摘を整理してから最終Code Review gateへ提出します。
+受入回答をCode ReviewのApproveとして流用しません。
+
+#### #17 Shift+H/L改訂後の独立Review（2026-10-29）
+
+ユーザー受入後、別々のfresh built-in reviewerでCorrectness ReviewとPonytail Reviewを実施しました。
+両方が最終 `git diff HEAD`・untracked全3ファイルの差分と現在のソース・正式Plan／基本設計、
+Rootのチェック／直接HTTPS記録と今回buildへのユーザー受入記録を確認し、具体的な指摘はありませんでした。
+Rootも指摘なしの内容・根拠を確認し、追加の修正要求・未採用指摘はありません。
+Reviewerはread-onlyで、自身によるコマンド実行・実端末／実Backlog操作はしていません。
+実行結果はRootが独立実行したログを確認したものです。未取得TERM／NO_COLOR、
+実サービス複数project対象外、全端末／IME保証なしという制約も維持します。
+
+Review run: `6fdfdff7-b766-4fac-bf25-9dd15cf97e15`。
+Correctness: `ac0f21a9-475a-4e93-81f5-639e90b90378`、
+Ponytail: `5c780d56-5f01-4949-8d95-1d30e651c8bb`。
+各結果はsession-managed artifactの `reviews/correctness.md`、`reviews/ponytail.md` にあります。
+この追記はレビュー結果の記録だけで製品コードを変更していません。最終Code Review gateはRootが続けて実施し、
+その明示的な結果が得られるまでREADY_FOR_MERGEとは扱いません。

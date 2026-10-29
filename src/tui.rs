@@ -2,6 +2,7 @@
 mod browse;
 mod detail;
 mod input;
+mod search;
 use crate::{Error, config::Config, safety};
 use crossterm::{
     cursor::{Hide, Show},
@@ -40,6 +41,8 @@ enum Focus {
 /// Input and rendering boundary, independent of the terminal and network.
 pub struct Shell {
     focus: Focus,
+    left_focus: Focus,
+    right_focus: Focus,
     browse: browse::Browse,
     no_color: bool,
     #[cfg(test)]
@@ -49,6 +52,8 @@ impl Shell {
     pub fn new(no_color: bool) -> Self {
         Self {
             focus: Focus::Project,
+            left_focus: Focus::Project,
+            right_focus: Focus::Detail,
             browse: browse::Browse::default(),
             no_color,
             #[cfg(test)]
@@ -67,10 +72,32 @@ impl Shell {
         if let Some(input) = &mut self.input_check {
             return input.key(key, area);
         }
+        if self.browse.dialog.is_some() && area.width >= 40 && area.height >= 12 {
+            self.browse.error_notice = None;
+            self.browse.dialog_event(&Event::Key(key), area);
+            return None;
+        }
         if key.modifiers.is_empty() && key.code == KeyCode::Char('q') {
             return Some(0);
         }
         if area.width < 40 || area.height < 12 {
+            return None;
+        }
+        if matches!(key.code, KeyCode::Char('H' | 'L')) {
+            if key.kind == KeyEventKind::Press
+                && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+            {
+                self.browse.error_notice = None;
+                match (self.focus, key.code) {
+                    (Focus::Project | Focus::Issue, KeyCode::Char('L')) => {
+                        self.set_focus(self.right_focus);
+                    }
+                    (Focus::Detail | Focus::Comment, KeyCode::Char('H')) => {
+                        self.set_focus(self.left_focus);
+                    }
+                    _ => {}
+                }
+            }
             return None;
         }
         if self.browse.error_notice.is_some()
@@ -78,6 +105,20 @@ impl Shell {
             && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' '))
         {
             self.browse.error_notice = None;
+            return None;
+        }
+        if key.modifiers == KeyModifiers::CONTROL
+            && key.code == KeyCode::Char('a')
+            && self.focus == Focus::Project
+        {
+            self.browse.error_notice = None;
+            self.browse.open_search(true);
+            return None;
+        }
+        if key.modifiers.is_empty() && key.code == KeyCode::Char('/') && self.focus == Focus::Issue
+        {
+            self.browse.error_notice = None;
+            self.browse.open_search(false);
             return None;
         }
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('o') {
@@ -108,24 +149,37 @@ impl Shell {
         self.browse.key(key.code, self.focus, rows);
         match key.code {
             KeyCode::Char('h' | 'l') | KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = match self.focus {
+                self.set_focus(match self.focus {
                     Focus::Project => Focus::Issue,
                     Focus::Issue => Focus::Project,
                     Focus::Detail => Focus::Comment,
                     Focus::Comment => Focus::Detail,
-                };
+                });
             }
-            KeyCode::Enter if self.focus == Focus::Issue => self.focus = Focus::Detail,
+            KeyCode::Enter if self.focus == Focus::Issue => self.set_focus(Focus::Detail),
             KeyCode::Esc if matches!(self.focus, Focus::Detail | Focus::Comment) => {
-                self.focus = Focus::Issue
+                self.set_focus(Focus::Issue)
             }
             _ => {}
         }
         None
     }
+    fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        match focus {
+            Focus::Project | Focus::Issue => self.left_focus = focus,
+            Focus::Detail | Focus::Comment => self.right_focus = focus,
+        }
+    }
     fn event(&mut self, event: Event, area: Rect) -> Option<u8> {
         match event {
             Event::Key(key) => self.key(key, area),
+            Event::Paste(_) | Event::Resize(..)
+                if self.browse.dialog.is_some() && area.width >= 40 && area.height >= 12 =>
+            {
+                self.browse.dialog_event(&event, area);
+                None
+            }
             #[cfg(test)]
             Event::Paste(_) if self.input_check.as_ref().is_some_and(|input| input.focused) => {
                 self.input_check.as_mut().unwrap().field.event(&event, area);
@@ -156,25 +210,30 @@ impl Shell {
         ])
         .split(area);
         let (navigation, action) = match self.focus {
-            Focus::Project => ("h/l Tab: Issue", "j/k: move Enter: select R: reload"),
-            Focus::Issue => ("h/l Tab: Project", "j/k p/n Enter:Detail Ctrl+O R"),
-            Focus::Detail => (
-                "h/l Tab: Comment Esc: Issue",
-                "j/k PgUp/Dn b/Space g/G Home/End R",
-            ),
-            Focus::Comment => ("h/l Tab/Shift+Tab: Detail", "Esc: Issue"),
+            Focus::Project => ("h/l Tab/S-Tab:Issue", "j/k Enter:select Ctrl+A:cross R"),
+            Focus::Issue => ("h/l Tab/S-Tab:Project", "j/k p/n Enter:Detail / Ctrl+O R"),
+            Focus::Detail => ("h/l Tab/S-Tab:Comment", "j/k PgUp/Dn g/G R Esc:Issue"),
+            Focus::Comment => ("h/l Tab/S-Tab:Detail", "Esc:Issue"),
         };
-        let exits = "q: quit | Ctrl+C: interrupt";
-        let keys = if compact {
-            format!("{navigation}\n{action}\n{exits}")
-        } else if action.is_empty() {
-            format!("{navigation} | {exits}")
+        let regions = "H:Left L:Right";
+        let exits = "q:quit Ctrl+C:interrupt";
+        let keys = if self.browse.dialog.is_some() {
+            if compact {
+                "\n\nEsc: close/cancel Ctrl+C: interrupt".into()
+            } else {
+                "Search | Esc: close candidates / cancel draft | Ctrl+C: interrupt".into()
+            }
+        } else if compact {
+            format!("{regions} {navigation}\n{action}\n{exits}")
         } else {
-            format!("{navigation} | {action} | {exits}")
+            format!("{regions} | {navigation} | {action} | {exits}")
         };
         frame.render_widget(Paragraph::new(keys), rows[1]);
         if compact {
             self.panel(frame, rows[0], self.focus);
+            if let Some(dialog) = &self.browse.dialog {
+                dialog.draw(frame, &[&self.browse.secret]);
+            }
             self.error_popup(frame);
             return;
         }
@@ -190,6 +249,9 @@ impl Shell {
         );
         for focus in [Focus::Project, Focus::Issue, Focus::Detail, Focus::Comment] {
             self.panel(frame, self.panel_area(area, focus), focus);
+        }
+        if let Some(dialog) = &self.browse.dialog {
+            dialog.draw(frame, &[&self.browse.secret]);
         }
         self.error_popup(frame);
     }
@@ -367,7 +429,7 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         #[cfg(test)]
         let load_initial = shell.input_check.is_none();
         if load_initial {
-            shell.browse.start(&config.api_key);
+            shell.browse.start(&config);
         }
         let mut terminal = Terminal::new(CrosstermBackend::new(&mut guard.output))
             .map_err(|_| Error::new("terminal", "Cannot initialize terminal"))?;
@@ -393,6 +455,7 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             let (_, task) = pending.swap_remove(index);
                             let response = task.await.map_err(|_| Error::new("terminal", "Read task failed"))?;
                             shell.browse.complete(response, config.settings.project.as_deref())?;
+                            if std::mem::take(&mut shell.browse.focus_issue) { shell.set_focus(Focus::Issue); }
                         } else { index += 1; }
                     }
                     // Bound work per tick even during a stream of paste/resize events.
@@ -441,6 +504,324 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::{io::Read, process::Command};
+
+    #[test]
+    fn search_dialog_is_centered_and_popup_overlays_without_moving_keyword() {
+        use ratatui::backend::TestBackend;
+        for (width, height, x, y, w, h) in [(100, 24, 14, 3, 72, 18), (40, 12, 1, 1, 38, 10)] {
+            let mut shell = Shell::new(true);
+            shell.browse.dialog = Some(search::Dialog::new(None, search::Conditions::default()));
+            let area = Rect::new(0, 0, width, height);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let before = terminal.backend().buffer().clone();
+            assert_eq!(before[(x, y)].symbol(), "┌");
+            assert_eq!(before[(x + w - 1, y + h - 1)].symbol(), "┘");
+            let text: String = before.content().iter().map(|cell| cell.symbol()).collect();
+            assert!(text.replace(' ', "").contains("キーワード"), "{text}");
+            let cursor = terminal.get_cursor_position().unwrap();
+            shell.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), area);
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let popup = terminal.backend().buffer();
+            // Cross-project popup is 60x10 or 36x8, entirely inside the parent.
+            let pw = 60.min(w - 2);
+            let ph = 10.min(h - 2);
+            let px = x + 1;
+            let py = y + 1;
+            assert_eq!(popup[(px, py)].symbol(), "┌");
+            assert_eq!(popup[(px + pw - 1, py + ph - 1)].symbol(), "┘");
+            shell.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let after = terminal.backend().buffer();
+            for column in cursor.x.saturating_sub(1)..x + w - 1 {
+                assert_eq!(before[(column, cursor.y)], after[(column, cursor.y)]);
+            }
+            shell.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), area);
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            assert_eq!(terminal.get_cursor_position().unwrap(), cursor);
+        }
+    }
+
+    #[test]
+    fn search_dialog_shows_selected_values_beside_labels_and_empty_values_as_blank() {
+        use ratatui::backend::TestBackend;
+        for (width, height, x, y, field_width) in [
+            (100, 24, 50, 4, 35),
+            (40, 12, 2, 3, 36),
+            (100, 12, 15, 3, 70),
+        ] {
+            let mut shell = Shell::new(true);
+            shell.browse.dialog = Some(search::Dialog::new(None, search::Conditions::default()));
+            let area = Rect::new(0, 0, width, height);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let cursor = terminal.get_cursor_position().unwrap();
+            let row = |buffer: &ratatui::buffer::Buffer| -> String {
+                let mut visible = String::new();
+                let mut column = x;
+                while column < x + field_width {
+                    let symbol = buffer[(column, y)].symbol();
+                    visible.push_str(symbol);
+                    column += ratatui::text::Line::from(symbol).width().max(1) as u16;
+                }
+                visible
+            };
+            assert_eq!(row(terminal.backend().buffer()).replace(' ', ""), "担当者:");
+            shell.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), area);
+            shell
+                .browse
+                .dialog
+                .as_mut()
+                .unwrap()
+                .load_candidates(vec![search::Choice {
+                    id: Some("7".into()),
+                    label: format!("HEAD{}TAIL", "日e\u{301}👩‍💻".repeat(20)),
+                }]);
+            shell.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), area);
+            for _ in 0..3 {
+                shell.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+            }
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let popup: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                popup.contains("> [x] "),
+                "horizontal scrolling must preserve the selection mark"
+            );
+            shell.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            assert!(
+                row(terminal.backend().buffer())
+                    .replace(' ', "")
+                    .starts_with(">担当者:HEAD"),
+                "{width}x{height}: {}",
+                row(terminal.backend().buffer())
+            );
+            let mut saw_tail = false;
+            for _ in 0..150 {
+                shell.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+                terminal.draw(|frame| shell.draw(frame)).unwrap();
+                saw_tail |= row(terminal.backend().buffer()).contains("TAIL");
+                assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), ">");
+            }
+            assert!(
+                saw_tail,
+                "{width}x{height}: full selected value must remain reachable"
+            );
+            for _ in 0..150 {
+                shell.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
+            }
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            assert!(row(terminal.backend().buffer()).contains("HEAD"));
+            shell.key(
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+                area,
+            );
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            assert_eq!(terminal.get_cursor_position().unwrap(), cursor);
+        }
+    }
+
+    #[test]
+    fn search_dialog_short_wide_terminal_keeps_keyword_border_and_help_separate() {
+        use ratatui::backend::TestBackend;
+        let mut shell = Shell::new(true);
+        shell.browse.dialog = Some(search::Dialog::new(None, search::Conditions::default()));
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(15, 7)].symbol(),
+            "└",
+            "stack fields when height cannot fit side-by-side values and keyword frame"
+        );
+        assert_eq!(buffer[(84, 7)].symbol(), "┘");
+        let help: String = (15..85).map(|x| buffer[(x, 8)].symbol()).collect();
+        assert!(help.contains("Tab/ShiftTab"));
+    }
+
+    #[test]
+    fn search_dialog_enter_requires_unmodified_press_and_popup_close_never_applies() {
+        use ratatui::backend::TestBackend;
+        let area = Rect::new(0, 0, 40, 12);
+        let mut shell = Shell::new(true);
+        shell.browse.dialog = Some(search::Dialog::new(
+            None,
+            search::Conditions {
+                keyword: "draft".into(),
+                ..Default::default()
+            },
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        for popup in [false, true] {
+            if popup {
+                shell.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), area);
+            }
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let before = terminal.backend().buffer().clone();
+            for (modifiers, kind) in [
+                (KeyModifiers::ALT, KeyEventKind::Press),
+                (KeyModifiers::CONTROL, KeyEventKind::Press),
+                (KeyModifiers::NONE, KeyEventKind::Repeat),
+                (KeyModifiers::NONE, KeyEventKind::Release),
+            ] {
+                shell.key(
+                    KeyEvent::new_with_kind(KeyCode::Enter, modifiers, kind),
+                    area,
+                );
+                terminal.draw(|frame| shell.draw(frame)).unwrap();
+                assert_eq!(&before, terminal.backend().buffer());
+            }
+        }
+        shell.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
+        let closed: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(closed.contains("Cross-project Search") && !closed.contains("Applying..."));
+        shell.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
+        let applying = terminal.backend().buffer().clone();
+        assert!(
+            applying
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .contains("Applying...")
+        );
+        for (code, modifiers) in [
+            (KeyCode::Char('x'), KeyModifiers::NONE),
+            (KeyCode::Tab, KeyModifiers::NONE),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL),
+            (KeyCode::Enter, KeyModifiers::NONE),
+        ] {
+            shell.key(KeyEvent::new(code, modifiers), area);
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            assert_eq!(&applying, terminal.backend().buffer());
+        }
+        assert_eq!(
+            shell.key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                area
+            ),
+            Some(130)
+        );
+        shell.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
+        assert!(
+            !terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .contains("Cross-project Search")
+        );
+    }
+
+    #[test]
+    fn search_dialog_candidate_horizontal_scroll_preserves_graphemes_checks_and_full_safe_values() {
+        use ratatui::backend::TestBackend;
+        let area = Rect::new(0, 0, 40, 12);
+        let name = format!("{}TAIL", "日e\u{301}👩‍💻".repeat(20));
+        let mut shell = Shell::new(true);
+        shell.browse.secret = "test-secret".into();
+        shell.browse.dialog = Some(search::Dialog::new(None, search::Conditions::default()));
+        shell.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), area);
+        shell.browse.dialog.as_mut().unwrap().load_candidates(vec![
+            search::Choice {
+                id: Some("7".into()),
+                label: name,
+            },
+            search::Choice {
+                id: Some("8".into()),
+                label: format!(
+                    "{}test-secret\u{1b}]52;c;secret\u{7}\n\t SAFE-END",
+                    "x".repeat(100)
+                ),
+            },
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        shell.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), area);
+        for expected in ["日", "e\u{301}", "👩‍💻"] {
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(9, 3)].symbol(), expected);
+            assert_eq!(buffer[(3, 3)].symbol(), ">");
+            assert_eq!(buffer[(6, 3)].symbol(), "x");
+            shell.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+        }
+        let mut saw_tail = false;
+        for _ in 0..100 {
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let visible: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            saw_tail |= visible.contains("TAIL");
+            assert!(!visible.contains("test-secret") && !visible.contains('\u{1b}'));
+            shell.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+        }
+        assert!(saw_tail);
+        shell.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+        terminal.draw(|frame| shell.draw(frame)).unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(9, 4)].symbol(),
+            "x",
+            "changing candidate resets horizontal position"
+        );
+        let mut saw_safe_end = false;
+        let mut saw_line_escapes = false;
+        for _ in 0..150 {
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let visible: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            saw_safe_end |= visible.contains("SAFE-END");
+            saw_line_escapes |= visible.contains("\\n\\t");
+            assert!(!visible.contains("test-secret") && !visible.contains('\u{1b}'));
+            shell.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+        }
+        assert!(saw_safe_end && saw_line_escapes);
+        shell.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), area);
+        shell.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+        // Every selected value remains reachable on the closed field's single line too.
+        let mut saw_tail = false;
+        let mut saw_safe_end = false;
+        for _ in 0..250 {
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            let visible: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            saw_tail |= visible.contains("TAIL");
+            saw_safe_end |= visible.contains("SAFE-END");
+            assert!(!visible.contains("test-secret") && !visible.contains('\u{1b}'));
+            shell.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+        }
+        assert!(saw_tail && saw_safe_end);
+    }
 
     pub(super) struct InputCheck {
         pub(super) field: SingleLineInput,
@@ -880,6 +1261,70 @@ mod tests {
             .collect();
         assert!(!text.contains("Failed:"), "{text}");
         assert!(text.contains("> Issue List"), "{text}");
+    }
+
+    #[test]
+    fn region_keys_dismiss_notices_only_for_valid_main_screen_presses() {
+        use ratatui::backend::TestBackend;
+        fn screen(shell: &Shell) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            terminal.draw(|frame| shell.draw(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect()
+        }
+        let area = Rect::new(0, 0, 40, 12);
+        let mut shell = Shell::new(true);
+        for (code, expected) in [
+            ('H', "> Project List"),
+            ('L', "> Issue Detail"),
+            ('L', "> Issue Detail"),
+            ('H', "> Project List"),
+        ] {
+            shell.browse.error_notice = Some("Failed: retain this notice".into());
+            let before = screen(&shell);
+            for kind in [
+                KeyEventKind::Press,
+                KeyEventKind::Repeat,
+                KeyEventKind::Release,
+            ] {
+                for modifiers in [
+                    KeyModifiers::NONE,
+                    KeyModifiers::SHIFT,
+                    KeyModifiers::CONTROL,
+                    KeyModifiers::ALT,
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                    KeyModifiers::ALT | KeyModifiers::SHIFT,
+                ] {
+                    if kind == KeyEventKind::Press
+                        && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+                    {
+                        continue;
+                    }
+                    shell.key(
+                        KeyEvent::new_with_kind(KeyCode::Char(code), modifiers, kind),
+                        area,
+                    );
+                    assert_eq!(screen(&shell), before);
+                }
+            }
+            shell.key(
+                KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE),
+                Rect::new(0, 0, 39, 12),
+            );
+            assert_eq!(screen(&shell), before);
+            shell.key(
+                KeyEvent::new(KeyCode::Char(code), KeyModifiers::SHIFT),
+                area,
+            );
+            let after = screen(&shell);
+            assert!(!after.contains("Failed:"), "{after}");
+            assert!(after.contains(expected), "{after}");
+        }
     }
 
     #[test]

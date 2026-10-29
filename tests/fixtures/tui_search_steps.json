@@ -1,0 +1,117 @@
+[
+  {
+    "wait": "First issue",
+    "keys": "l/"
+  },
+  {
+    "wait": "Search",
+    "keys": "qhljk\t"
+  },
+  {
+    "wait": "[x] open",
+    "keys": "j "
+  },
+  {
+    "wait": "[x] closed",
+    "keys": "\u0001"
+  },
+  {
+    "wait": "[ ] Alice",
+    "keys": " \u0007"
+  },
+  {
+    "wait": "[ ] v1",
+    "keys": " \r\r"
+  },
+  {
+    "wait": "Filtered issue",
+    "keys": "/"
+  },
+  {
+    "wait": "Search",
+    "keys": "\t\u0015\r"
+  },
+  {
+    "wait": "Cleared issue",
+    "keys": "/"
+  },
+  {
+    "wait": "キ ー ワ ー ド",
+    "resize": [
+      12,
+      40
+    ]
+  },
+  {
+    "wait": "Search",
+    "keys": "\u001b"
+  },
+  {
+    "wait": "> Issue List",
+    "keys": "h\u0001"
+  },
+  {
+    "wait": "Cross-project Search",
+    "keys": "\t"
+  },
+  {
+    "wait": "自 分",
+    "keys": " \r\r"
+  },
+  {
+    "wait": "Alpha result",
+    "keys": "c"
+  },
+  {
+    "wait": "Select a concrete project",
+    "keys": " "
+  },
+  {
+    "wait": "> Issue List",
+    "keys": "h\r"
+  },
+  {
+    "wait": "> Project List",
+    "keys": "l"
+  },
+  {
+    "wait": "Returned issue",
+    "keys": "L",
+    "pause": 0.3,
+    "resize": [
+      24,
+      100
+    ]
+  },
+  {
+    "wait": "> Issue Detail",
+    "keys": "l"
+  },
+  {
+    "wait": "> Comment",
+    "keys": "H"
+  },
+  {
+    "wait": "> Issue List",
+    "keys": "L"
+  },
+  {
+    "wait": "> Comment",
+    "resize": [
+      12,
+      40
+    ]
+  },
+  {
+    "wait": "> Comment",
+    "keys": "H"
+  },
+  {
+    "wait": "> Issue List",
+    "keys": "L"
+  },
+  {
+    "wait": "> Comment",
+    "keys": "q"
+  }
+]
