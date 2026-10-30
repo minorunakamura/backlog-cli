@@ -1441,7 +1441,7 @@ fn search_dialog_multiselects_all_fields_and_applies_identical_count_list_filter
             {"wait":"[x] Alice","keys":"\u{1b}"},
             {"wait":"Alice (7)","keys":"\u{b}"},
             {"wait":"fix qhljk","keys":"\r"},
-            {"wait":"> Issue List","keys":"h\r"},
+            {"wait":"K:fix qhljk S:2 A:2 G:2","keys":"h\r"},
             {"wait":"> Project List","keys":"l/"},
             {"wait":"v1 (","keys":"\u{1b}"},
             {"wait":"> Issue List","keys":"q"}
