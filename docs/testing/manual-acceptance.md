@@ -1824,3 +1824,65 @@ OSのtcsetattr自体／temp削除失敗の注入、GitHub Actionsは未実施。
 採用P1は修正・Root正式チェック／直接検証・fresh限定再レビューで解消し、不採用・未解決の指摘はない。
 最終Code Review gateはこの記録後にRootが呼ぶ。skippedまたは現在差分への明示Approveを確認するまでREADYとはしない。
 実Backlog接続／書込み・commit／push／merge／release公開は行っていない。
+
+### #19 PR #50 CI失敗：Ctrl+O拒否テストの非同期競合を隔離（2026-10-30 UTC）
+
+対象はbranch `feat/editor-integration`、HEAD `59cafd7768d14b120ccdac113c6d6572f1a2a6d0`。
+開始時は作業tree／indexともにclean。製品ソース・仕様・依存・汎用PTY fixtureを変更せず、
+`ctrl_o_rejects_invalid_list_keys_and_secret_urls_without_spawning_browser_or_issue_get` の手順と本記録だけを変更した。
+
+#### CI観測と直接再現
+
+- CI run `41005014731`／job `123897832845` のTestは終了101。`tui_process` は71成功・1失敗。
+  一次ログ `/tmp/backlog19-ci.fkkw1B/failed-job.log` の798行付近では、`../../x` のケースで
+  `remaining steps=[{'keys': 'q', 'wait': '> Issue List'}]`。`Failed: Invalid selected issue key` のpopupが
+  一覧タイトルを覆い、Detailは`Preview failed`。qは未送信であり、製品がqに無応答だった証拠ではない。
+- 選択後150msの自動previewとCtrl+Oが同じ不正keyのエラーを返し、spaceで通知を消した後にも
+  previewの完了通知が届き得る。ブラウザ拒否だけを検証する手順に、無関係なpreview通知が混ざっていた。
+  Rootの元exactと4並列20回は成功しており、自然な実行だけでCIの順序を再現できたとは扱わない。
+- Workerも修正前の `python3 /tmp/backlog19-ci.fkkw1B/reproduce.py` で実debug `bl`＋localhost HTTPS／PTYを直接実行。
+  元driverは終了0、診断用 `tty-delayed-observation.py` は終了1で同じremaining q／Preview failed／popupによるタイトル遮蔽を再現した。
+  この診断driverは既存fixtureのコピーで、spaceだけ即時送信し、その直後の観測を0.25秒遅らせる2箇所のみ変更。
+  製品ソース改変・timeout延長・retryはない。wrapper自体は終了0なので、子driverの終了1をREDの根拠とする（`worker-red.log`）。
+
+#### 最小修正と修正後の実測
+
+一覧データの`Project: B`を待ったら、通常キーl（通知を消してIssueへ移動）とEsc（preview取消）を同じ入力batchで送り、
+次stepでpopupに隠れないfooter `h/l Tab/S-Tab:Project` の描画を待ってCtrl+Oを別batchで送る。
+previewが既に完了した場合も成立するmarkerを使い、必ず`cancelled`が出る前提や追加の固定時間待ちは設けない。
+元の短い`pause:0.01`は削除し、fixture既定の描画待ちを使う。最終snapshot参照は2→3へ整合した。
+全5キー、invalid時の総request4、browser stub未起動、secret URL拒否、通知後のIssue focus、
+既存scripted helperの終了0／termios復元／stderr空のassertは維持し、qは従来どおり一覧タイトルを確認してから送る。
+
+一次ログ／診断scratchは `/tmp/backlog19-ci.fkkw1B/`。診断scriptはrepoへ追加していない。
+修正後の `reproduce-green.py` は修正前と同じbinary／routes／2種driverで、上記4stepへ手順と最終snapshot参照を合わせ、
+終了0／復元／stderr空／最終Issue focus／4 GETをassertした。`reproduce-completed.py` は診断だけ初回観測を0.4秒遅らせ、
+最初のsnapshotで既に`Preview failed`であることもassertして同じ手順を実行した（repoの待機には追加していない）。
+
+| コマンド／観測 | 終了コード／今回の結果 |
+| --- | --- |
+| `python3 /tmp/backlog19-ci.fkkw1B/reproduce-green.py` | 0、元driver／同じ遅延観測driverとも終了0・4 snapshots・上記assert成功（`worker-green.log`） |
+| `python3 /tmp/backlog19-ci.fkkw1B/reproduce-completed.py` | 0、preview完了済みでも両driver成功（`worker-completed.log`） |
+| `cargo test --locked --test tui_process ctrl_o_rejects_invalid_list_keys_and_secret_urls_without_spawning_browser_or_issue_get -- --exact` | 0、全5キー成功（`worker-exact.log`）。続けて同じコマンドを逐次5回＋4並列20回、全25回終了0・retryなし（`worker-repeat/`） |
+| `cargo test --locked --test tui_process ctrl_o` | 0、2成功（`worker-ctrl_o.log`） |
+| `cargo test --locked --test tui_process` | 0、72成功（`worker-tui-process.log`） |
+| `cargo fmt --all -- --check` | 0（`worker-fmt.log`） |
+| `cargo test --locked --all-targets` | 0、302成功・既存の実端末専用2 ignored（`worker-all-targets.log`） |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし（`worker-clippy.log`） |
+| `cargo audit --file Cargo.lock` | 0、cargo-audit 0.22.2、1386 advisory／230依存、警告・脆弱性報告なし（`worker-audit.log`） |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0（`worker-release.log`） |
+
+実行環境はDarwin arm64、rustc 1.99.1。今回の局所／全対象testログにRust warning・HTTPS tracebackはない。
+監査前後のCargo.lock SHA-256はともに `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で不変。
+文書追記後も`git diff --check`／fmtは終了0、変更は本記録と上記testの2ファイルのみ、stagedなし・HEAD不変を確認した。
+汎用fixtureの8秒timeout／retryなしは維持。今回の修正後GitHub Actionsと実端末目視は未実施で、過去の受入を上書きしない。
+現在差分の独立Review gateはRootへ残す。実Backlog接続／書込み・commit／push／merge／release公開・Issue変更は行っていない。
+
+Rootは修正後の2ファイル差分と原因の一次コードを直接確認し、`reproduce-green.py`／`reproduce-completed.py`を独立実行して双方終了0を確認した。
+元driver／遅延観測driverとも、終了0・端末復元・最終Issue focus・4 GETのみ・stderr空を確認した。
+Rootの正式fmt／全対象test（302成功・2 ignored）／Clippy／audit／release build／diff checkもすべて終了0。
+一次ログは`/tmp/backlog19-ci-root.EXKXwf/`。Root最新testログにはwarning／HTTPS tracebackなし、監査は1386 advisory／230依存で警告なし、lockfileは監査前後で不変。
+fresh限定再レビュー`0f62af1e-6430-4f25-9d88-f39d6f9428f8`は原因に対する同期・全5ケース／安全性assert維持・最小範囲を確認し、指摘なし。
+製品コードを変更しないテスト同期修正のため、元feature全体の2レビューや実端末受入を無条件に繰り返さず、修正影響範囲を再検証した。
+この追記後にRootが現在差分のCode Review gateを実行する。修正後GitHub Actionsは未実行で、ローカル成功をCI成功とみなさない。
+この時点でcommit／pushは未実施。失敗runや過去buildの成功・承認を修正後CIの結果として流用しない。
