@@ -1162,10 +1162,12 @@ fn ctrl_o_rejects_invalid_list_keys_and_secret_urls_without_spawning_browser_or_
             // The configured API key is "1", so the otherwise valid URL includes the secret.
             h.config(json!({"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"NO_COLOR"}}}));
         }
+        // Cancel unrelated previews before Ctrl+O so their errors cannot replace its notification.
         let result = scripted(
             &h,
             json!([
-                {"wait":"Project: B","pause":0.01,"keys":"l\u{f}"},
+                {"wait":"Project: B","keys":"l\u{1b}"},
+                {"wait":"h/l Tab/S-Tab:Project","keys":"\u{f}"},
                 {"wait":if key == "B-1" { "Cannot open a URL" } else { "Invalid selected issue key" },"keys":" "},
                 {"wait":"> Issue List","keys":"q"}
             ]),
@@ -1175,7 +1177,7 @@ fn ctrl_o_rejects_invalid_list_keys_and_secret_urls_without_spawning_browser_or_
             assert_eq!(h.requests().len(), 4, "{key}: {result}");
         }
         assert!(
-            result["snapshots"][2]
+            result["snapshots"][3]
                 .as_str()
                 .unwrap()
                 .contains("> Issue List")
