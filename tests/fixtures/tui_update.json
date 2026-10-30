@@ -1,0 +1,65 @@
+{
+  "routes": {
+    "/api/v2/space": {
+      "body": "{\"name\": \"Local update check\"}"
+    },
+    "/api/v2/projects": {
+      "body": "[{\"id\": 2, \"projectKey\": \"B\", \"name\": \"Beta\"}]"
+    },
+    "/api/v2/issues/count": {
+      "body": "{\"count\":1}"
+    },
+    "GET /api/v2/issues": {
+      "body": "[{\"id\": 1, \"issueKey\": \"B-1\", \"summary\": \"Old list title\", \"status\": {\"name\": \"Open\"}}]"
+    },
+    "GET /api/v2/issues/B-1": {
+      "sequence": [
+        {
+          "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Detail B-1\", \"description\": \"Original body\", \"issueType\": {\"id\": 2, \"name\": \"Task\"}, \"priority\": {\"id\": 3, \"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"id\": 1, \"name\": \"Open\"}, \"resolution\": null, \"startDate\": null, \"dueDate\": null, \"milestone\": [{\"id\": 5, \"name\": \"First\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\"}"
+        },
+        {
+          "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Detail B-1\", \"description\": \"Original body\", \"issueType\": {\"id\": 2, \"name\": \"Task\"}, \"priority\": {\"id\": 3, \"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"id\": 1, \"name\": \"Open\"}, \"resolution\": null, \"startDate\": null, \"dueDate\": null, \"milestone\": [{\"id\": 5, \"name\": \"First\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\"}"
+        },
+        {
+          "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Latest title\", \"description\": \"Latest raw body\", \"issueType\": {\"id\": 2, \"name\": \"Task\"}, \"priority\": {\"id\": 3, \"name\": \"Medium\"}, \"assignee\": {\"id\": 4, \"name\": \"Alice\"}, \"status\": {\"id\": 1, \"name\": \"Open\"}, \"resolution\": null, \"startDate\": null, \"dueDate\": null, \"milestone\": [{\"id\": 5, \"name\": \"First\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\"}"
+        }
+      ]
+    },
+    "PATCH /api/v2/issues/B-1": {
+      "delay": 0.3,
+      "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Changed title\", \"description\": \"\", \"issueType\": {\"id\": 2, \"name\": \"Task\"}, \"priority\": {\"id\": 3, \"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"id\": 1, \"name\": \"Open\"}, \"resolution\": {\"id\": 0, \"name\": \"Fixed\"}, \"startDate\": null, \"dueDate\": null, \"milestone\": [{\"id\": 5, \"name\": \"First\"}, {\"id\": 6, \"name\": \"Second\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\"}"
+    },
+    "/api/v2/projects/2": {
+      "body": "{\"textFormattingRule\":\"markdown\"}"
+    },
+    "/api/v2/issues/B-1/comments": {
+      "sequence": [
+        {
+          "body": "[{\"id\": 1, \"content\": \"Retained comment\", \"changeLog\": [], \"createdUser\": {\"id\": 7, \"name\": \"Local author\"}, \"created\": \"2026-03-01T00:00:00Z\", \"updated\": \"2026-03-01T00:00:00Z\"}]"
+        },
+        {
+          "header_delay": 0.5,
+          "body": "[{\"id\": 9, \"content\": null, \"changeLog\": [{\"field\": \"summary\", \"originalValue\": \"Latest title\", \"newValue\": \"Changed title\"}], \"createdUser\": {\"id\": 7, \"name\": \"Local author\"}, \"created\": \"2026-03-01T00:00:00Z\", \"updated\": \"2026-03-01T00:00:00Z\"}]"
+        }
+      ]
+    },
+    "/api/v2/projects/2/issueTypes": {
+      "body": "[{\"id\": 2, \"name\": \"Task\"}]"
+    },
+    "/api/v2/priorities": {
+      "body": "[{\"id\": 3, \"name\": \"Medium\"}]"
+    },
+    "/api/v2/projects/2/users": {
+      "body": "[{\"id\": 4, \"name\": \"Alice\"}]"
+    },
+    "/api/v2/projects/2/versions": {
+      "body": "[{\"id\": 5, \"name\": \"First\"}, {\"id\": 6, \"name\": \"Second\"}]"
+    },
+    "/api/v2/projects/2/statuses": {
+      "body": "[{\"id\": 1, \"name\": \"Open\"}]"
+    },
+    "/api/v2/resolutions": {
+      "body": "[{\"id\": 0, \"name\": \"Fixed\"}]"
+    }
+  }
+}

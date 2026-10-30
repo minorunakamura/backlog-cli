@@ -227,7 +227,7 @@ main taskが状態と端末を単独所有する。Tokioの短いinterval（目�
 
 結果には対象と世代を付け、検索変更・選択変更・取消・画面閉鎖後の古い結果が表示やbusyを変更しないようにする。プレビューは目安150ms間引き、選択が変わった時点で別課題の本文を表示しない。Enterだけで再取得しない。
 
-基本設計のWorkspace/Project/Issue/Detail/Comment、左右内のfocus、キー表、100x24 / 40x12のlayout、極小時の保護を実装する。検索・R・作成後/コメント追加後の再取得は成功後だけ表示交換し、失敗時の状態保持と通知を実装する。課題更新で一覧を即時書換えず、Comment本文更新でも勝手に最新コメントへ移動しない。
+基本設計のWorkspace/Project/Issue/Detail/Comment、左右内のfocus、キー表、100x24 / 40x12のlayout、極小時の保護を実装する。検索・R・作成後/課題更新後/コメント追加後の再取得は成功後だけ表示交換し、失敗時の状態保持と通知を実装する。課題更新で一覧を即時書換えず、Comment本文更新でも勝手に最新コメントへ移動しない。
 
 単行入力はtui-inputの原文値・grapheme編集とvisual_cursor/visual_scrollを使い、Ratatuiの実cursorを入力位置へ置く。title/keywordとフォーム内の日付入力で同じ扱いを使う。貼付けのCRLF/CR/LF/TABは単行用spaceへ正規化し、表示変換と区別する。通常文字や編集キーをグローバル操作に横取りしない。
 
@@ -653,6 +653,101 @@ cargo-audit 0.22.2と既存正式コマンドを維持する。各終了コー�
 
 Plan承認・tracker設定承認・分割承認・最終追補本文と公開先の保存公開承認を分ける。新規Issue・label・依存関係は増やさず、既存タイトル・本文・OPEN状態・Blocked by／native関係・過去コメントを変更しない。明示承認した改訂コメントだけをIssue #18へ追記する。正式Plan保存・Work Item承認・公開とreadbackの成立後に、確定Issue参照・cwd・改訂Planと部分実装保持を明記した新しいRoot向けImplementation再開kickoffを提示して停止する。実装・Worker起動・merge／release／deployは行わない。
 
+### Issue #21 再計画：課題更新成功後のComment自動再取得
+
+#### 目的・正式入力・優先関係
+
+[Issue #21](https://github.com/minorunakamura/backlog-cli/issues/21) の `REPLAN_REQUIRED` を受け、Detailのeによる課題更新成功後、Rを押さずにCommentの最新表示を取得できるようにする。正式Planは本ファイル `docs/plans/backlog-cli-initial.md` の改訂全文。基本設計 [課題の項目・作成・更新](../designs/backlog-cli.md#課題の項目作成更新) の「更新」、[課題コメント](../designs/backlog-cli.md#課題コメント)、[Issue #21の実Backlog受入追補](https://github.com/minorunakamura/backlog-cli/issues/21#issuecomment-6479184188)、`docs/testing/manual-acceptance.md` の「#21 入力優先修正後buildの利用者受入とComment更新への要望」「#21 Comment自動更新への仕様変更要求による停止」を参照する。
+
+本節は旧契約の「課題更新後のCommentは自動更新せずRへ任せる」「成功後もComment選択・scrollを必ず保持する」だけを以下の範囲で置き換える。Issue #21の全更新項目・差分／解除・確認・独立送信・入力保持・安全表示・中断時確度と、必須の実端末／実Backlog受入は維持する。後続 [Issue #22](https://github.com/minorunakamura/backlog-cli/issues/22) のコメント追加、[Issue #23](https://github.com/minorunakamura/backlog-cli/issues/23) の既存コメント本文更新の動作・受入・依存関係は変更せず、機能を本Issueへ取り込まない。
+
+#### 停止理由・確認済みの現状
+
+- Issue #21本文は、正常な成功応答をDetailへ反映し、Issue ListとCommentを自動更新しない契約。#22はコメント追加後の最新ページ取得、#23は同じコメントの成功応答反映であり、#21の非更新契約を変更しない。利用者は今回の#21内でCommentも自動更新するよう要求し、Rootの質問で下記の表示・待機・失敗・開始条件・設計更新時期に合意した。
+- `src/tui.rs` のwrite完了処理は、`src/tui/create.rs` の `update_display` で課題データと対象keyを検証し、対象一致時だけDetailへ反映する。`finished` のupdate成功は一覧再取得を起動せず、create成功だけが `refresh_after_create` へ進む。この区別を維持する。
+- `src/tui/browse.rs` のComments operationは、Latestなら20件・ID降順・min/max境界なしで取得する。本文を持つ項目があれば既存の記法確認GETを行い、全項目の表示準備が成功した後にだけ交換する。世代と課題keyで反映を制限し、旧要求はruntimeがabort・joinする。`src/tui/comment.rs` のLatest交換は選択0・本文先頭で、正常な空ページは空表示となる。
+- 更新開始時の `update_target` は未完了一覧・Detail・Comment要求を失効させる。読取り失敗は既存Comment内容・選択・scrollを消さず、書込み確度は別のprogressで保持する。既存作成結果のrefresh表示と通知はCreated／一覧専用なので、updateを作成後一覧更新へ誤接続しない。
+- Planning開始時に変更済みの `CONTRIBUTING.md`, `README.md`, `docs/testing/manual-acceptance.md`, `src/api.rs`, `src/lib.rs`, `src/service.rs`, `src/tui.rs`, `src/tui/browse.rs`, `src/tui/create.rs`, `tests/tui_process.rs` と、untrackedの `tests/fixtures/tui_update.json`, `tests/fixtures/tui_update_steps.json` を保持する。commit／stash／破棄を独断で行わない。
+- 旧buildの333件成功・独立Review・利用者受入とBLCLI-2の変更／復元は履歴であり、新しい動作の実装・検証済みを意味しない。最終Code Review gateは停止時点で未実施。Planningでは製品・テスト・fixture・これらの既存変更を編集せず、新仕様のテスト・実API接続・書込みも行わない。
+
+#### 要件・決定事項
+
+**開始条件と表示**
+
+1. Detailのeからの課題更新で、対象と一致する正常な成功課題応答を処理してDetailへ反映できた場合だけ、同じ固定対象keyの最新Commentページを一度自動取得する。Detailは成功応答を使い、成功確認のための課題GETを追加しない。
+2. HTTP 200後でもbody読取り・JSON decode・課題データ／対象keyの検証・表示準備に失敗した場合は、自動Comment取得を開始しない。従来どおりupdatedと「応答処理失敗・再送不要」を通知し、旧Detail・Commentを残して手動Rへ任せる。未更新・結果不明・未送信／無変更／取消でも自動取得しない。200観測済みの確度を下げない。
+3. 自動取得の意味はCommentのRと同じ。count=20、order=desc、minId／maxIdなしの最新1ページだけを取得し、本文の記法確認と安全な表示準備も完了した成功時だけページを交換する。最新のコメントまたは本文なし変更履歴1件を選択し、本文scrollを先頭へ戻す。空ページは成功した空表示とし、古い内容を残す失敗とは区別する。
+4. 更新による履歴そのもののIDを推測・検索しない。他者が直後に投稿すればそれが最新になる可能性を許容する。個別コメントGET、全件走査、polling、定期更新、自動retry、同じPATCHの再送を追加しない。表示のために必要な既存の記法確認GETを、書込みの成功確認GETと混同しない。
+
+**結果画面・失敗・中断**
+
+5. Detail反映直後からComment取得・表示準備中まで、更新結果画面に「更新済み・コメント表示更新中」を示す。メイン画面のfocusはDetailのまま。結果画面内の既存scroll・resizeは維持し、Enter／Escでは閉じず、背面へのfocus／選択変更・新しい編集・再送・破棄を受け付けない。送信済み操作を再実行できる表示にしない。
+6. 取得完了後に「更新済み・コメント表示更新完了」または「更新済み・コメント表示更新失敗、旧表示保持・再送不要」を結果画面で区別する。成功・失敗どちらも完了後のEnter／EscでDetailへ戻る。取得中にCommentが表示可能なサイズでは、Escで読取りだけを取消せると誤案内しない。新しいEsc取消や背景継続操作は追加しない。
+7. 取得または記法取得・表示準備の失敗では、更新済みDetailを巻き戻さず、旧Commentのページ内容・選択ID・本文scrollを保持する。元から空／未取得ならその状態を保持し、失敗を正常な空結果にしない。書込み確度はupdatedのまま、HTTP statusやエラーを安全化して通知し、手動のComment Rで表示を更新できると案内する。Rも従来どおり成功時だけ交換し、失敗なら保持する。
+8. 自動取得中もCtrl+C／SIGINTは中断130。read taskをabort・joinし、端末を復元してupdated／再送不要を通知する。中断で旧Commentを交換・消去したり確度をunknown／not_updatedへ下げたりしない。終了後に表示の永続保存・復旧は行わない。取得待ちの極小時も中断・端末復元の安全性を維持する。
+
+**失効と一覧非更新**
+
+9. 更新開始前の一覧・Detail・Comment要求と予約済みpreviewを従来どおり失効させる。自動取得は対象keyと新しい読取り世代に結び付け、旧成功／失敗・取消／閉鎖後応答が現在の内容・通知・busyや後続要求の完了を上書きしない。自動取得開始のためにCommentを再selectして旧ページを消さない。結果待機中は通常操作へ漏らさず、終了後の手動R・課題切替・次の編集でも既存の失効境界を維持する。
+10. Issue Listのタイトル・行データ・検索条件・total・ページ履歴・選択・scrollは成功／失敗とも自動変更しない。count／list再取得や成功課題の直接挿入・書換えは行わず、一覧の更新は一覧Rに任せる。Detail本文は従来の成功応答反映、Commentだけは上記の成功交換となる。コメント本文更新（#23）を最新表示へ移す動作へ変えない。
+
+#### 実装方針・影響範囲
+
+- 新しいImplementation Rootは、Issue #21本文・既存と今回の全改訂コメント、本節・基本設計、現在の全差分／untrackedと停止記録を直接確認する。既存の部分実装と旧観測を保持し、過去のチェック・Review・Code Review Approveを変更後の差分へ流用しない。
+- `src/tui.rs` の課題更新完了点で、正常なDetail反映後にだけComment取得を接続する。`src/tui/browse.rs` の既存Comments／Latest、世代・busy・対象key・失敗保持・runtime取消を再利用し、完了／失敗を更新結果へ通知するための最小のメモリ内状態だけを使う。作成後一覧更新と混線させず、汎用refresh framework・新しいService／API公開入口・永続状態を作らない。
+- `src/tui/create.rs` の更新結果・取得中表示・閉鎖ガード・完了通知を整合する。Created／一覧用の文言をupdateへ流用しない。必要なComment／Detailのキー案内はmodalの実際の操作に合わせる。`src/tui/comment.rs` と `src/tui/detail.rs` は既存Latest交換・scroll・安全表示を再利用し、不要な編集をしない。
+- `tests/tui_process.rs` の全update成功経路・共有create/update入力試験・旧応答失効試験で自動取得と待機による影響を確認する。`tests/fixtures/tui_update.json` は旧ページ→新しい本文なし変更履歴／コメント等の応答sequenceへ整合し、`tui_update_steps.json` はUpdatedという途中表示だけで閉じず、自動取得の完了を待ってCommentの変化を確認する。
+- READMEの利用説明、CONTRIBUTINGのrelease直接HTTPS／PTY手順・HTTP期待値、`docs/testing/manual-acceptance.md` の今後の手順・変更後実測を新しいImplementationで整合する。旧記録の「17 GET＋1 PATCH」「Comment保持」等を新結果に書き換えない。Comment GETと本文の有無に応じた既存記法GETを区別して実際のfixture経路を数え直し、総数を先に一律18等と決めない。
+- 製品の変更中心は上記TUIの3ファイル・関連テスト／fixture／説明。API／Service／CLIの既存部分実装は保持・回帰確認するが、自動表示更新のための契約変更・新依存・Cargo設定／lockfile／export変更は不要。実装時に全callerと共有フォームを再確認し、範囲外の仕様変更が必要なら停止して再計画する。
+
+#### 完了条件
+
+- 上記の開始条件・最新1ページ・成功時だけ最新1件／本文先頭・空成功・対象／focus維持を、実blの表示とHTTP記録から確認できる。
+- 取得中の結果画面・Enter／Esc非閉鎖・再送防止と、成功／失敗の完了通知・Detail復帰・Comment R回復が仕様どおり。失敗時は旧Comment選択／scrollを保ち、Detailの更新済み表示とupdated確度を維持する。
+- 取得中のCtrl+C／SIGINTで130・updated／再送不要・端末復元を満たす。旧応答と失効後の成功／失敗が新表示・通知・busyを壊さない。
+- PATCHは独立した明示sの一回だけ。自動取得は正常な対象応答を処理できた成功時だけで、Issue List非更新・一覧のR／ページ再訪・CLI／#22／#23の契約が回帰しない。
+- Issue #21の既存全要件と必要な関連試験・正式チェック・変更後releaseの直接HTTPS／PTY確認・必須の実端末／実Backlog受入を満たし、Plan・基本設計・Issue追補・利用／開発説明・今後の受入手順が整合している。未実施・失敗・不安定な既存試験を隠さず記録し、旧buildの合格だけで完了としない。
+
+#### 動作確認方法
+
+既存 `tdd` Skillに従い、**実blの入力→画面／終了（既存PTY、必要なら公開Shell→TestBackend）とローカルHTTPSのHTTP送受信境界**で、一つの失敗テスト→最小実装の縦sliceを行う。これらは選択・scroll・待機・確度・通信・端末復元を捕捉するが、実IME／実端末の可読性／実APIの全データは保証しない。private関数形状・内部task数・独自harnessを固定しない。
+
+- **成功**：古いページの非先頭コメントをscrollした状態から課題更新し、PATCH完了後に一回のLatest要求（20／desc／境界なし）、取得中は旧表示、完了後は新しい最新1件と本文先頭、Detail focus維持を確認する。本文なし履歴・通常本文と必要な記法確認GET・空ページを区別し、最新が今回以外の履歴／投稿でも特定ID探索をしない。
+- **失敗と回復**：PATCH正常成功後のComment API拒否／通信失敗／不正応答、および必要な記法取得失敗を制御する。旧ページ・選択・非ゼロscroll、更新済みDetail、updated／再送不要の通知を確認し、完了後にComment R成功で交換・失敗で保持する。PATCH再送とcount／list再取得はゼロ。
+- **待機・中断**：遅延Comment取得中にEnter／Esc・s／e／通常focusキーを送っても閉鎖・再送・背面変更を起こさず、結果scroll／resize・100×24／40×12／極小往復を維持する。Ctrl+CとSIGINTの両方で130・updatedと端末復元を確認し、200後のComment read失敗で書込み失敗へ戻さない。
+- **開始しない経路**：確認Enter／無変更／編集取消・load失敗、PATCH拒否／結果不明、200後body／JSON／必須field／別key応答の失敗で、新しい自動Comment GETが増えないことを確認する。元の確度・旧Detail保持・独立s／一回PATCHを回帰検証する。
+- **失効・一覧・隣接回帰**：更新開始前の遅延一覧／Detail／Comment成功・失敗を後着させ、自動取得の新busy／通知／交換を壊さないことを確認する。終了／失効後応答、取得後の課題切替・手動R・次の編集も確認する。成功／失敗とも旧一覧タイトル・検索／total・履歴・選択／scrollを保持し、訪問済みページ再訪でlist／countを呼ばない。共有作成フォーム・単行編集キー、Service／CLIの部分更新・解除・確度と既存コメント読取り・安全表示を再確認する。
+- **実端末・実Backlog**：変更後releaseのSHA-256、端末名／版・macOS・IME／keyboard設定・NO_COLOR有無、100×24／40×12／極小、各操作・結果を記録する。日本語IMEとCtrl+A/B/Y、editor／resize・破棄・独立送信・終了復元を含む#21受入を新buildで再確認する。profile origin `https://lazybl.backlog.com/` を確認し、接続先・検証課題（既存候補BLCLI-2）・変更／解除／復元内容の別の明示許可を再開時に得る。許可範囲だけで変更・未指定項目保持・Detail反映と、**RなしでComment最新履歴が表示されること**をWeb等と照合し、必要な復元を確認する。一覧R前の旧一覧と、一覧R後の更新を区別して確認し、末尾が不可視なら見えたと推測しない。新しいデータ準備・権限・認証情報探索・書込み許可をPlan承認から導かない。
+- 障害／応答逆転／空ページ／極小時中断等はharnessで再現し、実サービスへ障害や過大負荷を与えない。harness成功を必須実Backlog／実端末受入に代替しない。認証不足・未実施・失敗は未完了として理由と再開条件を残す。
+
+```sh
+cargo test --locked --test tui_process bl_update_
+cargo test --locked --test tui_process bl_create_and_update_single_line_editing_
+cargo test --locked --test tui_process bl_create_
+cargo test --locked --test service issue_update_
+cargo test --locked --test issue_update --test comment_add --test issue_comment
+cargo test --locked --test tui_shell
+cargo fmt --all -- --check
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+cargo audit --file Cargo.lock
+cargo build --locked --release --target aarch64-apple-darwin --bins
+git diff --check
+```
+
+cargo-audit 0.22.2と既存正式コマンドを維持し、監査前後のlockfileハッシュ、DB／registry取得失敗・警告・終了コードを記録する。変更後releaseを更新済みCONTRIBUTINGの自己完結Python手順で直接起動し、HTTP method／path／formと呼出数、完了を待った表示、fake secret非表示・exit／termios復元を照合する。記録先は既存 `docs/testing/manual-acceptance.md`。旧hash・過去の合格・停止理由は履歴として保持し、新しい結果を追記する。既存検索PTYの待機raceも成功へ丸めず、初回失敗と再実行を区別する。過去のReview／Code Review承認を流用せず、変更後の差分に必要なReview・Code Review gateを受ける。
+
+#### 制約・設計更新・Planningの受渡し
+
+Plan全文の明示承認後、このPlanningで同じ正式パスへ保存・readbackし、基本設計「更新」の最終段落だけを上記契約へ整合する。他の基本設計・Domain境界・CLI／API・#22／#23・過去の観測は変更しない。README／CONTRIBUTING／今後の受入手順と製品・テストは新しいImplementationで更新し、それまでは旧Comment非更新記述より本節を優先する。GLOSSARY／ADR・別Plan・新状態管理文書は作らない。
+
+新規依存、設定、永続cache／下書き／書込み履歴、汎用refresh機構、競合検出・自動merge、全件取得、更新履歴ID探索、自動retry／PATCH再送、#22／#23機能、push／merge／release／deployは対象外。実Backlog書込み・復元は個別の明示許可が必要。既存差分をcommit／stash／破棄せず、PlanningではImplementationを開始しない。
+
+正式保存後に `taskflow-to-ticket` へ正式Planのパスと全文を渡す。既存Issue #21一件を再利用し、残る実装・受入と今回の動作変更を同じ新しいImplementationセッションで確認する案を別途承認する。内容はFeature（既存動作変更）。新規Issue・label・依存関係は増やさず、元タイトル・本文・OPEN状態・Blocked by／native関係・既存コメントを保持し、明示承認した改訂コメントで要件・受入条件・検証方法を追補する。
+
+Plan承認・tracker設定・分割・最終追補本文／公開先の保存公開承認はそれぞれ別に扱う。正式Plan／基本設計の保存・readback、Work Itemの分割・本文／公開先承認と公開・readback後、確定Issue／追補参照で別の新しいRoot向けImplementation再開kickoffを提示して停止する。Worker起動・製品実装は行わない。
+
+
 ## 開発順序と受渡し
 
 以下は技術的な順序であり、Work Itemsの分割承認を代替しない。各項目のテスト・説明はその機能と一緒に追加する。
@@ -703,7 +798,7 @@ UIの見た目・実IME・配布確認は無理にunit test化せず、実行可
 - 確度: 送信直前、送信開始後、201/200 headers受信後body待ち、それぞれの中断/切断を制御して試す。成功status後のbody/decode/出力失敗でcreated/updatedが残ることを検証する。
 - ページ: count/list同条件、count失敗、空ページ、totalとのずれ、再訪時の通信なし、ID境界除外・両方向/最古、content:null履歴。複数project横断・曖昧候補・権限制限はmockで検証する。
 - 安全表示: 日本語/結合文字/emoji、HTML entity後の制御文字、ANSI/OSC、code/escape、未知macro/field、secretを含む未知key/値、巨大数値、水平scroll外のsecret、入力原文非改変、NO_COLOR/非TTY。
-- TUI: 世代を逆転させた遅延応答、取消/画面閉鎖後応答、R失敗と成功時の交換、極小時の送信不可、入力キー衝突、フォーム値・ページ選択・scroll保持、作成/コメント追加後の再取得失敗、editor失敗/UTF-8不正/resize/中断・一時file削除。
+- TUI: 世代を逆転させた遅延応答、取消/画面閉鎖後応答、R失敗と成功時の交換、極小時の送信不可、入力キー衝突、フォーム値・ページ選択・scroll保持、作成/課題更新/コメント追加後の再取得失敗、editor失敗/UTF-8不正/resize/中断・一時file削除。
 
 ### 実端末・配布受入
 
@@ -723,7 +818,7 @@ Apple Silicon Macの実端末で、端末名/版・macOS・IME・対象buildを�
 | [Issue #18](https://github.com/minorunakamura/backlog-cli/issues/18)：コメント閲覧 | 実装したTUIで実際のコメント・本文なし変更履歴を表示し、前後・最新・最古への移動と再読込みを確認する。 |
 | [Issue #19](https://github.com/minorunakamura/backlog-cli/issues/19)：editor連携 | 実Backlogへの接続は必須にしない。既存のPTY・実端末によるeditor往復・resize・失敗/中断・端末復元の確認は維持する。 |
 | [Issue #20](https://github.com/minorunakamura/backlog-cli/issues/20)：課題作成 | 許可済みのproject・内容で、TUIの入力・確認・独立送信を通して検証用課題を作成し、Backlog上の登録内容とTUIの結果表示を確認する。 |
-| [Issue #21](https://github.com/minorunakamura/backlog-cli/issues/21)：課題更新 | 許可済みの検証用課題で、TUIから変更・解除を実施し、変更内容・未指定項目の保持と結果表示を確認する。 |
+| [Issue #21](https://github.com/minorunakamura/backlog-cli/issues/21)：課題更新 | 許可済みの検証用課題で、TUIから変更・解除を実施し、変更内容・未指定項目の保持と結果表示、RなしのComment最新表示を確認する。本Planの「Issue #21 再計画：課題更新成功後のComment自動再取得」に従い、一覧R前後の新旧表示を区別する。 |
 | [Issue #22](https://github.com/minorunakamura/backlog-cli/issues/22)：コメント追加 | 許可済みの検証用課題で、TUIから本文のみの追加と課題項目変更を伴う追加を確認し、登録内容と成功後のコメント表示を確認する。 |
 | [Issue #23](https://github.com/minorunakamura/backlog-cli/issues/23)：コメント本文更新 | 許可済みの自分の検証用コメントをTUIから更新し、本文の反映と同じコメントを表示し続けることを確認する。 |
 | [Issue #24](https://github.com/minorunakamura/backlog-cli/issues/24)：全体受入 | 各Issueの実環境確認記録を照合したうえで、完成版の検索・閲覧・作成・更新を通した最終の全体受入を実施する。ここを初回の実接続確認にしない。既存の全体品質確認・実端末受入も維持する。 |

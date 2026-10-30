@@ -4,7 +4,7 @@ Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
 `bl` はプロジェクト選択、通常/横断検索ダイアログ、課題一覧のページ巡回、選択追従プレビュー/詳細・コメント閲覧と再取得、ブラウザ起動、端末復元を利用できます。
-設定editor連携と課題作成フォームを利用できます。課題更新・コメント書込みのTUIフォームは未実装です。
+設定editor連携と課題作成・更新フォームを利用できます。コメント書込みのTUIフォームは未実装です。
 課題作成 (#20) の実端末・実Backlog受入結果は[手動受入記録](docs/testing/manual-acceptance.md#issue-20-tui課題作成)を参照してください。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -94,6 +94,9 @@ Project Listのハイライトだけでは作成先を変えません。直前�
 
 - Tab / Shift+Tab: タイトル→種別→優先度→担当者→開始日→期限日→マイルストーン→本文編集→確認へ→取消。
   Ctrl+T/Y/P/A/Bは、それぞれタイトル／種別／優先度／担当者／本文編集操作へのfocusです。
+  ただしタイトル／開始日／期限日の入力中は単行入力の標準編集を優先し、Ctrl+A/B/Yは先頭移動／左移動／貼戻しです。
+  空欄や端で編集がno-opでもfocusは移りません。Ctrl+Y/A/Bのfocus移動には先にTab等で入力欄外へ出てください。
+  Ctrl+T/Pなど編集キーでないshortcut、Tab/Shift+Tab、Enter/Esc、候補popupは変わりません。
   **Ctrl+Bだけではeditorを起動しません**。本文編集操作のEnter/Spaceで設定editorを開きます。
 - 単一候補: Enter/Spaceで開き、上下/j/kで移動、Enter/Spaceで決定。担当者は未設定も選べます。
   マイルストーン: Spaceで複数選択/解除、Enter/Escで候補だけを閉じます。長い候補名は左右で確認できます。
@@ -115,6 +118,34 @@ Project Listのハイライトだけでは作成先を変えません。直前�
 
 ローカルHTTPS/PTYの再現手順は[CONTRIBUTING](CONTRIBUTING.md#tui課題作成-20-releaseの直接ローカル検証)、
 実施済み・未実施の境界は[手動受入記録](docs/testing/manual-acceptance.md#issue-20-tui課題作成)を参照してください。
+
+### TUI課題更新 (#21)
+
+**Detailのe** で対象を固定し、最新の課題とそのprojectの候補を取得します（create既定値は使いません）。
+タイトル／本文／種別／優先度／担当者／状態／完了理由／開始日／期限日／複数マイルストーンを現値で初期表示します。
+作成フォームと同じTab・候補popup・Ctrl+T/Y/P/A/B・本文editor・resize・破棄確認を使い、本文編集の次に状態→完了理由→確認へ進みます。
+タイトル／開始日／期限日の入力中は作成と同じ標準編集優先で、Ctrl+A/B/Yのfocus移動は入力欄外で使います。
+担当者・完了理由・日付・マイルストーン・本文は明示解除でき、完了理由ID **0は解除とは別の有効な値**です。
+種別・優先度・状態は解除せず候補から変更します。日付はYYYY-MM-DDで編集します。
+
+- 「確認へ」で共通Serviceが入力検証・差分を確定します。変更した項目と解除だけを安全表示し、未編集・同値・同じmilestone集合は送信しません。
+  確認中のEnterでは送信せず、**独立したsで一度だけPATCH**します。Escは編集へ戻り、差がある取消だけ破棄確認を出します。
+- editor失敗時は元の本文と他の入力を保持します。送信中は編集・再送・破棄・qを無効にし、極小時は隠れた編集・確認・送信をしません。
+  Ctrl+Cは中断130です。結果はnot_updated／unknown／updatedを区別し、200 headers後はbody／decode／表示失敗でもupdatedを下げません。
+  unknown／updatedから再送を勧めず、自動retryや成功確認GETはありません。
+- 対象keyと一致する正常な成功objectをDetailへ反映できた場合だけ、同じ課題の最新Commentを一度取得します（20件・ID降順・境界なし）。
+  必要な既存記法GETと全件の表示準備に成功した後だけ、最新のコメント／本文なし変更履歴1件・本文先頭へ交換します。空ページも正常成功です。
+  更新履歴IDの探索や成功確認GETはしません。200後の応答処理失敗、未更新／unknown／未送信では自動取得しません。
+- 取得中は「更新済み・コメント表示更新中」の結果画面を維持します。Enter/Esc・再編集・再送・背面focus変更・極小時のqは無効で、
+  結果scroll／resizeとCtrl+C／SIGINTによる中断130は有効です。中断時も端末を復元し、updated／再送不要を通知します。
+  完了後は更新完了／失敗を区別し、Enter/EscでDetailへ戻ります。失敗は更新済みDetailと旧Commentのページ・選択／scrollを保持し、
+  updated／旧表示保持・再送不要とCommentのRによる回復を案内します。手動Rも成功時だけ交換します。
+- **Issue Listのタイトル・全行・条件・total・ページ履歴・選択・scrollは自動変更しません**。一覧Rに任せます。
+  編集開始前の一覧／Detail／Comment応答は失効し、新しい表示や通知を上書きしません。
+  同じ項目への他者の変更の競合検出・自動マージはしません。
+
+ローカルrelease製品の直接再現は[CONTRIBUTING](CONTRIBUTING.md#tui課題更新-21-releaseの直接ローカル検証)、
+実端末・実Backlogの必須受入と未実施記録は[手動受入記録](docs/testing/manual-acceptance.md#issue-21-tui課題更新)を参照してください。
 
 ### TUIコメント閲覧 (#18)
 

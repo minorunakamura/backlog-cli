@@ -20,8 +20,8 @@ Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語�
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
 `bl` のプロジェクト選択・通常/横断検索ダイアログ・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・コメント閲覧・ブラウザ起動・focus・layout・端末復元も実装しています。
 共有単行入力部品を製品のkeyword欄へ組み込み、開発専用の実端末確認経路も維持しています。
-設定editor連携と共有libraryの本文編集、TUI課題作成フォームを実装しています。
-#20の実端末／実Backlog受入結果は手動受入記録を参照してください。課題更新・コメント書込みのTUIフォームは後続Work Itemの範囲です。
+設定editor連携と共有libraryの本文編集、TUI課題作成・更新フォームを実装しています。
+#20の実端末／実Backlog受入結果と#21の未実施事項は手動受入記録を参照してください。コメント書込みのTUIフォームは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -160,6 +160,9 @@ cargo test --locked --lib tui::tests::shell_ -- --nocapture
 既定値/解除・複数milestone・必須値/実在日付・単行原文/全欄伏字・全確認本文・editor/resize/失敗・
 差分だけの破棄確認・確認Enterの非POSTと独立送信・busy中の操作禁止・count/listの原子的交換/履歴保持・
 取消した候補取得の世代・Ctrl+C/SIGINTの3段階の確度を確認します。
+タイトル／開始日／期限日は単行入力の標準編集がフォームshortcutより優先です。Ctrl+A/B/Yは先頭移動／左移動／貼戻しで、
+空欄や端で変化しなくてもfocusは移りません。Ctrl+Y/A/Bで種別／担当者／本文へ移るには先にTab等で入力欄外へ出ます。
+Ctrl+T/Pなど編集キーでない既存shortcut、Tab/Shift+Tab、Enter/Esc、候補popupは従来どおりです。
 `tests/service.rs` の `create_task_abort_joins_without_detached_http_or_later_certainty_changes` は、
 公開Serviceと共有CreateProgressから、送信前/送信後/201 headers後のabort+joinと、回収後に確度が変わらないことを確認します。
 HTTP futureは外側の操作taskが直接所有します。新しいtaskを切り離したままにせず、TUI終了/panic/描画失敗でも
@@ -209,7 +212,7 @@ with tempfile.TemporaryDirectory(prefix='bl-create-local-') as directory:
         steps = [
             {'wait': 'Local project', 'keys': '\r'},
             {'wait': 'total 0', 'keys': 'lc'},
-            {'wait': 'Assignee: Alice', 'keys': ' Raw title \x01'},
+            {'wait': 'Assignee: Alice', 'keys': ' Raw title \t\x01'},
             {'wait': 'Assignee: Alice', 'keys': '\x7f\t2024-02-29\t2024-03-01\t\r'},
             {'wait': 'Milestones candidates', 'keys': ' j \r'},
             {'wait': 'Milestones: First', 'keys': '\t\r'},
@@ -790,3 +793,94 @@ code=$?; printf 'test binary exit=%s\n' "$code"
 editor中に別端末から**親のbl／test binaryのPID**へ`kill -INT <PID>`し、子停止・一時file削除・通常shell復元・130を確認します。
 editor自身だけの非0／シグナル終了は通知して元画面へ戻る別経路です。cargo経由でtest processが130終了するとcargoの終了は101になるため混同しません。
 終了後は実shellで文字入力・削除・cursor／表示属性を目視します。SIGKILL・切断後の復元／削除は保証対象外です。
+
+### TUI課題更新 (#21): releaseの直接ローカル検証
+
+`tests/tui_process.rs` の `bl_update_` は実bl + PTY/HTTPS境界で、最新の全初期値・create既定値非流用、
+全10項目の変更／解除・resolution ID 0・milestone集合、未編集／同値非送信、変更だけの確認・独立sの1PATCH、
+入力／破棄確認／editor失敗とresize／極小／キー衝突、安全表示の原文保持を確認します。
+作成と共用のタイトル／日付入力ではCtrl+A/B/Y等の標準編集を優先し、focus shortcutは入力欄外で使います。
+`bl_create_and_update_single_line_editing_` は両フォームの編集／no-op時focus保持と欄外shortcutを同じ製品境界で確認します。
+一覧タイトル・条件・total・ページ履歴・選択／scrollの非更新、成功時だけのComment Latest交換と失敗時の選択／scroll保持、
+取得中のmodal／極小q保護・Ctrl+C／SIGINT・手動R回復、取消loadと古い一覧／Detail／Comment成功・失敗応答の世代失効、
+送信前／送信開始後／200 headers後のCtrl+CとSIGINT、拒否／unknown／200後のbody・decode・必須field失敗も照合します。
+共通Serviceの既存 `issue_update_`・CLI `tests/issue_update.rs` とcommentの回帰試験は、部分指定時に未使用fieldを要求せず、
+候補の名前解決・事前検証・既存の確度を維持することを確認します。prepare/sendはcrate内のopaqueな更新値だけを渡し、
+任意formの公開APIを追加していません。HTTP futureは既存の直接所有を維持し、終了時はabort+join後に確度を読みます。
+
+```sh
+cargo test --locked --test tui_process bl_update_ -- --nocapture
+cargo test --locked --test service issue_update_
+cargo test --locked --test issue_update --test comment_add --test issue_comment
+cargo test --locked --test tui_process bl_create_and_update_single_line_editing_
+cargo test --locked --test tui_process bl_create_
+cargo test --locked --test tui_shell
+```
+
+以下は **cargo testとは別にrelease製品blを直接起動する** 自己完結のlocalhost HTTPS/PTY手順です。
+リポジトリ直下で実行してください。利用者config／実key／実サービスを使わず、一時rootとserverを最後に回収します。
+fixtureは初期Detail／Comment記法用の2 issue GETと、e開始時の最新issue GETを区別します。
+PATCH後は本文なし履歴へのLatest GET 1回だけで、記法GETは不要です（本文ありの応答なら既存のissue＋project GETが必要）。
+このfixtureの実経路は18 GET＋1 PATCHです。自由操作ではなく固定手順専用で、途中のUpdated:でなくComment更新完了を待ちます。
+
+```sh
+cargo build --locked --release --target aarch64-apple-darwin --bins
+python3 - <<'PY'
+import json, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path.cwd()
+binary = repo / 'target/aarch64-apple-darwin/release/bl'
+with tempfile.TemporaryDirectory(prefix='bl-update-local-') as directory:
+    root = pathlib.Path(directory)
+    (root / 'response.json').write_bytes((repo / 'tests/fixtures/tui_update.json').read_bytes())
+    (root / 'steps.json').write_bytes((repo / 'tests/fixtures/tui_update_steps.json').read_bytes())
+    (root / 'backlog').mkdir()
+    (root / '.backlog').mkdir()
+    server = subprocess.Popen([sys.executable, str(repo / 'tests/fixtures/https_server.py'), directory],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        origin = 'https://localhost:' + server.stdout.readline().strip()
+        (root / 'backlog/config.json').write_text(json.dumps({'profiles': {'default': {
+            'spaceUrl': origin, 'apiKeyEnv': 'TEST_KEY'}}}))
+        (root / '.backlog/settings.json').write_text(json.dumps({'project': 'B'}))
+        env = dict(HOME=directory, XDG_CONFIG_HOME=directory, TEST_KEY='test-secret', NO_COLOR='1',
+                   PATH='/usr/bin:/bin', SSL_CERT_FILE=str(root / 'tls/localhost-cert.pem'),
+                   SHELL_STEPS_FILE=str(root / 'steps.json'), SHELL_REQUESTS_FILE=str(root / 'requests'))
+        run = subprocess.run([sys.executable, str(repo / 'tests/fixtures/tty_shell.py'), 'scripted', str(binary)],
+                             cwd=root, env=env, capture_output=True, text=True, timeout=15)
+        assert run.returncode == 0, run.stderr
+        result = json.loads(run.stdout)
+        assert (result['code'], result['restored'], result['termios_diff'], result['stderr']) == (0, True, [], ''), result
+        assert len(result['snapshots']) == 10, result
+        assert 'Latest title' in result['snapshots'][2], result
+        assert result['request_counts'][4] == result['request_counts'][5], 'confirmation Enter sent HTTP'
+        for text in ['Changed title', 'Old list title', 'TITLE: Latest title -> Changed title']:
+            assert text in result['snapshots'][8], result
+        requests = [json.loads(line) for line in (root / 'requests').read_text().splitlines()]
+        patches = [r for r in requests if r['method'] == 'PATCH']
+        assert len(requests) == 19 and len(patches) == 1, requests
+        assert sum(r['method'] == 'GET' for r in requests) == 18, requests
+        assert patches[0]['form'] == {'summary': ['Changed title'], 'description': [''], 'assigneeId': [''],
+            'resolutionId': ['0'], 'milestoneId[]': ['5', '6']}, patches
+        for prefix in ['/api/v2/issues/count?', '/api/v2/issues?']:
+            assert sum(r['path'].startswith(prefix) for r in requests) == 1, requests
+        assert sum(r['method'] == 'GET' and r['path'] == '/api/v2/issues/B-1' for r in requests) == 3, requests
+        assert sum(r['path'] == '/api/v2/issues/B-1/comments?count=20&order=desc' for r in requests) == 2, requests
+        patch_index = requests.index(patches[0])
+        assert [r['path'] for r in requests[patch_index + 1:]] == ['/api/v2/issues/B-1/comments?count=20&order=desc'], requests
+        assert all(r['method'] == 'GET' for r in requests[patch_index + 1:]), requests
+        assert result['request_counts'][8] == result['request_counts'][9] == 19, result
+        assert 'test-secret' not in result['stdout'], result
+        pathlib.Path('/tmp/issue21-direct-result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        print('PASS: release bl; latest values; confirm Enter=0 PATCH; explicit s=1 PATCH; clears/ID0/milestones; 18 GET+1 PATCH; old list retained; latest history without R; exit=0; termios restored')
+    finally:
+        server.terminate()
+        _, errors = server.communicate(timeout=3)
+        assert not errors, errors
+PY
+shasum -a 256 target/aarch64-apple-darwin/release/bl target/aarch64-apple-darwin/release/bl-cli
+```
+
+期待結果は最後の`PASS:`と両binaryのSHA-256です。raw結果は`/tmp/issue21-direct-result.json`です（fake keyだけのfixture）。
+これは実端末の字幅／IME／目視や実Backlog書込みの代替ではありません。
+接続先・対象・変更／解除内容の別の明示許可を得た実Backlog受入と実端末確認は
+[manual-acceptance.md](docs/testing/manual-acceptance.md#issue-21-tui課題更新)へ記録し、未実施を成功扱いにしません。

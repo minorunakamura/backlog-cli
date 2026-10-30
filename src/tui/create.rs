@@ -3,7 +3,7 @@ use crate::{
     Error,
     config::{Config, Settings},
     safety,
-    service::{Candidate, IssueCreate, Selection, Service},
+    service::{Candidate, IssueCreate, IssueUpdate, PreparedIssueUpdate, Selection, Service},
 };
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -14,10 +14,15 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 struct Choice {
     id: String,
     label: String,
+}
+impl PartialEq for Choice {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
 }
 impl Choice {
     fn display(&self) -> String {
@@ -33,15 +38,107 @@ struct Values {
     start: String,
     due: String,
     body: String,
-    choices: [Vec<Choice>; 4],
+    choices: [Vec<Choice>; 6],
 }
 pub(super) struct Loaded {
-    options: [Vec<Choice>; 4],
-    defaults: [Vec<Choice>; 4],
+    options: [Vec<Choice>; 6],
+    defaults: [Vec<Choice>; 6],
+    edit: Option<EditLoaded>,
+}
+struct EditLoaded {
+    issue: serde_json::Value,
+    rule: String,
+}
+pub(super) async fn load_update(config: &Config, key: &str) -> Result<Loaded, Error> {
+    let service = Service::new(config)?;
+    let issue = service.issue_view(key).await?;
+    if issue["issueKey"].as_str() != Some(key) {
+        return Err(Error::new(
+            "invalid_response",
+            "Issue response does not match selected key",
+        ));
+    }
+    let project = issue["projectId"].to_string();
+    let rule = service
+        .project_text_formatting_rule(issue["projectId"].as_number().unwrap())
+        .await?;
+    let mut options: [Vec<Choice>; 6] = Default::default();
+    for (slot, candidate) in options.iter_mut().zip([
+        Candidate::IssueType { project: &project },
+        Candidate::Priority,
+        Candidate::Assignee { project: &project },
+        Candidate::Milestone { project: &project },
+        Candidate::Status { project: &project },
+        Candidate::Resolution,
+    ]) {
+        *slot = service
+            .candidates(candidate)
+            .await?
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| Choice {
+                id: item["id"].to_string(),
+                label: item["name"].as_str().unwrap().into(),
+            })
+            .collect();
+    }
+    let mut defaults: [Vec<Choice>; 6] = Default::default();
+    for (index, field) in [
+        "issueType",
+        "priority",
+        "assignee",
+        "milestone",
+        "status",
+        "resolution",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let values: Vec<_> = if index == 3 {
+            issue[*field].as_array().unwrap().iter().collect()
+        } else if issue[*field].is_null() {
+            vec![]
+        } else {
+            vec![&issue[*field]]
+        };
+        for value in values {
+            let id = value["id"]
+                .as_number()
+                .map(ToString::to_string)
+                .filter(|id| {
+                    if index == 5 {
+                        id == "0" || crate::service::positive_integer(id)
+                    } else {
+                        crate::service::positive_integer(id)
+                    }
+                })
+                .ok_or_else(|| {
+                    Error::new("invalid_response", "Issue response has invalid editable ID")
+                })?;
+            defaults[index].push(Choice {
+                id,
+                label: value["name"].as_str().unwrap().into(),
+            });
+        }
+    }
+    // Current values can be absent from candidates (for example, an archived milestone).
+    for (options, current) in options.iter_mut().zip(&defaults) {
+        for choice in current {
+            if !options.iter().any(|c| c.id == choice.id) {
+                options.push(choice.clone());
+            }
+        }
+    }
+    Ok(Loaded {
+        options,
+        defaults,
+        edit: Some(EditLoaded { issue, rule }),
+    })
 }
 pub(super) async fn load(config: &Config, project: &str) -> Result<Loaded, Error> {
     let service = Service::new(config)?;
-    let mut options: [Vec<Choice>; 4] = Default::default();
+    let mut options: [Vec<Choice>; 6] = Default::default();
     for (slot, candidate) in options.iter_mut().zip([
         Candidate::IssueType { project },
         Candidate::Priority,
@@ -60,7 +157,7 @@ pub(super) async fn load(config: &Config, project: &str) -> Result<Loaded, Error
             })
             .collect();
     }
-    let mut defaults: [Vec<Choice>; 4] = Default::default();
+    let mut defaults: [Vec<Choice>; 6] = Default::default();
     let configured = &config.settings.issue.create;
     for (index, name) in [
         &configured.issue_type,
@@ -94,7 +191,11 @@ pub(super) async fn load(config: &Config, project: &str) -> Result<Loaded, Error
             defaults[index].push(choice);
         }
     }
-    Ok(Loaded { options, defaults })
+    Ok(Loaded {
+        options,
+        defaults,
+        edit: None,
+    })
 }
 
 #[derive(PartialEq)]
@@ -102,6 +203,7 @@ enum Phase {
     Loading,
     LoadFailed,
     Form,
+    Preparing,
     Confirm,
     Discard,
     Sending,
@@ -123,8 +225,8 @@ pub(super) struct Create {
     start: SingleLineInput,
     due: SingleLineInput,
     pub(super) body: String,
-    choices: [Vec<Choice>; 4],
-    options: [Vec<Choice>; 4],
+    choices: [Vec<Choice>; 6],
+    options: [Vec<Choice>; 6],
     initial: Values,
     field: usize,
     phase: Phase,
@@ -133,6 +235,9 @@ pub(super) struct Create {
     pub(super) notice: String,
     result: String,
     pub(super) refreshing: bool,
+    pub(super) update_key: Option<String>,
+    edit: Option<EditLoaded>,
+    prepared: Option<PreparedIssueUpdate>,
 }
 impl Create {
     pub(super) fn new(project: Project, profile: &str, origin: &str, space: &str) -> Self {
@@ -156,7 +261,74 @@ impl Create {
             notice: String::new(),
             result: String::new(),
             refreshing: false,
+            update_key: None,
+            edit: None,
+            prepared: None,
         }
+    }
+    pub(super) fn new_update(key: String, profile: &str, origin: &str, space: &str) -> Self {
+        let mut form = Self::new(
+            Project {
+                id: String::new(),
+                key: key.clone(),
+                label: key.clone(),
+            },
+            profile,
+            origin,
+            space,
+        );
+        form.identity =
+            format!("Profile: {profile}\nOrigin: {origin}\nSpace: {space}\nIssue: {key}");
+        form.update_key = Some(key);
+        form
+    }
+    fn field_count(&self) -> usize {
+        if self.update_key.is_some() { 12 } else { 10 }
+    }
+    pub(super) fn preparing(&self) -> bool {
+        self.phase == Phase::Preparing
+    }
+    pub(super) fn preparation(&self) -> Preparation {
+        Preparation {
+            values: self.values(),
+            initial: self.initial.clone(),
+            issue: self.edit.as_ref().unwrap().issue.clone(),
+            key: self.update_key.clone().unwrap(),
+        }
+    }
+    pub(super) fn prepared(&mut self, result: Result<PreparedIssueUpdate, Error>) {
+        match result {
+            Ok(prepared) => {
+                self.prepared = Some(prepared);
+                self.phase = Phase::Confirm;
+                self.scroll.set(0);
+                self.notice.clear();
+            }
+            Err(error) => {
+                self.phase = Phase::Form;
+                self.notice = error.message;
+            }
+        }
+    }
+    pub(super) fn update_display(
+        &self,
+        value: &serde_json::Value,
+        config: &Config,
+    ) -> Result<String, Error> {
+        crate::service::validate_issue_view(value)
+            .map_err(|error| error.with_update_outcome(crate::WriteOutcome::Updated))?;
+        if value["issueKey"].as_str() != self.update_key.as_deref() {
+            return Err(Error::new(
+                "invalid_response",
+                "Issue response does not match selected key",
+            )
+            .with_update_outcome(crate::WriteOutcome::Updated));
+        }
+        Ok(super::detail::display(
+            value,
+            &self.edit.as_ref().unwrap().rule,
+            config,
+        ))
     }
     fn values(&self) -> Values {
         Values {
@@ -178,6 +350,46 @@ impl Create {
             Ok(loaded) => {
                 self.options = loaded.options;
                 self.choices = loaded.defaults;
+                if let Some(edit) = loaded.edit {
+                    self.title =
+                        SingleLineInput::new(edit.issue["summary"].as_str().unwrap().into());
+                    self.body = edit.issue["description"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .into();
+                    let date = |field: &str| -> Result<String, Error> {
+                        if edit.issue[field].is_null() {
+                            return Ok(String::new());
+                        }
+                        edit.issue[field]
+                            .as_str()
+                            .and_then(|date| date.get(..10))
+                            .filter(|date| crate::service::valid_date(date))
+                            .map(str::to_owned)
+                            .ok_or_else(|| {
+                                Error::new(
+                                    "invalid_response",
+                                    "Issue response has invalid editable date",
+                                )
+                            })
+                    };
+                    let dates =
+                        date("startDate").and_then(|start| date("dueDate").map(|due| (start, due)));
+                    match dates {
+                        Ok((start, due)) => {
+                            self.start = SingleLineInput::new(start);
+                            self.due = SingleLineInput::new(due);
+                        }
+                        Err(error) => {
+                            self.notice = error.message;
+                            self.phase = Phase::LoadFailed;
+                            return;
+                        }
+                    }
+                    self.project.id = edit.issue["projectId"].to_string();
+                    self.project.label = self.project.id.clone();
+                    self.edit = Some(edit);
+                }
                 self.initial = self.values();
                 self.phase = Phase::Form;
                 self.notice.clear();
@@ -188,10 +400,11 @@ impl Create {
             }
         }
     }
-    pub(super) fn submission(&self) -> Submission {
+    pub(super) fn submission(&mut self) -> Submission {
         Submission {
             values: self.values(),
             project: self.project.id.clone(),
+            prepared: self.prepared.take(),
         }
     }
     pub(super) fn finished(&mut self, result: Result<serde_json::Value, Error>) -> bool {
@@ -199,6 +412,14 @@ impl Create {
         self.scroll.set(0);
         match result {
             Ok(value) => {
+                if self.update_key.is_some() {
+                    self.result = format!(
+                        "Updated: {}\n{}\nDetail updated; Issue List unchanged",
+                        value["issueKey"].as_str().unwrap(),
+                        value["url"].as_str().unwrap()
+                    );
+                    return false;
+                }
                 self.result = format!(
                     "Created: {}\n{}\nRefreshing current search...",
                     value["issueKey"].as_str().unwrap(),
@@ -209,6 +430,13 @@ impl Create {
             }
             Err(error) => {
                 let outcome = match error.write.map(|w| w.outcome) {
+                    Some(crate::WriteOutcome::Updated) => {
+                        "Updated; response processing failed. Do not resend."
+                    }
+                    Some(crate::WriteOutcome::NotUpdated) => "NotUpdated: issue not updated.",
+                    Some(crate::WriteOutcome::Unknown) if self.update_key.is_some() => {
+                        "Unknown: update result unknown. Do not resend."
+                    }
                     Some(crate::WriteOutcome::Created) => {
                         "Created; response processing failed. Do not resend."
                     }
@@ -234,15 +462,41 @@ impl Create {
             }
         });
     }
+    pub(super) fn refreshing_comments(&mut self) {
+        self.refreshing = true;
+        self.result
+            .push_str("\nUpdated; refreshing comments / 更新済み・コメント表示更新中");
+    }
+    pub(super) fn comments_refreshed(&mut self, result: Result<(), String>) {
+        self.refreshing = false;
+        if let Some(prefix) = self
+            .result
+            .strip_suffix("\nUpdated; refreshing comments / 更新済み・コメント表示更新中")
+        {
+            self.result = prefix.into();
+        }
+        self.result.push_str(&match result {
+            Ok(()) => "\nUpdated; Comment display refreshed / 更新済み・コメント表示更新完了".into(),
+            Err(error) => format!(
+                "\nUpdated; Comment display refresh failed / 更新済み・コメント表示更新失敗\nOld display retained / 旧表示保持. Do not resend / 再送不要.\nComment R: refresh display\n{error}"
+            ),
+        });
+    }
     fn choice_field(&self) -> Option<usize> {
         match self.field {
             1..=3 => Some(self.field - 1),
             6 => Some(3),
+            8 | 9 if self.update_key.is_some() => Some(self.field - 4),
             _ => None,
         }
     }
     fn changed(&self) -> bool {
-        self.values() != self.initial
+        let mut current = self.values();
+        let mut initial = self.initial.clone();
+        for values in [&mut current, &mut initial] {
+            values.choices[3].sort_by(|a, b| a.id.cmp(&b.id));
+        }
+        current != initial
     }
     fn cancel(&mut self) -> Action {
         if self.changed() {
@@ -267,7 +521,7 @@ impl Create {
             && key.kind == KeyEventKind::Press
             && matches!(key.code, KeyCode::Enter | KeyCode::Char(' '));
         match self.phase {
-            Phase::Sending => return Action::None,
+            Phase::Sending | Phase::Preparing => return Action::None,
             Phase::Loading | Phase::LoadFailed => {
                 if plain && key.code == KeyCode::Esc {
                     return Action::Close;
@@ -332,9 +586,11 @@ impl Create {
         if let Some(popup) = &mut self.popup {
             let field = match self.field {
                 6 => 3,
+                8 | 9 => self.field - 4,
                 _ => self.field - 1,
             };
-            let length = self.options[field].len() + usize::from(field == 2);
+            let nullable = field == 2 || field == 5;
+            let length = self.options[field].len() + usize::from(nullable);
             if plain {
                 match key.code {
                     KeyCode::Esc => self.popup = None,
@@ -351,11 +607,11 @@ impl Create {
                     _ if activate => {
                         if field == 3 && key.code == KeyCode::Enter {
                             self.popup = None;
-                        } else if field == 2 && popup.index == 0 {
+                        } else if nullable && popup.index == 0 {
                             self.choices[field].clear();
                             self.popup = None;
                         } else if let Some(choice) = self.options[field]
-                            .get(popup.index - usize::from(field == 2))
+                            .get(popup.index - usize::from(nullable))
                             .cloned()
                         {
                             if field == 3 {
@@ -377,6 +633,12 @@ impl Create {
             }
             return Action::None;
         }
+        if matches!(self.field, 0 | 4 | 5)
+            && tui_input::backend::crossterm::to_input_request(event).is_some()
+        {
+            self.input_event(event, area);
+            return Action::None;
+        }
         if key.modifiers == KeyModifiers::CONTROL {
             let target = match key.code {
                 KeyCode::Char('t') => Some(0),
@@ -394,12 +656,17 @@ impl Create {
         }
         match key.code {
             KeyCode::Esc if plain => return self.cancel(),
-            KeyCode::Tab if plain => self.field = (self.field + 1) % 10,
+            KeyCode::Tab if plain => self.field = (self.field + 1) % self.field_count(),
             KeyCode::BackTab if key.modifiers == KeyModifiers::SHIFT || plain => {
-                self.field = (self.field + 9) % 10
+                self.field = (self.field + self.field_count() - 1) % self.field_count()
             }
             KeyCode::Delete | KeyCode::Backspace if plain && self.choice_field().is_some() => {
-                self.choices[self.choice_field().unwrap()].clear();
+                let index = self.choice_field().unwrap();
+                if self.update_key.is_some() && matches!(index, 0 | 1 | 4) {
+                    self.notice = "This field requires a selected value".into();
+                } else {
+                    self.choices[index].clear();
+                }
             }
             KeyCode::Delete | KeyCode::Backspace if plain && self.field == 7 => self.body.clear(),
             _ if activate && self.choice_field().is_some() => {
@@ -409,8 +676,10 @@ impl Create {
                 })
             }
             _ if activate && self.field == 7 => return Action::Editor,
-            _ if activate && self.field == 8 => {
-                if self.title.value().trim().is_empty() {
+            _ if activate && self.field == self.field_count() - 2 => {
+                if self.update_key.is_some() {
+                    self.phase = Phase::Preparing;
+                } else if self.title.value().trim().is_empty() {
                     self.notice = "Title must not be blank".into();
                 } else if self.choices[0].is_empty() || self.choices[1].is_empty() {
                     self.notice = "Issue type and priority are required".into();
@@ -425,7 +694,7 @@ impl Create {
                     self.notice.clear();
                 }
             }
-            _ if activate && self.field == 9 => return self.cancel(),
+            _ if activate && self.field == self.field_count() - 1 => return self.cancel(),
             _ => self.input_event(event, area),
         }
         Action::None
@@ -450,6 +719,45 @@ impl Create {
         }
     }
     fn confirmation(&self) -> String {
+        if let Some(prepared) = &self.prepared {
+            let mut text = format!("{}\nProject ID: {}", self.identity, self.project.id);
+            for (parameter, value) in prepared.changes() {
+                let label = match *parameter {
+                    "summary" => "Title",
+                    "description" => "Body",
+                    "issueTypeId" => "Issue type",
+                    "priorityId" => "Priority",
+                    "assigneeId" => "Assignee",
+                    "statusId" => "Status",
+                    "resolutionId" => "Resolution",
+                    "startDate" => "Start date",
+                    "dueDate" => "Due date",
+                    _ => "Milestones",
+                };
+                let choice = match *parameter {
+                    "issueTypeId" => Some(0),
+                    "priorityId" => Some(1),
+                    "assigneeId" => Some(2),
+                    "milestoneId[]" => Some(3),
+                    "statusId" => Some(4),
+                    "resolutionId" => Some(5),
+                    _ => None,
+                };
+                let display = choice
+                    .and_then(|index| self.choices[index].iter().find(|c| c.id == *value))
+                    .map(Choice::display);
+                text.push_str(&format!(
+                    "\n{label}: {}",
+                    if value.is_empty() {
+                        "(cleared)"
+                    } else {
+                        display.as_deref().unwrap_or(value)
+                    }
+                ));
+            }
+            text.push_str("\n[End of changes]");
+            return text;
+        }
         format!(
             "{}\nTitle: {}\nIssue type: {}\nPriority: {}\nAssignee: {}\nStart date: {}\nDue date: {}\nMilestones: {}\nBody:\n{}\n[End of all input]",
             self.identity,
@@ -479,10 +787,14 @@ impl Create {
         let screen = frame.area();
         let area = Rect::new(1, 1, screen.width - 2, screen.height - 2);
         let title = match self.phase {
+            Phase::Confirm if self.update_key.is_some() => "Confirm update (no PATCH yet)",
             Phase::Confirm => "Confirm create (no POST yet)",
+            Phase::Preparing => "Preparing update (no PATCH yet)",
             Phase::Sending => "Sending - Ctrl+C: interrupt",
+            Phase::Result if self.update_key.is_some() => "Update result",
             Phase::Result => "Create result",
             Phase::Discard => "Discard changes?",
+            _ if self.update_key.is_some() => "Update issue",
             _ => "Create issue",
         };
         frame.render_widget(Clear, area);
@@ -491,6 +803,13 @@ impl Create {
         let safe = |text: &str| {
             crate::tui_text::display(Text::from(safety::text(text, secrets)), secrets).to_string()
         };
+        if self.phase == Phase::Preparing {
+            frame.render_widget(
+                Paragraph::new("Validating changes... Ctrl+C: interrupt"),
+                inner,
+            );
+            return;
+        }
         if self.phase == Phase::Discard {
             frame.render_widget(
                 Paragraph::new("Discard changes?\nEnter/Space: discard  Esc: keep editing"),
@@ -504,7 +823,11 @@ impl Create {
                     "Project: {}\n{}\n{}",
                     self.project.label,
                     if self.loading() {
-                        "Loading create candidates..."
+                        if self.update_key.is_some() {
+                            "Loading issue / candidates..."
+                        } else {
+                            "Loading create candidates..."
+                        }
                     } else {
                         &self.notice
                     },
@@ -545,7 +868,11 @@ impl Create {
             } else if self.refreshing {
                 "Refreshing: please wait / Ctrl+C: interrupt"
             } else {
-                "j/k PgUp/Dn Home/End: read all\nEnter/Esc: Issue List"
+                if self.update_key.is_some() {
+                    "j/k PgUp/Dn Home/End: read all\nEnter/Esc: Detail"
+                } else {
+                    "j/k PgUp/Dn Home/End: read all\nEnter/Esc: Issue List"
+                }
             };
             frame.render_widget(
                 Paragraph::new(help),
@@ -560,7 +887,7 @@ impl Create {
             ))),
             Rect::new(inner.x, inner.y, inner.width, 1),
         );
-        let labels = [
+        let mut labels = vec![
             "Title",
             "Issue type",
             "Priority",
@@ -572,14 +899,18 @@ impl Create {
             "Review / 確認へ",
             "Cancel",
         ];
+        if self.update_key.is_some() {
+            labels.splice(8..8, ["Status", "Resolution"]);
+        }
         let visible = inner.height.saturating_sub(4) as usize;
         let top = self.field.saturating_sub(visible.saturating_sub(1));
-        for (row, index) in (top..10).take(visible).enumerate() {
+        for (row, index) in (top..self.field_count()).take(visible).enumerate() {
             let value = match index {
                 0 => String::new(),
                 1..=3 => self.selection_text(index - 1),
                 4 | 5 => String::new(),
                 6 => self.selection_text(3),
+                8 | 9 if self.update_key.is_some() => self.selection_text(index - 4),
                 7 => format!(
                     "{} chars (Enter: editor / Delete: clear)",
                     self.body.chars().count()
@@ -638,7 +969,7 @@ impl Create {
                     )
                 })
                 .collect::<Vec<_>>();
-            if field == 2 {
+            if field == 2 || field == 5 {
                 items.insert(0, "(cleared)".into());
             }
             if items.is_empty() {
@@ -675,10 +1006,64 @@ impl Create {
 pub(super) struct Submission {
     values: Values,
     project: String,
+    prepared: Option<PreparedIssueUpdate>,
 }
 impl Submission {
     pub(super) async fn run(self, service: Service) -> Result<serde_json::Value, Error> {
-        self.values.send(&self.project, &service).await
+        if let Some(prepared) = self.prepared {
+            service.send_issue_update(prepared).await
+        } else {
+            self.values.send(&self.project, &service).await
+        }
+    }
+}
+pub(super) struct Preparation {
+    values: Values,
+    initial: Values,
+    issue: serde_json::Value,
+    key: String,
+}
+impl Preparation {
+    pub(super) async fn run(self, service: Service) -> Result<PreparedIssueUpdate, Error> {
+        let v = &self.values;
+        let i = &self.initial;
+        let changed = |index: usize| v.choices[index] != i.choices[index];
+        let selected = |index: usize| {
+            if changed(index) {
+                v.choices[index].first().map(Choice::selection)
+            } else {
+                None
+            }
+        };
+        let clear = |index: usize| changed(index) && v.choices[index].is_empty();
+        service
+            .prepare_issue_update(
+                &self.key,
+                IssueUpdate {
+                    title: (v.title != i.title).then_some(v.title.as_str()),
+                    body: (v.body != i.body).then_some(v.body.as_str()),
+                    issue_type: selected(0),
+                    priority: selected(1),
+                    assignee: selected(2),
+                    status: selected(4),
+                    resolution: selected(5),
+                    clear_assignee: clear(2),
+                    clear_resolution: clear(5),
+                    milestone: if changed(3) {
+                        v.choices[3].iter().map(Choice::selection).collect()
+                    } else {
+                        vec![]
+                    },
+                    clear_milestones: clear(3),
+                    start_date: (v.start != i.start && !v.start.is_empty())
+                        .then_some(v.start.as_str()),
+                    due_date: (v.due != i.due && !v.due.is_empty()).then_some(v.due.as_str()),
+                    clear_start_date: v.start != i.start && v.start.is_empty(),
+                    clear_due_date: v.due != i.due && v.due.is_empty(),
+                },
+                Some(&self.issue),
+            )
+            .await
     }
 }
 impl Values {

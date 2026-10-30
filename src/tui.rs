@@ -1,4 +1,4 @@
-//! Read-only project, issue-list and detail browsing.
+//! Project and issue browsing with modal issue forms.
 mod browse;
 mod comment;
 mod create;
@@ -122,6 +122,7 @@ impl Shell {
             } else if key.code == KeyCode::Char('q')
                 && key.modifiers.is_empty()
                 && !self.create.as_ref().unwrap().sending()
+                && !self.create.as_ref().unwrap().refreshing
             {
                 return Some(0);
             }
@@ -246,6 +247,23 @@ impl Shell {
             }
             return None;
         }
+        if self.focus == Focus::Detail
+            && key.code == KeyCode::Char('e')
+            && key.modifiers.is_empty()
+            && key.kind == KeyEventKind::Press
+        {
+            if let Some(key) = self.browse.update_target() {
+                self.create_generation += 1;
+                self.create_progress = crate::CreateProgress::new(crate::WriteOutcome::NotUpdated);
+                self.create = Some(create::Create::new_update(
+                    key,
+                    &self.profile,
+                    &self.origin,
+                    self.browse.space.as_deref().unwrap_or(""),
+                ));
+            }
+            return None;
+        }
         self.browse.key(key.code, self.focus, rows);
         match key.code {
             KeyCode::Char('h' | 'l') | KeyCode::Tab | KeyCode::BackTab => {
@@ -268,8 +286,9 @@ impl Shell {
         match self.create.as_mut().unwrap().event(event, area) {
             create::Action::None => {}
             create::Action::Close => {
+                let update = self.create.as_ref().unwrap().update_key.is_some();
                 self.create = None;
-                self.set_focus(Focus::Issue);
+                self.set_focus(if update { Focus::Detail } else { Focus::Issue });
             }
             create::Action::Editor => self.editor_request = Some(EditorRequest::CreateBody),
         }
@@ -308,8 +327,18 @@ impl Shell {
         let area = frame.area();
         if area.width < 40 || area.height < 12 {
             frame.render_widget(
-                Paragraph::new("Terminal too small: need 40x12. q: quit / Ctrl+C: interrupt")
-                    .wrap(Wrap { trim: false }),
+                Paragraph::new(
+                    if self
+                        .create
+                        .as_ref()
+                        .is_some_and(|c| c.sending() || c.refreshing)
+                    {
+                        "Terminal too small: need 40x12. Ctrl+C: interrupt"
+                    } else {
+                        "Terminal too small: need 40x12. q: quit / Ctrl+C: interrupt"
+                    },
+                )
+                .wrap(Wrap { trim: false }),
                 area,
             );
             return;
@@ -333,7 +362,10 @@ impl Shell {
         let (navigation, action) = match self.focus {
             Focus::Project => ("h/l Tab/S-Tab:Issue", "j/k Enter:select Ctrl+A:cross R"),
             Focus::Issue => ("h/l Tab/S-Tab:Project", "j/k p/n Enter:Detail / Ctrl+O R"),
-            Focus::Detail => ("h/l Tab/S-Tab:Comment", "j/k PgUp/Dn g/G R Esc:Issue"),
+            Focus::Detail => (
+                "h/l Tab/S-Tab:Comment",
+                "j/k PgUp/Dn g/G e:edit R Esc:Issue",
+            ),
             Focus::Comment => (
                 "h/l Tab/S-Tab:Detail",
                 "j/k n:older p:newer g/G R Esc:Issue",
@@ -649,6 +681,9 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
     let mut create_load: Option<(u64, tokio::task::JoinHandle<Result<create::Loaded, Error>>)> =
         None;
     let mut create_write: Option<tokio::task::JoinHandle<Result<serde_json::Value, Error>>> = None;
+    let mut update_prepare: Option<
+        tokio::task::JoinHandle<Result<crate::service::PreparedIssueUpdate, Error>>,
+    > = None;
     shell.origin = config.origin.to_string();
     let result = catch_unwind(AssertUnwindSafe(|| runtime.block_on(async {
         // Register eagerly: raw-mode entry must never precede the SIGINT handler.
@@ -697,12 +732,36 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             shell.create.as_mut().unwrap().loaded(loaded);
                         }
                     }
+                    if update_prepare.as_ref().is_some_and(|task| task.is_finished()) {
+                        let result = update_prepare.take().unwrap().await.map_err(|_| Error::new("terminal", "Update preparation task failed"))?;
+                        shell.create.as_mut().unwrap().prepared(result);
+                    }
                     if create_write.as_ref().is_some_and(|task| task.is_finished()) {
                         let result = create_write.take().unwrap().await.map_err(|_| Error::new("terminal", "Create task failed"))?;
+                        let mut updated_key = None;
+                        let result = result.and_then(|value| {
+                            let form = shell.create.as_ref().unwrap();
+                            if form.update_key.is_some() {
+                                let text = form.update_display(&value, &config)?;
+                                if form.update_key == shell.browse.detail.key {
+                                    shell.browse.invalidate_detail();
+                                    shell.browse.detail.replace(text.into());
+                                    updated_key = form.update_key.clone();
+                                }
+                            }
+                            Ok(value)
+                        });
                         if shell.create.as_mut().unwrap().finished(result) { shell.browse.refresh_after_create(); }
+                        if let Some(key) = updated_key {
+                            shell.create.as_mut().unwrap().refreshing_comments();
+                            shell.browse.refresh_comments_after_update(key);
+                        }
                     }
                     if let Some(result) = shell.browse.create_refresh_result.take() {
                         shell.create.as_mut().unwrap().refreshed(result);
+                    }
+                    if let Some(result) = shell.browse.update_comments_result.take() {
+                        shell.create.as_mut().unwrap().comments_refreshed(result);
                     }
                     // Bound work per tick even during a stream of paste/resize events.
                     for _ in 0..32 {
@@ -758,14 +817,23 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             break;
                         }
                     }
-                    if let Some(create) = &shell.create {
+                    if let Some(create) = &mut shell.create {
+                        if create.preparing() && update_prepare.is_none() {
+                            let preparation = create.preparation();
+                            let service = crate::service::Service::new(&config)?;
+                            update_prepare = Some(tokio::spawn(preparation.run(service)));
+                        }
                         if create.loading() && create_load.is_none() {
-                            let config = Arc::clone(&config); let project = create.project.id.clone();
-                            create_load = Some((shell.create_generation, tokio::spawn(async move { create::load(&config, &project).await })));
+                            let config = Arc::clone(&config); let project = create.project.id.clone(); let key = create.update_key.clone();
+                            create_load = Some((shell.create_generation, tokio::spawn(async move {
+                                match key { Some(key) => create::load_update(&config, &key).await, None => create::load(&config, &project).await }
+                            })));
                         }
                         if create.sending() && create_write.is_none() {
                             let submission = create.submission();
-                            let service = crate::service::Service::with_create_progress(&config, shell.create_progress.clone())?;
+                            let service = if create.update_key.is_some() {
+                                crate::service::Service::with_update_progress(&config, shell.create_progress.clone())?
+                            } else { crate::service::Service::with_create_progress(&config, shell.create_progress.clone())? };
                             create_write = Some(tokio::spawn(submission.run(service)));
                         }
                     }
@@ -781,6 +849,10 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         }
     }))).unwrap_or_else(|_| Err(Error::new("terminal", "TUI stopped after an internal panic")));
     if let Some((_, task)) = create_load {
+        task.abort();
+        let _ = runtime.block_on(task);
+    }
+    if let Some(task) = update_prepare {
         task.abort();
         let _ = runtime.block_on(task);
     }
@@ -807,13 +879,23 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         result.map_err(|mut error| {
             let (outcome, status) = shell.create_progress.snapshot();
             error.http_status = status;
+            let update = shell.create.as_ref().unwrap().update_key.is_some();
             let label = match outcome {
+                crate::WriteOutcome::Updated => "updated: issue updated; do not resend",
+                crate::WriteOutcome::NotUpdated => "not_updated: issue not updated",
+                crate::WriteOutcome::Unknown if update => {
+                    "unknown: update result unknown; do not resend"
+                }
                 crate::WriteOutcome::Created => "created: issue created; do not resend",
                 crate::WriteOutcome::Unknown => "unknown: creation result unknown; do not resend",
                 _ => "not_created: issue not created",
             };
             error.message.push_str(&format!("; {label}"));
-            error.with_create_outcome(outcome)
+            if update {
+                error.with_update_outcome(outcome)
+            } else {
+                error.with_create_outcome(outcome)
+            }
         })
     } else {
         result

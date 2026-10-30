@@ -3708,7 +3708,7 @@ fn bl_create_resolves_defaults_clears_assignee_and_posts_once_after_full_confirm
         json!([
             {"wait":"Alpha", "keys":"\r"},
             {"wait":"total 0", "keys":"lc"},
-            {"wait":"Assignee: Alice", "keys":" Raw title \u{0001}"},
+            {"wait":"Assignee: Alice", "keys":" Raw title \t\u{0001}"},
             {"wait":"Assignee: Alice", "keys":"\u{007f}\t2024-02-29\t2024-03-01\t\r"},
             {"wait":"Milestones candidates", "keys":" j \r"},
             {"wait":"Milestones: First", "keys":"\t\t\r"},
@@ -3788,7 +3788,7 @@ fn bl_create_interrupt_aborts_and_joins_write_preserving_each_observed_outcome()
             let mut steps = vec![
                 json!({"wait":"Alpha", "keys":"\r"}),
                 json!({"wait":"total 0", "keys":"lc"}),
-                json!({"wait":"Create issue", "keys":"title\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r", "pause":0.3}),
+                json!({"wait":"Create issue", "keys":"title\t\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r", "pause":0.3}),
                 json!({"wait":"Confirm create", "keys": if phase == "before" { "" } else { "s" }}),
             ];
             let mut last = json!({"wait": if phase == "before" { "Confirm create" } else { "Sending" }, "wait_file":marker, "pause":0.15});
@@ -3837,14 +3837,14 @@ fn bl_create_masks_entire_input_and_keeps_editor_body_dates_and_focus_through_re
             {"wait":"Alpha", "keys":"\r"},
             {"wait":"total 0", "keys":"lc"},
             {"wait":"Create issue", "pause":0.3, "keys":title},
-            {"wait":"[REDACTED]", "keys":"\u{0019}\r\r\u{0010}\r\r\u{0001}\t2023-02-29\t2024-03-01\u{0002}"},
+            {"wait":"[REDACTED]", "keys":"\t\u{0019}\r\r\u{0010}\r\r\u{0001}\t2023-02-29\t2024-03-01\t\u{0002}"},
             {"wait":"Body edit", "pause":0.1, "keys":""},
             {"wait":"Body edit", "keys":"\r"},
             {"wait":"EDITOR READY", "resize":[12,40], "keys":"qhljk\n"},
             {"wait":"Body editor finished", "keys":"\t\r"},
             {"wait":"real YYYY-MM-DD", "keys":"\u{001b}"},
             {"wait":"Discard changes?", "keys":"\u{001b}"},
-            {"wait":"Create issue", "keys":"\u{0001}\t\u{0015}2024-02-29\u{0002}\t\r"},
+            {"wait":"Create issue", "keys":"\u{0001}\t\u{0015}2024-02-29\t\t\u{0002}\t\r"},
             {"wait":"Confirm create", "keys":"G"},
             {"wait":"[End of all input]", "resize":[11,39], "keys":"s\r\tbad"},
             {"wait":"Terminal too small", "resize":[24,100], "keys":""},
@@ -3909,7 +3909,7 @@ fn bl_create_cancelled_candidate_load_cannot_fill_a_new_confirmed_target() {
             {"wait":"Alpha", "keys":"\r"},
             {"wait":"total 0", "keys":"lc"},
             {"wait":"Loading create candidates", "keys":"\u{001b}[27uhj\rlc"},
-            {"wait":"Project: B", "pause":0.8, "keys":"\u{0019}\r"},
+            {"wait":"Project: B", "pause":0.8, "keys":"\t\u{0019}\r"},
             {"wait":"Beta task", "keys":"\u{001b}[27u\u{001b}[27u"},
             {"wait":"Issue List", "keys":"q"}
         ]),
@@ -3936,7 +3936,7 @@ fn bl_new_create_interrupt_does_not_inherit_a_previous_created_outcome() {
     std::fs::write(h.root.join("shell-steps.json"), json!([
         {"wait":"Alpha", "keys":"\r"},
         {"wait":"total 0", "keys":"lc"},
-        {"wait":"Create issue", "pause":0.3, "keys":"title\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
+        {"wait":"Create issue", "pause":0.3, "keys":"title\t\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
         {"wait":"Confirm create", "keys":"s"},
         {"wait":"Created; list refreshed", "keys":"\rc\u{0003}"}
     ]).to_string()).unwrap();
@@ -3980,7 +3980,7 @@ fn bl_create_refresh_swaps_history_only_after_both_reads_and_never_injects_creat
                 {"wait":"total 40", "keys":"ln"},
                 {"wait":"B-21", "keys":"jjjjjjjjjjjjjjjjj"},
                 {"wait":"> B-38", "keys":"c"},
-                {"wait":"Create issue", "pause":0.3, "keys":"title\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
+                {"wait":"Create issue", "pause":0.3, "keys":"title\t\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
                 {"wait":"Confirm create", "keys":"s"},
                 {"wait": if failure == "none" { "Created; list refreshed" } else { "Created; list refresh failed" }, "keys":"\r"},
                 {"wait": if failure == "none" { "> B-99" } else { "> B-38" }, "keys":"p"},
@@ -4008,7 +4008,7 @@ fn bl_create_refresh_swaps_history_only_after_both_reads_and_never_injects_creat
             assert_eq!(list(3), list(9), "{failure}: page history must remain");
         }
         assert_eq!(
-            result["request_counts"][8], result["request_counts"][9],
+            result["browse_request_counts"][8], result["browse_request_counts"][9],
             "history navigation must be local: {failure}"
         );
         let requests = h.requests();
@@ -4050,7 +4050,7 @@ fn bl_create_requires_explicit_choices_and_compares_current_values_not_a_dirty_f
         json!([
             {"wait":"Alpha", "keys":"\r"},
             {"wait":"total 0", "keys":"lc"},
-            {"wait":"Create issue", "pause":0.3, "keys":"x\u{0002}\t\r"},
+            {"wait":"Create issue", "pause":0.3, "keys":"x\t\u{0002}\t\r"},
             {"wait":"Issue type and priority are required", "keys":"\u{0014}\u{0015}\u{001b}"},
             {"wait":"Issue List", "resize":[12,40], "keys":"c"},
             {"wait":"Create issue", "pause":0.3, "keys":"\t"},
@@ -4093,10 +4093,10 @@ fn bl_create_editor_failures_keep_other_inputs_and_do_not_change_the_empty_body(
             json!([
                 {"wait":"Alpha", "keys":"\r"},
                 {"wait":"total 0", "keys":"lc"},
-                {"wait":"Create issue", "pause":0.3, "keys":"retained title\u{0002}\r"},
+                {"wait":"Create issue", "pause":0.3, "keys":"retained title\t\u{0002}\r"},
                 {"wait":"EDITOR READY", "resize":[12,40], "keys":"qjk\n"},
                 {"wait":"Create issue", "keys":"\u{0014}"},
-                {"wait":"retained title", "keys":"\u{0002}"},
+                {"wait":"retained title", "keys":"\t\u{0002}"},
                 {"wait":"Body edit: 0 chars", "keys":"\u{001b}"},
                 {"wait":"Discard changes?", "keys":"\r"},
                 {"wait":"Issue List", "keys":"q"}
@@ -4141,7 +4141,7 @@ fn bl_create_result_does_not_downgrade_success_headers_or_refresh_an_unreadable_
             json!([
                 {"wait":"Alpha", "keys":"\r"},
                 {"wait":"total 0", "keys":"lc"},
-                {"wait":"Create issue", "pause":0.3, "keys":"title\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
+                {"wait":"Create issue", "pause":0.3, "keys":"title\t\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
                 {"wait":"Confirm create", "keys":"\r", "pause":0.15},
                 {"wait":"Confirm create", "keys":"s"},
                 {"wait":outcome, "keys":"s\r"},
@@ -4160,6 +4160,1305 @@ fn bl_create_result_does_not_downgrade_success_headers_or_refresh_an_unreadable_
                 .count(),
             1,
             "unusable success response must not GET just to confirm certainty"
+        );
+    }
+}
+
+fn update_issue() -> Value {
+    let mut issue = detail_issue("B-1", "Original body");
+    issue["issueType"]["id"] = json!(2);
+    issue["priority"]["id"] = json!(3);
+    issue["status"]["id"] = json!(1);
+    issue["milestone"] = json!([{"id":5,"name":"First"}]);
+    issue
+}
+fn update_routes() -> Value {
+    let mut routes = browsing_routes();
+    let mut latest = update_issue();
+    latest["summary"] = json!("Latest title");
+    routes["routes"]["GET /api/v2/issues/B-1"] = json!({"sequence":[
+        {"body":update_issue().to_string()}, {"body":latest.to_string()}
+    ]});
+    latest["summary"] = json!("Changed title");
+    routes["routes"]["PATCH /api/v2/issues/B-1"] = json!({"body":latest.to_string(),"delay":0.3});
+    for (path, body) in [
+        (
+            "/api/v2/projects/2/issueTypes",
+            json!([{"id":2,"name":"Task"}]),
+        ),
+        ("/api/v2/priorities", json!([{"id":3,"name":"Medium"}])),
+        ("/api/v2/projects/2/users", json!([{"id":4,"name":"Alice"}])),
+        (
+            "/api/v2/projects/2/versions",
+            json!([{"id":5,"name":"First"},{"id":6,"name":"Second"}]),
+        ),
+        (
+            "/api/v2/projects/2/statuses",
+            json!([{"id":1,"name":"Open"},{"id":2,"name":"Closed"}]),
+        ),
+        ("/api/v2/resolutions", json!([{"id":0,"name":"Fixed"}])),
+    ] {
+        routes["routes"][path] = json!({"body":body.to_string()});
+    }
+    routes
+}
+#[test]
+fn bl_create_and_update_single_line_editing_precedes_form_shortcuts_even_when_edit_is_noop() {
+    for update in [false, true] {
+        let mut routes = if update {
+            update_routes()
+        } else {
+            create_routes()
+        };
+        if update {
+            let mut latest = update_issue();
+            latest["summary"] = json!("");
+            latest["startDate"] = json!(null);
+            latest["dueDate"] = json!(null);
+            routes["routes"]["GET /api/v2/issues/B-1"]["sequence"][1]["body"] =
+                json!(latest.to_string());
+        } else {
+            routes["routes"]["POST /api/v2/issues"] =
+                json!({"status":201,"body":"{\"id\":9,\"issueKey\":\"A-9\"}"});
+        }
+        let h = Harness::new(routes);
+        let mut steps = if update {
+            settings(&h, "B");
+            vec![json!({"wait":"TITLE: Detail B-1", "keys":"Le"})]
+        } else {
+            vec![
+                json!({"wait":"Alpha", "keys":"\r"}),
+                json!({"wait":"total 0", "keys":"lc"}),
+            ]
+        };
+        steps.extend([
+            json!({"wait":"> Title:", "keys":"\u{1}\u{2}\u{19}\u{1b}[200~日本e\u{301}👩‍💻 qhljkHL\u{1b}[201~\u{1}\u{1}\u{2}X\u{5}\u{2}!\u{b}\u{19}"}),
+            json!({"wait":"qhljkH!L", "keys":"\t\t\t\t"}),
+            json!({"wait":"> Start date:", "keys":"\u{1}\u{2}\u{19}2024-02-2\u{2}0\u{1}\u{1}\u{2}\u{1b}[3~2\u{5}\u{2}\u{b}\u{19}"}),
+            json!({"wait":"> Start date: 2024-02-02", "keys":"\t"}),
+            json!({"wait":"> Due date:", "keys":"\u{1}\u{2}\u{19}2024-03-0\u{2}1\u{1}\u{1}\u{2}\u{1b}[3~2\u{5}\u{2}\u{b}\u{19}"}),
+            json!({"wait":"> Due date: 2024-03-10", "keys":"\t\u{1}"}),
+            json!({"wait":"> Assignee:", "keys":"\u{19}"}),
+            json!({"wait":"> Issue type:", "keys":"\r\r\u{10}"}),
+            json!({"wait":"> Priority:", "keys":"\r\r\u{14}\u{10}"}),
+            json!({"wait":"> Priority:", "keys":"\u{2}"}),
+            json!({"wait":"> Body edit:", "keys":if update {"\t\t\t\r"} else {"\t\r"}}),
+            json!({"wait":if update {"Confirm update"} else {"Confirm create"}, "keys":"\r"}),
+            json!({"wait":if update {"Confirm update"} else {"Confirm create"}, "keys":"s"}),
+            json!({"wait":if update {"Comment display refreshed"} else {"Created: A-9"}, "keys":"\r"}),
+            json!({"wait":if update {"> Issue Detail"} else {"Issue List"}, "keys":"q"}),
+        ]);
+        let result = scripted(&h, json!(steps));
+        let snapshots = result["snapshots"].as_array().unwrap();
+        let confirmation = snapshots[snapshots.len() - 3].as_str().unwrap();
+        for text in ["qhljkH!L", "2024-02-02", "2024-03-10"] {
+            assert!(confirmation.contains(text), "missing {text}: {result}");
+        }
+        let counts = result["request_counts"].as_array().unwrap();
+        assert_eq!(
+            counts[counts.len() - 4],
+            counts[counts.len() - 3],
+            "Enter must not send: {result}"
+        );
+        let requests = h.requests();
+        let writes: Vec<_> = requests.iter().filter(|r| r["method"] != "GET").collect();
+        assert_eq!(writes.len(), 1, "{requests:?}");
+        assert_eq!(writes[0]["method"], if update { "PATCH" } else { "POST" });
+        assert_eq!(
+            writes[0]["form"]["summary"],
+            json!(["X日本e\u{301}👩‍💻 qhljkH!L"])
+        );
+        assert_eq!(writes[0]["form"]["startDate"], json!(["2024-02-02"]));
+        assert_eq!(writes[0]["form"]["dueDate"], json!(["2024-03-10"]));
+    }
+}
+
+#[test]
+fn bl_update_fetches_latest_confirms_only_changes_and_refreshes_only_comments_once() {
+    let h = Harness::new(update_routes());
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1", "keys":"L"},
+            {"wait":"> Issue Detail", "keys":"e"},
+            {"wait":"Latest title", "keys":"\u{15}Changed title\t\u{2}\t\t\t\r"},
+            {"wait":"Confirm update", "keys":"\r"},
+            {"wait":"Confirm update", "keys":"s"},
+            {"wait":"Sending", "keys":"s\r\u{1b}q\u{14}bad"},
+            {"wait":"Comment display refreshed", "keys":"\r"},
+            {"wait":"Changed title", "keys":"H"},
+            {"wait":"Selected project issue", "keys":"q"}
+        ]),
+    );
+    assert_eq!(
+        result["request_counts"][3], result["request_counts"][4],
+        "confirm Enter must not write: {result}"
+    );
+    let confirm = result["snapshots"][3].as_str().unwrap();
+    assert!(
+        confirm.contains("Changed title") && !confirm.contains("Original body"),
+        "{result}"
+    );
+    let requests = h.requests();
+    let patches: Vec<_> = requests.iter().filter(|r| r["method"] == "PATCH").collect();
+    assert_eq!(patches.len(), 1, "{requests:?}");
+    assert_eq!(patches[0]["form"], json!({"summary":["Changed title"]}));
+    for prefix in ["/api/v2/issues/count?", "/api/v2/issues?"] {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["path"].as_str().unwrap().starts_with(prefix))
+                .count(),
+            1,
+            "{requests:?}"
+        );
+    }
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"] == "/api/v2/issues/B-1/comments?count=20&order=desc")
+            .count(),
+        2,
+        "{requests:?}"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["method"] == "GET" && r["path"] == "/api/v2/issues/B-1")
+            .count(),
+        2,
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn bl_update_required_choices_cannot_be_cleared_and_no_changes_never_patch_or_confirm_discard() {
+    let h = Harness::new(update_routes());
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1", "keys":"Le"},
+            {"wait":"Latest title", "keys":"\t\u{7f}\t\u{7f}\u{2}\t\u{7f}\t\t\r"},
+            {"wait":"No fields have changed", "keys":"\u{1b}"},
+            {"wait":"> Issue Detail", "keys":"q"}
+        ]),
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("Discard changes?"),
+        "{result}"
+    );
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+}
+
+#[test]
+fn bl_update_all_fields_include_resolution_zero_and_editor_raw_body_in_one_patch() {
+    let mut routes = update_routes();
+    routes["routes"]["/api/v2/projects/2/issueTypes"]["body"] =
+        json!("[{\"id\":2,\"name\":\"Task\"},{\"id\":7,\"name\":\"Bug\"}]");
+    routes["routes"]["/api/v2/priorities"]["body"] =
+        json!("[{\"id\":3,\"name\":\"Medium\"},{\"id\":8,\"name\":\"High\"}]");
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    // Invalid create defaults must never participate in an update.
+    std::fs::write(h.root.join(".backlog/settings.json"), json!({"project":"B","issue":{"create":{"issueType":"MISSING","priority":"MISSING","assignee":"self"}}}).to_string()).unwrap();
+    let editor = vec![
+        "/usr/bin/python3".to_string(),
+        format!("{}/tests/fixtures/editor.py", env!("CARGO_MANIFEST_DIR")),
+        h.root.join("editor-record").display().to_string(),
+        "body-file".into(),
+    ];
+    h.config(json!({"editor":editor,"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    let body = " Raw body 日本語 e\u{301} 👩‍💻\n\n";
+    std::fs::write(h.root.join("editor-body"), body).unwrap();
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1", "keys":"Le"},
+            {"wait":"Latest title", "keys":"\u{15}Changed title\t\rj\r\t\rj\r\t\rj\r\t2024-02-29\t2024-03-01\t\r"},
+            {"wait":"Milestones candidates", "keys":" j \r\t\r"},
+            {"wait":"EDITOR READY", "keys":"\n", "resize":[12,40]},
+            {"wait":"Body editor finished", "keys":"\t\rj\r\t\rj\r\t\r", "resize":[24,100]},
+            {"wait":"Confirm update", "keys":"G"},
+            {"wait":"[End of changes]", "keys":"s"},
+            {"wait":"Comment display refreshed", "keys":"\r"},
+            {"wait":"> Issue Detail", "keys":"q"}
+        ]),
+    );
+    let requests = h.requests();
+    let patches: Vec<_> = requests.iter().filter(|r| r["method"] == "PATCH").collect();
+    assert_eq!(patches.len(), 1, "{requests:?}");
+    assert_eq!(
+        patches[0]["form"],
+        json!({"summary":["Changed title"],"description":[body],"issueTypeId":["7"],"priorityId":["8"],"assigneeId":["4"],"statusId":["2"],"resolutionId":["0"],"startDate":["2024-02-29"],"dueDate":["2024-03-01"],"milestoneId[]":["6"]})
+    );
+    assert!(!requests.iter().any(|r| r["path"] == "/api/v2/users/myself"));
+    assert!(
+        result["snapshots"][6]
+            .as_str()
+            .unwrap()
+            .contains("Fixed (0)"),
+        "{result}"
+    );
+}
+
+#[test]
+fn bl_update_explicit_clears_are_empty_values_and_unchanged_required_fields_are_omitted() {
+    let mut routes = update_routes();
+    let mut latest = update_issue();
+    latest["assignee"] = json!({"id":4,"name":"Alice"});
+    latest["resolution"] = json!({"id":0,"name":"Fixed"});
+    latest["startDate"] = json!("2024-02-29T00:00:00Z");
+    latest["dueDate"] = json!("2024-03-01T00:00:00Z");
+    routes["routes"]["GET /api/v2/issues/B-1"]["sequence"][1]["body"] = json!(latest.to_string());
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Le"},
+            {"wait":"Assignee: Alice (4)","keys":"\t\t\t\u{7f}\t\u{15}\t\u{15}\t\u{7f}\t\u{7f}\t\t\u{7f}\t\r"},
+            {"wait":"Confirm update","keys":"s"},
+            {"wait":"Comment display refreshed","keys":"\r"},
+            {"wait":"> Issue Detail","keys":"q"}
+        ]),
+    );
+    let confirm = result["snapshots"][2].as_str().unwrap();
+    for field in [
+        "Assignee",
+        "Resolution",
+        "Start date",
+        "Due date",
+        "Milestones",
+        "Body",
+    ] {
+        assert!(confirm.contains(&format!("{field}: (cleared)")), "{result}");
+    }
+    let patches: Vec<_> = h
+        .requests()
+        .into_iter()
+        .filter(|r| r["method"] == "PATCH")
+        .collect();
+    assert_eq!(patches.len(), 1);
+    assert_eq!(
+        patches[0]["form"],
+        json!({"description":[""],"assigneeId":[""],"resolutionId":[""],"startDate":[""],"dueDate":[""],"milestoneId[]":[""]})
+    );
+}
+
+#[test]
+fn bl_update_same_ids_and_milestone_sets_are_not_changes_even_with_different_candidate_labels() {
+    let mut routes = update_routes();
+    let mut latest = update_issue();
+    latest["milestone"] = json!([{"id":5,"name":"First"},{"id":6,"name":"Second"}]);
+    routes["routes"]["GET /api/v2/issues/B-1"]["sequence"][1]["body"] = json!(latest.to_string());
+    routes["routes"]["/api/v2/projects/2/issueTypes"]["body"] =
+        json!("[{\"id\":2,\"name\":\"Renamed task\"}]");
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Le"},
+            {"wait":"Issue type: Task (2)","keys":"\t\r\r\t\t\t\t\t\r"},
+            {"wait":"Milestones candidates","keys":"  \r\t\t\t\t\r"},
+            {"wait":"No fields have changed","keys":"\u{1b}"},
+            {"wait":"> Issue Detail","keys":"q"}
+        ]),
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("Discard changes?"),
+        "{result}"
+    );
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+}
+
+#[test]
+fn bl_update_interrupt_aborts_joins_and_keeps_not_updated_unknown_or_updated() {
+    for (phase, response, marker, outcome) in [
+        ("before", json!({"body":"{}"}), "", "not_updated"),
+        (
+            "sent",
+            json!({"header_delay":20,"body":"{}"}),
+            "patch-received",
+            "unknown",
+        ),
+        (
+            "headers",
+            json!({"delay":20,"body":"{}"}),
+            "patch-headers-sent",
+            "updated",
+        ),
+    ] {
+        for signal in [false, true] {
+            let mut routes = update_routes();
+            routes["routes"]["PATCH /api/v2/issues/B-1"] = response.clone();
+            let h = Harness::new(routes);
+            settings(&h, "B");
+            let mut last = json!({"wait":if phase == "before" {"Confirm update"} else {"Sending"}, "wait_file":marker, "pause":0.15});
+            if signal {
+                last["signal"] = json!("SIGINT");
+            } else {
+                last["keys"] = json!("\u{3}");
+            }
+            std::fs::write(
+                h.root.join("shell-steps.json"),
+                json!([
+                    {"wait":"TITLE: Detail B-1","keys":"Le"},
+                    {"wait":"Latest title","keys":"!\t\u{2}\t\t\t\r"},
+                    {"wait":"Confirm update","keys":if phase == "before" {""} else {"s"}},last
+                ])
+                .to_string(),
+            )
+            .unwrap();
+            let result = shell(&h, "scripted", &[]);
+            assert_eq!(result["code"], 130, "{phase}/{signal}: {result}");
+            assert_eq!(result["restored"], true, "{result}");
+            let stderr = result["stderr"].as_str().unwrap();
+            assert!(
+                stderr.contains(&format!("; {outcome}:")),
+                "{phase}/{signal}: {result}"
+            );
+            if phase != "before" {
+                assert!(stderr.contains("do not resend"), "{result}");
+            }
+            assert!(result["elapsed"].as_f64().unwrap() < 5.0, "{result}");
+            assert_eq!(
+                h.requests()
+                    .iter()
+                    .filter(|r| r["method"] == "PATCH")
+                    .count(),
+                usize::from(phase != "before")
+            );
+        }
+    }
+}
+
+#[test]
+fn bl_update_failures_preserve_certainty_never_retry_or_refresh_and_cannot_edit_the_result() {
+    for (response, expected) in [
+        (
+            json!({"status":403,"body":"{\"errors\":[{\"code\":5,\"message\":\"Denied test-secret\"}]}"}),
+            "NotUpdated:",
+        ),
+        (json!({"status":500,"body":"{}"}), "Unknown:"),
+        (
+            json!({"body":"not json"}),
+            "Updated; response processing failed",
+        ),
+        (
+            json!({"body":"{\"id\":1}","truncate":true}),
+            "Updated; response processing failed",
+        ),
+        (json!({"body":"{}"}), "Updated; response processing failed"),
+    ] {
+        let mut routes = update_routes();
+        routes["routes"]["PATCH /api/v2/issues/B-1"] = response;
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"TITLE: Detail B-1","keys":"Le"},
+                {"wait":"Latest title","keys":"!\t\u{2}\t\t\t\r"},
+                {"wait":"Confirm update","keys":"s"},
+                {"wait":expected,"keys":"s\u{14}bad"},
+                {"wait":expected,"keys":"\r"},
+                {"wait":"> Issue Detail","keys":"q"}
+            ]),
+        );
+        if expected != "NotUpdated:" {
+            assert!(
+                result["snapshots"][4]
+                    .as_str()
+                    .unwrap()
+                    .contains("Do not resend"),
+                "{result}"
+            );
+        }
+        let requests = h.requests();
+        assert_eq!(
+            requests.iter().filter(|r| r["method"] == "PATCH").count(),
+            1,
+            "{requests:?}"
+        );
+        let patch = requests
+            .iter()
+            .position(|r| r["method"] == "PATCH")
+            .unwrap();
+        assert_eq!(patch, requests.len() - 1, "no follow-up GET: {requests:?}");
+        assert!(
+            !result["stdout"].as_str().unwrap().contains("test-secret"),
+            "{result}"
+        );
+    }
+}
+
+#[test]
+fn bl_update_cancelled_loading_and_older_detail_responses_cannot_replace_a_new_form_or_success() {
+    for failing in [false, true] {
+        let mut routes = update_routes();
+        let mut latest = update_issue();
+        latest["summary"] = json!("New generation title");
+        latest["projectId"] = json!(3);
+        let delayed = if failing {
+            json!({"header_delay":1.4,"status":403})
+        } else {
+            json!({"header_delay":1.4,"body":update_issue().to_string()})
+        };
+        routes["routes"]["GET /api/v2/issues/B-1"]["sequence"] = json!([
+            {"body":update_issue().to_string()}, delayed.clone(), delayed,
+            {"body":latest.to_string()}
+        ]);
+        for suffix in ["", "/issueTypes", "/users", "/versions", "/statuses"] {
+            routes["routes"][format!("/api/v2/projects/3{suffix}")] =
+                routes["routes"][format!("/api/v2/projects/2{suffix}")].clone();
+        }
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"TITLE: Detail B-1","keys":"LR"},
+                {"wait":"Loading... Esc: cancel","keys":"e", "pause":0.2},
+                {"wait":"Loading issue / candidates","keys":"\u{1b}","pause":0.2},
+                {"wait":"> Issue Detail","keys":"e"},
+                {"wait":"New generation title","keys":"!\t\u{2}\t\t\t\r", "pause":1.6},
+                {"wait":"Confirm update","keys":"s"},
+                {"wait":"Comment display refreshed","keys":"\r"},
+                {"wait":"Changed title","keys":"q", "pause":0.3}
+            ]),
+        );
+        let requests = h.requests();
+        assert_eq!(
+            requests.iter().filter(|r| r["method"] == "PATCH").count(),
+            1,
+            "{requests:?}"
+        );
+        assert!(
+            !result["snapshots"][4].as_str().unwrap().contains("ERROR"),
+            "{result}"
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|r| r["path"] == "/api/v2/projects/3/statuses"),
+            "latest project must drive candidates: {requests:?}"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "GET" && r["path"] == "/api/v2/issues/B-1")
+                .count(),
+            4,
+            "{requests:?}"
+        );
+    }
+}
+
+#[test]
+fn bl_update_validation_retains_draft_and_tiny_terminal_cannot_edit_confirm_or_send() {
+    let h = Harness::new(update_routes());
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Le"},
+            {"wait":"Latest title","keys":"\u{15}\t\u{2}\t\t\t\r"},
+            {"wait":"Title must not be blank","keys":"\u{14}Draft qhljkHL\t\t\t\t2023-02-29\t\t\u{2}\t\t\t\r"},
+            {"wait":"Date must be a real","keys":"\u{14}\t\t\t\t\u{15}2024-02-29\t\t\u{2}\t\t\t"},
+            {"wait":"Review /", "resize":[11,39]},
+            {"wait":"Terminal too small","keys":"s\r\u{14}destroy"},
+            {"wait":"Terminal too small","resize":[12,40]},
+            {"wait":"Review /", "keys":"\r"},
+            {"wait":"Confirm update","keys":"\r","resize":[11,39]},
+            {"wait":"Terminal too small","keys":"s\r"},
+            {"wait":"Terminal too small","resize":[24,100]},
+            {"wait":"Draft qhljkHL","keys":"\u{1b}"},
+            {"wait":"Review /","keys":"\u{1b}"},
+            {"wait":"Discard changes?","keys":"\u{1b}"},
+            {"wait":"Draft qhljkHL","keys":"\u{1b}"},
+            {"wait":"Discard changes?","keys":"\r"},
+            {"wait":"> Issue Detail","keys":"q"}
+        ]),
+    );
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+    assert!(
+        !result["stdout"].as_str().unwrap().contains("destroy"),
+        "{result}"
+    );
+}
+
+#[test]
+fn bl_update_safe_display_keeps_raw_title_and_zero_width_candidate_without_reconstructing_secrets()
+{
+    let mut routes = update_routes();
+    routes["routes"]["/api/v2/projects/2/issueTypes"]["body"] =
+        json!(json!([{"id":2,"name":"test-\u{200b}secret"}]).to_string());
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let raw = " Raw qhljkHL test-secret\u{1b}]52;c;clipboard\u{7} 日本語 e\u{301} 👩‍💻 ";
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Le"},
+            {"wait":"Latest title","keys":format!("\u{15}\u{1b}[200~{raw}\u{1b}[201~\t\r")},
+            {"wait":"Issue type candidates","keys":"\r","resize":[12,40]},
+            {"wait":"Issue type:","keys":"\u{14}"},
+            {"wait":"[REDACTED]","keys":"\t\u{2}\t\t\t\r", "resize":[24,100]},
+            {"wait":"Confirm update","keys":"s"},
+            {"wait":"Comment display refreshed","keys":"\r"},
+            {"wait":"> Issue Detail","keys":"q"}
+        ]),
+    );
+    let output = result["stdout"].as_str().unwrap();
+    assert!(
+        !output.contains("test-secret") && !output.contains("\u{1b}]52;c;clipboard"),
+        "{result}"
+    );
+    assert!(output.contains("test-\\u{200b}secret"), "{result}");
+    let patches: Vec<_> = h
+        .requests()
+        .into_iter()
+        .filter(|r| r["method"] == "PATCH")
+        .collect();
+    assert_eq!(patches.len(), 1);
+    assert_eq!(patches[0]["form"], json!({"summary":[raw]}));
+}
+
+#[test]
+fn bl_update_editor_failure_keeps_latest_raw_body_other_fields_and_focus() {
+    for (mode, notice) in [
+        ("nonzero", "Editor did not exit successfully"),
+        ("utf8", "UTF-8"),
+        ("unlink", "Cannot read editor file"),
+    ] {
+        let h = Harness::new(update_routes());
+        settings(&h, "B");
+        h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record").display().to_string(),mode],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"TITLE: Detail B-1","keys":"Le"},
+                {"wait":"Latest title","keys":"!\t\u{2}\r"},
+                {"wait":"EDITOR READY","keys":"\n","resize":[12,40]},
+                {"wait":notice,"keys":"\t\t\t\r","resize":[24,100]},
+                {"wait":"Confirm update","keys":"s"},
+                {"wait":"Comment display refreshed","keys":"\r"},
+                {"wait":"> Issue Detail","keys":"q"}
+            ]),
+        );
+        let record: Value =
+            serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap()).unwrap();
+        assert_eq!(record["original"], "Original body");
+        assert_eq!(record["mode"], json!(0o600));
+        assert_eq!(record["cooked"], true);
+        assert_eq!(record["echo"], true);
+        assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+        let patches: Vec<_> = h
+            .requests()
+            .into_iter()
+            .filter(|r| r["method"] == "PATCH")
+            .collect();
+        assert_eq!(patches.len(), 1, "{result}");
+        assert_eq!(patches[0]["form"], json!({"summary":["Latest title!"]}));
+    }
+}
+
+#[test]
+fn bl_update_local_acceptance_fixture_refreshes_comments_but_preserves_old_list_with_one_patch() {
+    let h = Harness::new(serde_json::from_str(include_str!("fixtures/tui_update.json")).unwrap());
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        serde_json::from_str(include_str!("fixtures/tui_update_steps.json")).unwrap(),
+    );
+    assert_eq!(
+        result["request_counts"][4], result["request_counts"][5],
+        "{result}"
+    );
+    let screen = result["snapshots"][8].as_str().unwrap();
+    for text in [
+        "Changed title",
+        "Old list title",
+        "TITLE: Latest title -> Changed title",
+    ] {
+        assert!(screen.contains(text), "{result}");
+    }
+    let requests = h.requests();
+    assert_eq!(requests.len(), 19, "{requests:?}");
+    let patches: Vec<_> = requests.iter().filter(|r| r["method"] == "PATCH").collect();
+    assert_eq!(patches.len(), 1);
+    assert_eq!(
+        patches[0]["form"],
+        json!({"summary":["Changed title"],"description":[""],"assigneeId":[""],"resolutionId":["0"],"milestoneId[]":["5","6"]})
+    );
+}
+
+#[test]
+fn bl_update_preserves_list_page_history_selection_scroll_but_resets_comments_to_latest() {
+    let mut routes = update_routes();
+    routes["routes"]["/api/v2/issues/count"] = json!({"body":"{\"count\":40}"});
+    routes["routes"]["GET /api/v2/issues"] =
+        json!({"offsets":{"0":{"body":issue_items(1,20)},"20":{"body":issue_items(21,40)}}});
+    let mut latest = update_issue();
+    latest["issueKey"] = json!("B-38");
+    latest["summary"] = json!("Page two title");
+    routes["routes"]["GET /api/v2/issues/B-38"] = json!({"body":latest.to_string()});
+    latest["summary"] = json!("Updated page two title");
+    routes["routes"]["PATCH /api/v2/issues/B-38"] = json!({"body":latest.to_string()});
+    let comment: Value = serde_json::from_str(include_str!("fixtures/tui_comment.json")).unwrap();
+    routes["routes"]["/api/v2/issues/B-38/comments"] =
+        comment["routes"]["/api/v2/issues/B-1/comments"]["sequence"][0].clone();
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"ln"},
+            {"wait":"> B-21","keys":"jjjjjjjjjjjjjjjjj"},
+            {"wait":"TITLE: Page two title","keys":"Ll"},
+            {"wait":"Comment 2 line 01","keys":"n"},
+            {"wait":"Comment 1 line 01","keys":"jjjjjjjjjjjjjjj"},
+            {"wait":"Comment 1 line 16","keys":"he"},
+            {"wait":"Page two title","keys":"\u{15}Updated page two title\t\u{2}\t\t\t\r"},
+            {"wait":"Confirm update","keys":"s"},
+            {"wait":"Comment display refreshed","keys":"\r"},
+            {"wait":"Updated page two title","keys":"l"},
+            {"wait":"Comment 2 line 01","keys":"H"},
+            {"wait":"> B-38","keys":"p"},
+            {"wait":"> B-1","keys":"n"},
+            {"wait":"> B-38","keys":"q"}
+        ]),
+    );
+    let snapshots = result["snapshots"].as_array().unwrap();
+    let list = |i: usize| {
+        snapshots[i]
+            .as_str()
+            .unwrap()
+            .lines()
+            .skip(11)
+            .take(11)
+            .map(|line| line.chars().skip(1).take(38).collect::<String>())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        list(5),
+        list(10),
+        "update changed list selection/scroll: {result}"
+    );
+    assert_eq!(list(10), list(13), "update lost visited page: {result}");
+    assert!(
+        snapshots[10]
+            .as_str()
+            .unwrap()
+            .contains("Comment 2 line 01"),
+        "{result}"
+    );
+    assert!(
+        !snapshots[10]
+            .as_str()
+            .unwrap()
+            .contains("Comment 1 line 16"),
+        "{result}"
+    );
+    assert_eq!(
+        result["request_counts"][9], result["request_counts"][11],
+        "focus/close caused extra GET: {result}"
+    );
+    let requests = h.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"]
+                .as_str()
+                .unwrap()
+                .starts_with("/api/v2/issues/count?"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"].as_str().unwrap().starts_with("/api/v2/issues?"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        requests.iter().filter(|r| r["method"] == "PATCH").count(),
+        1
+    );
+}
+
+#[test]
+fn bl_update_invalidates_pending_list_and_comment_requests_and_keeps_the_fixed_detail_target() {
+    for failing in [false, true] {
+        for operation in ["page", "list-refresh", "comment-oldest", "comment-refresh"] {
+            let mut routes = update_routes();
+            let comment = |content: &str| {
+                json!([{"id":1,"content":content,"changeLog":[],"createdUser":{"id":7,"name":"Author"},"created":"2026-03-01T00:00:00Z","updated":"2026-03-01T00:00:00Z"}]).to_string()
+            };
+            routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"sequence":[
+                {"body":comment("Retained comment")},
+                if failing {json!({"header_delay":1.2,"status":403})} else {json!({"header_delay":1.2,"body":comment("Late comment must not replace selection")})},
+                {"header_delay":1.4,"body":comment("Fresh automatic comment")}
+            ]});
+            routes["routes"]["/api/v2/issues/count"] = json!({"body":"{\"count\":40}"});
+            routes["routes"]["GET /api/v2/issues"] = if operation == "list-refresh" {
+                json!({"sequence":[{"body":issue_items(1,20)}, if failing {json!({"header_delay":1.2,"status":403})} else {json!({"header_delay":1.2,"body":issue_items(21,20)})}]})
+            } else {
+                json!({"offsets":{"0":{"body":issue_items(1,20)},"20":if failing {json!({"header_delay":1.2,"status":403})} else {json!({"header_delay":1.2,"body":issue_items(21,20)})}}})
+            };
+            if !operation.starts_with("comment") {
+                routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"]
+                    .as_array_mut()
+                    .unwrap()
+                    .remove(1);
+            }
+            let h = Harness::new(routes);
+            settings(&h, "B");
+            let result = scripted(
+                &h,
+                json!([
+                    {"wait":"Retained comment","keys":match operation {
+                        "page" => "ln", "list-refresh" => "lR", "comment-oldest" => "LlG", _ => "LlR"
+                    }},
+                    {"wait":"Loading... Esc: cancel","pause":0.2,"keys":if operation.starts_with("comment") {"he"} else {"Le"}},
+                    {"wait":"Latest title","pause":0.1,"keys":"!\t\u{2}\t\t\t\r"},
+                    {"wait":"Confirm update","keys":"s"},
+                    {"wait":"Comment display refreshed","keys":"\r"},
+                    {"wait":"Changed title","keys":"H"},
+                    {"wait":"> B-1","keys":"p"},
+                    {"wait":"> B-1","keys":"LR"},
+                    {"wait":"TITLE: Latest title","keys":"q"}
+                ]),
+            );
+            let retained = result["snapshots"][6].as_str().unwrap();
+            assert!(
+                !retained.contains("Failed:"),
+                "stale failure replaced current notice: {result}"
+            );
+            for text in ["> B-1", "Changed title", "Fresh automatic comment"] {
+                assert!(
+                    retained.contains(text),
+                    "{operation}: missing {text}: {result}"
+                );
+            }
+            assert_eq!(
+                result["request_counts"][6], result["request_counts"][7],
+                "history changed: {result}"
+            );
+            let requests = h.requests();
+            assert_eq!(
+                requests.iter().filter(|r| r["method"] == "PATCH").count(),
+                1,
+                "{requests:?}"
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|r| r["method"] == "GET" && r["path"] == "/api/v2/issues/B-1")
+                    .count(),
+                5,
+                "{requests:?}"
+            );
+            assert!(
+                !requests.iter().any(|r| r["path"] == "/api/v2/issues/B-21"),
+                "{requests:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bl_update_incomplete_or_mistyped_success_preserves_detail_and_reports_updated_without_retry() {
+    let mut responses = vec![json!({"id":1,"issueKey":"B-1"})];
+    for field in [
+        "projectId",
+        "summary",
+        "description",
+        "issueType",
+        "priority",
+        "assignee",
+        "status",
+        "resolution",
+        "startDate",
+        "dueDate",
+        "milestone",
+        "created",
+        "updated",
+    ] {
+        let mut missing = update_issue();
+        missing.as_object_mut().unwrap().remove(field);
+        responses.push(missing);
+        let mut mistyped = update_issue();
+        mistyped[field] = json!(false);
+        responses.push(mistyped);
+    }
+    let mut invalid_milestone = update_issue();
+    invalid_milestone["milestone"] = json!([{"id":5,"name":null}]);
+    responses.push(invalid_milestone);
+    for response in responses {
+        let mut routes = update_routes();
+        routes["routes"]["PATCH /api/v2/issues/B-1"] = json!({"body":response.to_string()});
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"TITLE: Detail B-1","keys":"Le"},
+                {"wait":"Latest title","keys":"!\t\u{2}\t\t\t\r"},
+                {"wait":"Confirm update","keys":"s"},
+                {"wait":"Updated; response processing failed","keys":"s\r"},
+                {"wait":"TITLE: Detail B-1","keys":"q"}
+            ]),
+        );
+        assert!(
+            result["snapshots"][3]
+                .as_str()
+                .unwrap()
+                .contains("Do not resend"),
+            "{response}: {result}"
+        );
+        let requests = h.requests();
+        assert_eq!(
+            requests.iter().filter(|r| r["method"] == "PATCH").count(),
+            1,
+            "{requests:?}"
+        );
+        assert_eq!(
+            requests.last().unwrap()["method"],
+            "PATCH",
+            "no follow-up GET: {requests:?}"
+        );
+    }
+}
+
+#[test]
+fn bl_update_latest_get_for_another_key_fails_before_candidates_or_form_initialization() {
+    let mut routes = update_routes();
+    let mut another = update_issue();
+    another["issueKey"] = json!("B-2");
+    another["summary"] = json!("Other issue must not initialize form");
+    routes["routes"]["GET /api/v2/issues/B-1"]["sequence"][1]["body"] = json!(another.to_string());
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Le"},
+            {"wait":"Issue response does not match selected key","keys":"s"},
+            {"wait":"Issue response does not match selected key","keys":"\u{1b}"},
+            {"wait":"TITLE: Detail B-1","keys":"q"}
+        ]),
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("Other issue must not initialize form"),
+        "{result}"
+    );
+    let requests = h.requests();
+    assert_eq!(
+        requests.last().unwrap()["path"],
+        "/api/v2/issues/B-1",
+        "no candidate GET after mismatched issue: {requests:?}"
+    );
+    assert!(requests.iter().all(|r| r["method"] == "GET"));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"] == "/api/v2/issues/B-1")
+            .count(),
+        2,
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn bl_update_patch_success_for_another_key_keeps_old_detail_and_updated_certainty() {
+    let mut routes = update_routes();
+    let mut another = update_issue();
+    another["issueKey"] = json!("B-2");
+    another["summary"] = json!("Other issue must not replace detail");
+    routes["routes"]["PATCH /api/v2/issues/B-1"] = json!({"body":another.to_string()});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Le"},
+            {"wait":"Latest title","keys":"!\t\u{2}\t\t\t\r"},
+            {"wait":"Confirm update","keys":"s"},
+            {"wait":"Updated; response processing failed","keys":"s\r"},
+            {"wait":"TITLE: Detail B-1","keys":"q"}
+        ]),
+    );
+    assert!(
+        result["snapshots"][3]
+            .as_str()
+            .unwrap()
+            .contains("Do not resend"),
+        "{result}"
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("Other issue must not replace detail"),
+        "{result}"
+    );
+    let requests = h.requests();
+    assert_eq!(
+        requests.iter().filter(|r| r["method"] == "PATCH").count(),
+        1,
+        "{requests:?}"
+    );
+    assert_eq!(
+        requests.last().unwrap()["method"],
+        "PATCH",
+        "no follow-up GET: {requests:?}"
+    );
+}
+
+#[test]
+fn bl_update_comment_refresh_wait_blocks_closing_editing_focus_and_tiny_quit_but_allows_scroll_resize()
+ {
+    let key = "B-123456789012345678901234567890123456789012345678901234567890";
+    let mut routes: Value =
+        serde_json::from_str(&include_str!("fixtures/tui_update.json").replace("B-1", key))
+            .unwrap();
+    routes["routes"][format!("/api/v2/issues/{key}/comments")]["sequence"][1]["header_delay"] =
+        json!(2.5);
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Retained comment", "keys":"Le"},
+            {"wait":"Latest title", "keys":"!\t\u{2}\t\t\t\r"},
+            {"wait":"Confirm update", "keys":"s"},
+            {"wait":"Updated; refreshing comments", "keys":"\r\u{1b}seHLlnpR", "resize":[12,40]},
+            {"wait":"Refreshing: please wait", "keys":"G"},
+            {"wait":"Refreshing: please wait", "keys":"g"},
+            {"wait":"Updated: B-1", "keys":"\r\u{1b}sHeL", "resize":[11,39]},
+            {"wait":"Terminal too small", "keys":"q\r\u{1b}seHL", "resize":[24,100]},
+            {"wait":"Updated; refreshing comments", "keys":"G"},
+            {"wait":"Refreshing: please wait", "keys":"g"},
+            {"wait":"Updated; refreshing comments"},
+            {"wait":"Comment display refreshed", "keys":"\u{1b}"},
+            {"wait":"> Issue Detail", "keys":"q"}
+        ]),
+    );
+    let snapshots = result["snapshots"].as_array().unwrap();
+    assert!(
+        !snapshots[3].as_str().unwrap().contains("Esc: cancel"),
+        "{result}"
+    );
+    for i in [3, 8, 10] {
+        assert!(
+            snapshots[i]
+                .as_str()
+                .unwrap()
+                .contains("Updated; refreshing comments"),
+            "{result}"
+        );
+    }
+    assert!(
+        !snapshots[5].as_str().unwrap().contains("Updated: B-1"),
+        "result did not scroll at 40x12: {result}"
+    );
+    assert!(
+        snapshots[6].as_str().unwrap().contains("Updated: B-1"),
+        "result did not scroll home: {result}"
+    );
+    assert!(
+        snapshots[12]
+            .as_str()
+            .unwrap()
+            .contains("TITLE: Latest title -> Changed title"),
+        "{result}"
+    );
+    let requests = h.requests();
+    let patch = requests
+        .iter()
+        .position(|r| r["method"] == "PATCH")
+        .unwrap();
+    assert_eq!(
+        requests.len() - patch,
+        2,
+        "one PATCH then only history Latest: {requests:?}"
+    );
+    assert_eq!(
+        requests[patch + 1]["path"],
+        format!("/api/v2/issues/{key}/comments?count=20&order=desc")
+    );
+}
+
+#[test]
+fn bl_update_comment_refresh_body_and_empty_success_replace_only_after_preparation() {
+    for empty in [false, true] {
+        let mut routes: Value =
+            serde_json::from_str(include_str!("fixtures/tui_update.json")).unwrap();
+        let mut item: Value = serde_json::from_str(
+            routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"][0]["body"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        item[0]["id"] = json!(97);
+        item[0]["content"] = json!("Other person's newest comment\nSecond body line");
+        routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"][1] =
+            json!({"body":if empty {"[]".into()} else {item.to_string()}});
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"Retained comment", "keys":"Le"},
+                {"wait":"Latest title", "keys":"!\t\u{2}\t\t\t\r"},
+                {"wait":"Confirm update", "keys":"s"},
+                {"wait":"Comment display refreshed", "keys":"\r"},
+                {"wait":if empty {"No comments"} else {"Other person's newest comment"}, "keys":"q"}
+            ]),
+        );
+        let requests = h.requests();
+        let patch = requests
+            .iter()
+            .position(|r| r["method"] == "PATCH")
+            .unwrap();
+        let after = &requests[patch + 1..];
+        assert_eq!(after.len(), if empty { 1 } else { 3 }, "{requests:?}");
+        assert_eq!(
+            after[0]["path"],
+            "/api/v2/issues/B-1/comments?count=20&order=desc"
+        );
+        if !empty {
+            assert_eq!(after[1]["path"], "/api/v2/issues/B-1");
+            assert_eq!(after[2]["path"], "/api/v2/projects/2");
+        }
+        let final_screen = result["snapshots"][4].as_str().unwrap();
+        assert!(!final_screen.contains("Retained comment"), "{result}");
+        assert!(final_screen.contains("TITLE: Changed title"), "{result}");
+    }
+}
+
+#[test]
+fn bl_update_comment_refresh_failures_keep_selected_id_scroll_and_updated_detail_until_manual_r_succeeds()
+ {
+    for failure in ["reject", "disconnect", "json", "invalid", "rule", "preview"] {
+        let mut routes = update_routes();
+        let comments: Value =
+            serde_json::from_str(include_str!("fixtures/tui_comment.json")).unwrap();
+        let old = comments["routes"]["/api/v2/issues/B-1/comments"]["sequence"][0].clone();
+        let mut page = old["commentItems"].clone();
+        page[0]["content"] = json!("Fresh manual recovery");
+        let success = json!({"commentItems":page.clone()});
+        let failed = match failure {
+            "reject" => {
+                json!({"status":403,"body":"{\"errors\":[{\"code\":5,\"message\":\"Denied test-secret\"}]}"})
+            }
+            "disconnect" => json!({"disconnect":true}),
+            "json" => json!({"body":"not json"}),
+            "invalid" => json!({"body":"[{\"id\":9}]"}),
+            "preview" => {
+                page[1]["changeLog"] = json!([{"field":"custom","originalValue":{"test-secret":1,"[REDACTED]":2},"newValue":null}]);
+                json!({"body":page.to_string()})
+            }
+            _ => {
+                // Initial Detail + initial comment + form, then automatic rule fails.
+                routes["routes"]["/api/v2/projects/2"] = json!({"sequence":[
+                    {"body":"{\"textFormattingRule\":\"markdown\"}"},
+                    {"body":"{\"textFormattingRule\":\"markdown\"}"},
+                    {"body":"{\"textFormattingRule\":\"markdown\"}"},
+                    {"status":403},
+                    {"body":"{\"textFormattingRule\":\"markdown\"}"}
+                ]});
+                success.clone()
+            }
+        };
+        routes["routes"]["/api/v2/issues/B-1/comments"] =
+            json!({"sequence":[old, failed, {"status":503}, success]});
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"Comment 2 line 01", "keys":"Lln"},
+                {"wait":"Comment 1 line 01", "keys":"jjjjjjjjjjjjjjj"},
+                {"wait":"Comment 1 line 16", "keys":"he"},
+                {"wait":"Latest title", "keys":"!\t\u{2}\t\t\t\r"},
+                {"wait":"Confirm update", "keys":"s"},
+                {"wait":"Comment display refresh failed", "keys":"\r"},
+                {"wait":"> Issue Detail", "keys":"lR"},
+                {"wait":"Failed:", "keys":"\r"},
+                {"wait":"> Comment", "keys":"R"},
+                {"wait":"Comment 2 line 01", "keys":"n"},
+                {"wait":"Fresh manual recovery", "keys":"q"}
+            ]),
+        );
+        let snapshots = result["snapshots"].as_array().unwrap();
+        for i in [6, 7, 8] {
+            let screen = snapshots[i].as_str().unwrap();
+            assert!(screen.contains("Comment 1 line 16"), "{failure}: {result}");
+            assert!(
+                screen.contains("TITLE: Changed title"),
+                "{failure}: {result}"
+            );
+        }
+        let notice = snapshots[5].as_str().unwrap();
+        for text in [
+            "Updated",
+            "Old display retained",
+            "Do not resend",
+            "Comment R",
+        ] {
+            assert!(notice.contains(text), "{failure}: missing {text}: {result}");
+        }
+        if matches!(failure, "reject" | "rule") {
+            assert!(notice.contains("HTTP 403"), "HTTP status missing: {result}");
+        }
+        assert!(
+            !result["stdout"].as_str().unwrap().contains("test-secret"),
+            "{result}"
+        );
+        let requests = h.requests();
+        assert_eq!(
+            requests.iter().filter(|r| r["method"] == "PATCH").count(),
+            1,
+            "{requests:?}"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["path"] == "/api/v2/issues/B-1/comments?count=20&order=desc")
+                .count(),
+            4,
+            "{requests:?}"
+        );
+        for prefix in ["/api/v2/issues/count?", "/api/v2/issues?"] {
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|r| r["path"].as_str().unwrap().starts_with(prefix))
+                    .count(),
+                1,
+                "{requests:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bl_update_comment_refresh_interrupt_preserves_updated_certainty_and_restores_terminal() {
+    for signal in [false, true] {
+        for tiny in [false, true] {
+            let mut routes: Value =
+                serde_json::from_str(include_str!("fixtures/tui_update.json")).unwrap();
+            routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"][1]["header_delay"] =
+                json!(20);
+            let h = Harness::new(routes);
+            settings(&h, "B");
+            let mut last = json!({"wait":if tiny {"Terminal too small"} else {"Updated; refreshing comments"}});
+            if signal {
+                last["signal"] = json!("SIGINT");
+            } else {
+                last["keys"] = json!("\u{3}");
+            }
+            std::fs::write(h.root.join("shell-steps.json"), json!([
+                {"wait":"Retained comment", "keys":"Le"},
+                {"wait":"Latest title", "keys":"!\t\u{2}\t\t\t\r"},
+                {"wait":"Confirm update", "keys":"s"},
+                {"wait":"Updated; refreshing comments", "resize":if tiny {json!([11,39])} else {json!([24,100])}},
+                last
+            ]).to_string()).unwrap();
+            let result = shell(&h, "scripted", &[]);
+            assert_eq!(result["code"], 130, "{result}");
+            assert_eq!(result["restored"], true, "{result}");
+            assert_eq!(result["termios_diff"], json!([]), "{result}");
+            assert!(result["elapsed"].as_f64().unwrap() < 4.0, "{result}");
+            let stderr = result["stderr"].as_str().unwrap();
+            assert!(
+                stderr.contains("; updated:") && stderr.contains("do not resend"),
+                "{result}"
+            );
+            assert!(
+                !result["stdout"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Comment display refreshed"),
+                "{result}"
+            );
+            let requests = h.requests();
+            assert_eq!(
+                requests.iter().filter(|r| r["method"] == "PATCH").count(),
+                1,
+                "{requests:?}"
+            );
+            assert_eq!(
+                requests.last().unwrap()["path"],
+                "/api/v2/issues/B-1/comments?count=20&order=desc"
+            );
+        }
+    }
+}
+
+#[test]
+fn bl_update_comment_refresh_failure_retains_empty_or_unfetched_state_instead_of_successful_empty()
+{
+    for empty in [false, true] {
+        let mut routes = update_routes();
+        routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"sequence":[
+            if empty {json!({"body":"[]"})} else {json!({"header_delay":20,"body":"[]"})},
+            {"status":403}, {"body":"[]"}
+        ]});
+        let h = Harness::new(routes);
+        settings(&h, "B");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":if empty {"No comments"} else {"TITLE: Detail B-1"}, "keys":"Le"},
+                {"wait":"Latest title", "keys":"!\t\u{2}\t\t\t\r"},
+                {"wait":"Confirm update", "keys":"s"},
+                {"wait":"Comment display refresh failed", "keys":"\u{1b}"},
+                {"wait":"> Issue Detail", "keys":"lR"},
+                {"wait":"No comments", "keys":"q"}
+            ]),
+        );
+        let retained = result["snapshots"][4].as_str().unwrap();
+        assert_eq!(retained.contains("No comments"), empty, "{result}");
+        if !empty {
+            assert!(
+                retained.lines().nth(21).unwrap().contains("B-1"),
+                "{result}"
+            );
+        }
+        assert!(retained.contains("TITLE: Changed title"), "{result}");
+        let requests = h.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["path"] == "/api/v2/issues/B-1/comments?count=20&order=desc")
+                .count(),
+            3,
+            "{requests:?}"
+        );
+        let patch = requests
+            .iter()
+            .position(|r| r["method"] == "PATCH")
+            .unwrap();
+        assert_eq!(
+            requests.len() - patch,
+            3,
+            "one PATCH plus automatic and manual Latest only: {requests:?}"
         );
     }
 }

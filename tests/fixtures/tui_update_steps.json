@@ -1,0 +1,42 @@
+[
+  {
+    "wait": "TITLE: Detail B-1",
+    "keys": "L"
+  },
+  {
+    "wait": "> Issue Detail",
+    "keys": "e"
+  },
+  {
+    "wait": "Latest title",
+    "keys": "\u0015Changed title\t\u0001\t\t\t\r"
+  },
+  {
+    "wait": "Milestones candidates",
+    "keys": "j \r\t\t\t\rj\r\t\r"
+  },
+  {
+    "wait": "Confirm update",
+    "keys": "\r"
+  },
+  {
+    "wait": "Confirm update",
+    "keys": "s"
+  },
+  {
+    "wait": "Sending",
+    "keys": "s\r\u001bq\u0014bad"
+  },
+  {
+    "wait": "Comment display refreshed",
+    "keys": "\r"
+  },
+  {
+    "wait": "Changed title",
+    "keys": "H"
+  },
+  {
+    "wait": "Old list title",
+    "keys": "q"
+  }
+]
