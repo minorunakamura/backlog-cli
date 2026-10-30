@@ -25,6 +25,26 @@ pub enum WriteOutcome {
 /// Creation callers retain the same source and serialized outcome vocabulary.
 pub use WriteOutcome as CreateOutcome;
 
+/// In-memory creation certainty retained when the caller aborts and joins its task.
+#[derive(Clone)]
+pub struct CreateProgress(std::sync::Arc<std::sync::Mutex<(WriteOutcome, Option<u16>)>>);
+impl Default for CreateProgress {
+    fn default() -> Self {
+        Self::new(WriteOutcome::NotCreated)
+    }
+}
+impl CreateProgress {
+    pub(crate) fn new(outcome: WriteOutcome) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new((outcome, None))))
+    }
+    pub fn snapshot(&self) -> (WriteOutcome, Option<u16>) {
+        *self.0.lock().expect("write state")
+    }
+    pub(crate) fn record(&self, outcome: WriteOutcome, status: Option<u16>) {
+        *self.0.lock().expect("write state") = (outcome, status);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct WriteResult {
     pub operation: &'static str,

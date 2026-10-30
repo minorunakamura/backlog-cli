@@ -1070,3 +1070,103 @@ fn comment_page_supports_ascending_and_descending_without_changing_cli_list_orde
         );
     });
 }
+
+#[test]
+fn create_task_abort_joins_without_detached_http_or_later_certainty_changes() {
+    use backlog_cli::{CreateProgress, WriteOutcome, service::IssueCreate};
+    if std::env::var_os("SERVICE_TEST").is_none() {
+        for phase in ["before", "sent", "headers"] {
+            let h = Harness::new(json!({"routes": {
+                "/api/v2/projects/1/issueTypes":{"header_delay":0.5,"body":"[{\"id\":2,\"name\":\"Task\"}]"},
+                "POST /api/v2/issues":{"status":201,"header_delay":if phase == "sent" {0.5} else {0.0},"delay":0.5,"body":"{\"id\":9,\"issueKey\":\"A-9\"}"}
+            }}));
+            let template = h.command(&[]);
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "create_task_abort_joins_without_detached_http_or_later_certainty_changes",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .envs(template.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
+                .env("SERVICE_TEST", &h.origin)
+                .env("SERVICE_ROOT", &h.root)
+                .env("SERVICE_PHASE", phase)
+                .current_dir(&h.root)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{phase}: {output:?}");
+            assert_eq!(
+                h.requests()
+                    .iter()
+                    .filter(|r| r["method"] == "POST")
+                    .count(),
+                usize::from(phase != "before")
+            );
+        }
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let phase = std::env::var("SERVICE_PHASE").unwrap();
+        let config = Config {
+            origin: std::env::var("SERVICE_TEST").unwrap().parse().unwrap(),
+            api_key: std::env::var("TEST_KEY").unwrap(),
+            editor: vec!["vim".into()],
+            settings: Settings::default(),
+        };
+        let progress = CreateProgress::default();
+        let service = Service::with_create_progress(&config, progress.clone()).unwrap();
+        let before = phase == "before";
+        let task = tokio::spawn(async move {
+            service
+                .issue_create(
+                    &Settings::default(),
+                    IssueCreate {
+                        project: Some("1"),
+                        title: "Raw title",
+                        issue_type: Some(if before {
+                            Selection::Name("Task")
+                        } else {
+                            Selection::Id("2")
+                        }),
+                        priority: Some(Selection::Id("3")),
+                        ..Default::default()
+                    },
+                )
+                .await
+        });
+        let marker = std::path::PathBuf::from(std::env::var("SERVICE_ROOT").unwrap()).join(
+            match phase.as_str() {
+                "before" => "get-received",
+                "sent" => "post-received",
+                _ => "post-headers-sent",
+            },
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !marker.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let (outcome, status) = progress.snapshot();
+        assert!(
+            matches!(
+                (phase.as_str(), outcome),
+                ("before", WriteOutcome::NotCreated)
+                    | ("sent", WriteOutcome::Unknown)
+                    | ("headers", WriteOutcome::Created)
+            ),
+            "{phase}: {outcome:?}"
+        );
+        assert_eq!(status, if phase == "headers" { Some(201) } else { None });
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert_eq!(
+            format!("{:?}", progress.snapshot()),
+            format!("{:?}", (outcome, status))
+        );
+    });
+}

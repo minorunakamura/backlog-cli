@@ -4,7 +4,8 @@ Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
 `bl` はプロジェクト選択、通常/横断検索ダイアログ、課題一覧のページ巡回、選択追従プレビュー/詳細・コメント閲覧と再取得、ブラウザ起動、端末復元を利用できます。
-設定editor連携を利用できます。TUIの書込みフォームは未実装です。
+設定editor連携と課題作成フォームを利用できます。課題更新・コメント書込みのTUIフォームは未実装です。
+課題作成 (#20) の実端末・実Backlog受入結果は[手動受入記録](docs/testing/manual-acceptance.md#issue-20-tui課題作成)を参照してください。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
 ```sh
@@ -81,9 +82,39 @@ editor中はTUIの入力pollを止め、raw mode・alternate screen・cursor等�
 editorが必要とする待機引数（例: `--wait`）は利用者が設定してください。
 
 共有libraryの本文編集は原文を本人のみ読書き可能な一時fileへ渡し、正常終了・読取り・UTF-8検証成功時だけ交換します。
-失敗／処理可能な中断では元本文を保持して一時fileを削除します。製品の本文編集フォームは後続Issueの範囲です。
+失敗／処理可能な中断では元本文を保持して一時fileを削除します。課題作成の本文編集にもこの処理を使います。
 editor自身の表示やswap／backupは管理せず、SIGKILL・端末切断後の復元／一時file削除は保証しません。
 実端末目視の受入状況は[手動受入記録](docs/testing/manual-acceptance.md#issue-19-editor連携)を参照してください。
+
+### TUI課題作成 (#20)
+
+Issue Listの **c** で、明示確定済みの具体projectへ一枚のフォームを開きます。
+Project Listのハイライトだけでは作成先を変えません。直前の検索が失敗していても、Enterで確定した作成先をフォームに表示します。
+横断結果の表示中はフォームを開かず、Projectへ移って具体projectをEnterで確定する手順を案内します。**nは次ページのまま**です。
+
+- Tab / Shift+Tab: タイトル→種別→優先度→担当者→開始日→期限日→マイルストーン→本文編集→確認へ→取消。
+  Ctrl+T/Y/P/A/Bは、それぞれタイトル／種別／優先度／担当者／本文編集操作へのfocusです。
+  **Ctrl+Bだけではeditorを起動しません**。本文編集操作のEnter/Spaceで設定editorを開きます。
+- 単一候補: Enter/Spaceで開き、上下/j/kで移動、Enter/Spaceで決定。担当者は未設定も選べます。
+  マイルストーン: Spaceで複数選択/解除、Enter/Escで候補だけを閉じます。長い候補名は左右で確認できます。
+  候補欄のDelete/Backspaceでクリア、本文編集操作のDelete/Backspaceで本文をクリアします。
+- 種別・優先度は設定既定値または明示選択が必須で、先頭候補を勝手に選びません。担当者既定値も解除できます。
+  日付は実在するYYYY-MM-DD。タイトルは空白のみ不可です。本文とタイトルの前後空白は送信時に保持します。
+  単行貼付けのCRLF/CR/LF/TABはspaceへ正規化します。入力欄全体にsecret/制御文字があれば欄全体を伏字にします。
+- focus・resize・editor往復で値を保持します。editorの正常終了＋読取り＋UTF-8成功時だけ本文を交換し、失敗時は元本文を保持します。
+  Esc／取消は現在値と初期値に差がある時だけ破棄確認を出します（Enter/Spaceで破棄、Escで編集へ戻る）。
+- 「確認へ」はPOSTしません。profile・origin・space・projectと全入力／解除を安全表示します。
+  j/k・PgUp/PgDn・Space・Home/End（g/G）で長い値・本文の末尾まで確認し、**独立したsで一度だけ送信**します。
+  確認中のEnterは送信せず、Escは編集へ戻ります。送信中は編集・再送・破棄・qを受け付けません。
+  40x12未満では隠れた編集・承認・送信はできず、送信中はqも無効です。Ctrl+Cは常に中断130です。
+- 中断・通信/応答失敗はnot_created／unknown／createdを区別し、201 headers後のbody失敗でも作成済みを保ちます。
+  unknown／createdでは再送を勧めません。自動retry・永続下書き・結果照会用GETはありません。
+- 正常な作成応答には課題キーと構築URLを表示し、現在の検索条件のcountと先頭listを自動再取得します。
+  両方の成功後だけ一覧/履歴を交換します。失敗時は元の一覧/ページ/選択/scrollを保ち、作成済み・一覧更新失敗を区別します。
+  新課題を一覧へ直接挿入せず、結果のEnter/EscでIssue Listへ戻ります。
+
+ローカルHTTPS/PTYの再現手順は[CONTRIBUTING](CONTRIBUTING.md#tui課題作成-20-releaseの直接ローカル検証)、
+実施済み・未実施の境界は[手動受入記録](docs/testing/manual-acceptance.md#issue-20-tui課題作成)を参照してください。
 
 ### TUIコメント閲覧 (#18)
 

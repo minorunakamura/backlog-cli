@@ -18,8 +18,8 @@ use std::{process::Stdio, sync::Arc, time::Instant};
 #[derive(Clone)]
 pub(super) struct Project {
     pub(super) id: String,
-    key: String,
-    label: String,
+    pub(super) key: String,
+    pub(super) label: String,
 }
 #[derive(Default)]
 struct Position {
@@ -299,6 +299,8 @@ pub(super) struct Browse {
     defaults: Conditions,
     pub(super) dialog: Option<Dialog>,
     pub(super) focus_issue: bool,
+    create_refresh: bool,
+    pub(super) create_refresh_result: Option<Result<(), String>>,
     generation: u64,
     projects_busy: Option<u64>,
     issues_busy: Option<u64>,
@@ -368,6 +370,12 @@ impl Browse {
             Ok(data) => data,
             Err(error) if response.initial => return Err(error),
             Err(error) => {
+                if response.target == Target::Issues && self.create_refresh {
+                    self.create_refresh = false;
+                    self.create_refresh_result =
+                        Some(Err(safety::text(&error.message, &[&self.secret])));
+                    return Ok(());
+                }
                 let notice = safety::text(&format!("Failed: {}", error.message), &[&self.secret]);
                 if response.target == Target::Candidates
                     && let Some(candidates) =
@@ -433,6 +441,10 @@ impl Browse {
             }
             Data::Projects(projects) => self.set_projects(projects),
             Data::Search(project, conditions, resolved, page, apply) => {
+                if self.create_refresh {
+                    self.create_refresh = false;
+                    self.create_refresh_result = Some(Ok(()));
+                }
                 if apply {
                     self.dialog = None;
                     self.focus_issue = true;
@@ -506,6 +518,25 @@ impl Browse {
                 self.request(Target::Detail, Operation::Detail { key });
             }
         }
+    }
+    pub(super) fn refresh_after_create(&mut self) {
+        if self.search.is_some() {
+            self.create_refresh = true;
+            self.key(KeyCode::Char('R'), Focus::Issue, 0);
+        } else {
+            self.create_refresh_result = Some(Err("No current search to refresh".into()));
+        }
+    }
+    pub(super) fn create_target(&mut self) -> Option<Project> {
+        if self.search.as_ref().is_some_and(|s| s.project.is_none()) {
+            self.error_notice = Some("Select a concrete project: h/l or Tab -> Project, then Enter for normal search / create target".into());
+            return None;
+        }
+        let project = self.confirmed_project.clone()?;
+        self.issues_busy = None;
+        self.cancel_previews();
+        self.browser_busy = None;
+        Some(project)
     }
     pub(super) fn open_browser(&mut self) {
         if let Some(key) = self.selected_key() {

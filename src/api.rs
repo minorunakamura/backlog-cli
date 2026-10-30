@@ -1,4 +1,4 @@
-use crate::{Error, WriteOutcome, config::Config};
+use crate::{CreateProgress, Error, WriteOutcome, config::Config};
 use reqwest::{Client, header::HeaderValue, redirect::Policy};
 use serde::{Deserializer, de::MapAccess, de::Visitor};
 use serde_json::{Value, value::RawValue};
@@ -47,6 +47,7 @@ pub struct Api {
     client: Client,
     origin: reqwest::Url,
     key: HeaderValue,
+    create_progress: Option<CreateProgress>,
 }
 impl Api {
     pub fn new(config: &Config) -> Result<Self, Error> {
@@ -63,7 +64,16 @@ impl Api {
             client,
             origin: config.origin.clone(),
             key,
+            create_progress: None,
         })
+    }
+    pub(crate) fn with_create_progress(
+        config: &Config,
+        progress: CreateProgress,
+    ) -> Result<Self, Error> {
+        let mut api = Self::new(config)?;
+        api.create_progress = Some(progress);
+        Ok(api)
     }
     /// Fetch the formal workspace name without changing or discarding unknown fields.
     pub async fn space(&self) -> Result<Value, Error> {
@@ -183,21 +193,27 @@ impl Api {
                 Error::new("input", "Cannot construct write request")
                     .with_write_outcome(operation, not_written)
             })?;
-        let state = std::sync::Arc::new(std::sync::Mutex::new((not_written, None)));
+        let state = if operation == "issue.create" {
+            self.create_progress
+                .clone()
+                .unwrap_or_else(|| CreateProgress::new(not_written))
+        } else {
+            CreateProgress::new(not_written)
+        };
         let progress = state.clone();
         let client = self.client.clone();
-        let mut task = tokio::spawn(async move {
+        let communication = async move {
             // Record possible transmission before send, and success headers before reading body.
-            progress.lock().expect("write state").0 = WriteOutcome::Unknown;
+            progress.record(WriteOutcome::Unknown, None);
             let response = client.execute(request).await.map_err(|error| {
                 if error.is_connect() {
                     // Connection establishment failed before the HTTP request could be sent.
-                    progress.lock().expect("write state").0 = not_written;
+                    progress.record(not_written, None);
                 }
                 Error::new("network", "HTTPS request failed or timed out")
             })?;
             let status = response.status().as_u16();
-            *progress.lock().expect("write state") = (
+            progress.record(
                 if status == expected_status {
                     written
                 } else {
@@ -235,24 +251,23 @@ impl Api {
                                 && e.get("message").is_some_and(Value::is_string)
                         })
                     {
-                        progress.lock().expect("write state").0 = not_written;
+                        progress.record(not_written, Some(status));
                     }
                     error.api_errors = errors.clone();
                 }
                 return Err(error);
             }
             decoded.map_err(|_| Error::new("invalid_response", "API response is not valid JSON"))
-        });
+        };
+        // Own the HTTP future directly: dropping this operation cannot detach a write task.
         let result = tokio::select! {
-            result = &mut task => result.unwrap_or_else(|_| Err(Error::new("network", "Communication task failed"))),
+            result = communication => result,
             signal = tokio::signal::ctrl_c() => {
-                task.abort();
-                let _ = task.await;
                 Err(match signal { Ok(()) => Error::new("interrupted", "Operation interrupted"), Err(_) => Error::new("terminal", "Cannot receive interrupt signals") })
             }
         };
         result.map_err(|mut error| {
-            let (outcome, status) = *state.lock().expect("write state");
+            let (outcome, status) = state.snapshot();
             error.http_status = status;
             error.with_write_outcome(operation, outcome)
         })

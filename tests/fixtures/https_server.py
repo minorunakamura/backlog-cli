@@ -39,6 +39,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8")
         with (root / "requests").open("a") as output:
             output.write(json.dumps({"at": time.time(), "method": self.command, "path": self.path, "headers": dict(self.headers), "body": body, "form": urllib.parse.parse_qs(body, keep_blank_values=True)}) + "\n")
+        (root / f"{self.command.lower()}-received").touch()
         response = json.loads((root / "response.json").read_text())
         if "routes" in response:
             path = self.path.split("?", 1)[0]

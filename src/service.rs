@@ -113,6 +113,15 @@ impl Service {
             api: Api::new(config)?,
         })
     }
+    /// The caller must abort and join its task before reading final creation certainty.
+    pub fn with_create_progress(
+        config: &Config,
+        progress: crate::CreateProgress,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            api: Api::with_create_progress(config, progress)?,
+        })
+    }
     pub async fn comment_update(
         &self,
         issue: &str,
@@ -1182,7 +1191,7 @@ pub(crate) fn issue_key(value: &str) -> bool {
     })
 }
 
-fn valid_date(value: &str) -> bool {
+pub(crate) fn valid_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10
         || bytes[4] != b'-'

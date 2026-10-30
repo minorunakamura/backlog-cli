@@ -206,3 +206,43 @@ fn single_line_input_does_not_edit_or_show_a_cursor_on_tiny_terminals() {
         assert!(!terminal.backend().cursor_visible());
     }
 }
+
+#[test]
+fn single_line_input_masks_dropped_graphemes_without_changing_raw_edits_or_cursor_mapping() {
+    for value in [
+        "test-\u{200b}secret".to_owned(),
+        format!("test-\u{200b}secret{}visible", "日".repeat(100)),
+        "test-secret".to_owned(),
+        "test-\x1bsecret".to_owned(),
+        "test-\tsecret".to_owned(),
+        "\u{301}visible".to_owned(),
+    ] {
+        let mut input = SingleLineInput::new(value.clone());
+        for code in [KeyCode::End, KeyCode::Home, KeyCode::Right] {
+            key(&mut input, code);
+            for width in [14, 6, 1] {
+                let (text, cursor) = draw(&input, width, true, &["test-secret"]);
+                assert!(
+                    text.contains(&"[REDACTED]"[..usize::from(width.min(10))]),
+                    "{text:?}"
+                );
+                assert!(
+                    !text.contains("test-secret") && !text.contains("visible"),
+                    "{text:?}"
+                );
+                assert_eq!(cursor, (2, 3));
+                assert_eq!(input.value(), value);
+                assert!(
+                    !draw(&input, width, false, &["test-secret"])
+                        .0
+                        .contains("visible")
+                );
+            }
+        }
+        key(&mut input, KeyCode::End);
+        key(&mut input, KeyCode::Char('!'));
+        assert_eq!(input.value(), format!("{value}!"));
+        key(&mut input, KeyCode::Backspace);
+        assert_eq!(input.value(), value);
+    }
+}
