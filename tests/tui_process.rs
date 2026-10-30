@@ -3388,3 +3388,266 @@ fn comment_empty_loading_cancel_error_titles_retain_states_without_generated_pip
         assert!(requests.iter().all(|r| r["method"] == "GET"));
     }
 }
+
+fn editor_harness(mode: &str) -> Harness {
+    let h = Harness::new(json!({"routes": {
+        "/api/v2/space": {"body":"{\"name\":\"Actual space\"}"},
+        "/api/v2/projects": {"body":"[]"}
+    }}));
+    h.config(json!({"editor":["/usr/bin/python3", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editor.py"), h.root.join("editor-record"), mode],
+        "profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    h
+}
+
+#[test]
+fn settings_editor_owns_cooked_input_and_immediately_redraws_after_resize_without_reloading_config()
+{
+    let h = editor_harness("settings");
+    std::fs::write(
+        h.root.join("shell-steps.json"),
+        json!([
+            {"wait":"Actual space", "keys":"L*\r"},
+            {"wait":"EDITOR READY", "resize":[12,40], "keys":"qjk\n"},
+            {"wait":"Settings editor closed; restart", "keys":"\u{1b}"},
+            {"wait":"> Issue Detail", "keys":"q"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let result = shell(&h, "scripted", &[]);
+    assert_eq!(result["code"], 0, "{result}");
+    assert_eq!(result["restored"], true, "{result}");
+    let record: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.root.join("editor-record")).unwrap())
+            .unwrap();
+    assert_eq!(record["input"], "qjk\n", "TUI stole editor input: {record}");
+    assert_eq!(record["cooked"], true);
+    assert_eq!(record["echo"], true);
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("backlog/config.json")).unwrap(),
+        "{\"saved\":true}"
+    );
+    assert!(
+        result["screen"]
+            .as_str()
+            .unwrap()
+            .contains("> Issue Detail")
+    );
+    assert!(result["stderr"].as_str().unwrap().is_empty());
+}
+
+#[test]
+fn settings_editor_nonzero_keeps_saves_and_running_editor_origin_and_defaults() {
+    let h = editor_harness("raw-nonzero");
+    std::fs::write(
+        h.root.join("shell-steps.json"),
+        json!([
+            {"wait":"Actual space", "keys":"*\r"},
+            {"wait":"EDITOR READY", "keys":"first\n"},
+            {"wait":"Editor did not exit successfully", "keys":"\u{1b}"},
+            {"wait":"> Project List", "keys":"*\r"},
+            {"wait":"EDITOR READY", "keys":"second\n"},
+            {"wait":"Editor did not exit successfully", "keys":"\u{1b}"},
+            {"wait":"> Project List", "keys":"R"},
+            {"wait":"No projects", "pause":0.2, "keys":"q"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let result = shell(&h, "scripted", &[]);
+    assert_eq!(result["code"], 0, "{result}");
+    assert_eq!(result["restored"], true, "{result}");
+    let record: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.root.join("editor-record")).unwrap())
+            .unwrap();
+    assert_eq!(record["input"], "second\n");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("backlog/config.json")).unwrap(),
+        "{\"saved\":true}"
+    );
+    assert_eq!(
+        h.requests().len(),
+        3,
+        "running origin/key changed or refresh failed"
+    );
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+}
+
+#[test]
+fn settings_missing_file_or_parent_only_guides_location_without_creating() {
+    for parent in [false, true] {
+        let h = editor_harness("settings");
+        if parent {
+            std::fs::create_dir(h.root.join(".backlog")).unwrap();
+        }
+        std::fs::write(
+            h.root.join("shell-steps.json"),
+            json!([
+                {"wait":"Actual space", "keys":"*j\r"},
+                {"wait":"Existing file required (not created)", "keys":"\u{1b}"},
+                {"wait":"> Project List", "keys":"q"}
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let result = shell(&h, "scripted", &[]);
+        assert_eq!(result["code"], 0, "{result}");
+        assert_eq!(result["restored"], true);
+        assert!(!h.root.join("editor-record").exists());
+        assert!(!h.root.join(".backlog/settings.json").exists());
+        assert_eq!(h.root.join(".backlog").exists(), parent);
+        assert!(
+            result["snapshots"][1]
+                .as_str()
+                .unwrap()
+                .contains(".backlog/settings.json"),
+            "{result}"
+        );
+    }
+}
+
+#[test]
+fn settings_editor_spawn_failure_restores_same_focus_and_is_quittable() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = editor_harness("settings");
+    let program = h.root.join("editor");
+    std::fs::write(&program, "#!/usr/bin/python3\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    h.config(json!({"editor":[program], "profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    std::fs::write(
+        h.root.join("shell-steps.json"),
+        json!([
+            {"wait":"Actual space", "remove":program, "keys":"L*\r"},
+            {"wait":"Cannot run editor", "keys":"\u{1b}"},
+            {"wait":"> Issue Detail", "keys":"q"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let result = shell(&h, "scripted", &[]);
+    assert_eq!(result["code"], 0, "{result}");
+    assert_eq!(result["restored"], true, "{result}");
+    assert!(
+        result["screen"]
+            .as_str()
+            .unwrap()
+            .contains("> Issue Detail")
+    );
+}
+
+#[test]
+fn settings_editor_parent_interrupt_stops_raw_child_and_exits_130_in_original_terminal() {
+    let h = editor_harness("raw-interrupt");
+    std::fs::write(
+        h.root.join("shell-steps.json"),
+        json!([
+            {"wait":"Actual space", "keys":"*\r"},
+            {"wait":"EDITOR READY", "signal":"SIGINT"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let result = shell(&h, "scripted", &[]);
+    assert_eq!(result["code"], 130, "{result}");
+    assert_eq!(result["restored"], true, "{result}");
+    assert!(result["stderr"].as_str().unwrap().contains("interrupted"));
+    let record: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.root.join("editor-record")).unwrap())
+            .unwrap();
+    assert_eq!(record["raw_noecho"], true);
+    assert_eq!(result["termios_diff"], json!([]));
+    let pid = record["pid"].to_string();
+    assert!(
+        !Command::new("/bin/kill")
+            .args(["-0", &pid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn settings_editor_restores_raw_child_exit_before_returning_to_the_same_screen() {
+    for mode in ["raw-nonzero", "raw-signal", "raw-settings"] {
+        let h = editor_harness(mode);
+        let original = std::fs::read_to_string(h.root.join("backlog/config.json")).unwrap();
+        let notice = if mode == "raw-settings" {
+            "Settings editor closed; restart"
+        } else {
+            "Editor did not exit successfully"
+        };
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"Actual space", "keys":"L*\r"},
+                {"wait":"EDITOR READY", "resize":[12,40], "keys":"qjk\n"},
+                {"wait":notice, "keys":"\u{1b}"},
+                {"wait":"> Issue Detail", "keys":"q"}
+            ]),
+        );
+        assert_eq!(result["code"], 0, "{mode}: {result}");
+        assert_eq!(result["restored"], true, "{mode}: {result}");
+        assert_eq!(result["termios_diff"], json!([]));
+        assert_eq!(result["stderr"], "");
+        let record: Value =
+            serde_json::from_str(&std::fs::read_to_string(h.root.join("editor-record")).unwrap())
+                .unwrap();
+        assert_eq!(record["cooked"], true);
+        assert_eq!(record["echo"], true);
+        assert_eq!(record["raw_noecho"], true);
+        assert_eq!(record["input"], "qjk\n");
+        assert_eq!(
+            std::fs::read_to_string(h.root.join("backlog/config.json")).unwrap(),
+            if mode == "raw-signal" {
+                &original
+            } else {
+                "{\"saved\":true}"
+            }
+        );
+    }
+}
+
+#[test]
+fn settings_editor_failure_preserves_selected_issue_page_detail_scroll_and_region_memory() {
+    let mut routes = detail_routes();
+    let old = (1..=30)
+        .map(|n| format!("Retained line {n:02}\n"))
+        .collect::<String>();
+    routes["routes"]["/api/v2/issues/B-1"] = json!({"body":detail_issue("B-1", &old).to_string()});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    h.config(json!({"editor":["/usr/bin/python3", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editor.py"), h.root.join("editor-record"), "nonzero"],
+        "profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1", "keys":"LG"},
+            {"wait":"Retained line 30", "keys":"*\r"},
+            {"wait":"EDITOR READY", "keys":"editor input\n"},
+            {"wait":"Editor did not exit successfully", "keys":"\u{1b}"},
+            {"wait":"Retained line 30", "keys":"H"},
+            {"wait":"> Project List", "keys":"L"},
+            {"wait":"Retained line 30", "keys":"q"}
+        ]),
+    );
+    for index in [1, 4, 5, 6] {
+        let text = result["snapshots"][index].as_str().unwrap();
+        assert!(
+            text.contains("Retained line 30")
+                && text.contains("B-1")
+                && text.contains("total 3 | page 1"),
+            "{result}"
+        );
+        assert_eq!(
+            result["request_counts"][index], result["request_counts"][1],
+            "editor caused requests: {result}"
+        );
+    }
+    assert!(
+        result["snapshots"][6]
+            .as_str()
+            .unwrap()
+            .contains("> Issue Detail")
+    );
+}

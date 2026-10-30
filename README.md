@@ -4,7 +4,7 @@ Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
 `bl` はプロジェクト選択、通常/横断検索ダイアログ、課題一覧のページ巡回、選択追従プレビュー/詳細・コメント閲覧と再取得、ブラウザ起動、端末復元を利用できます。
-TUIの書込みフォーム・editor連携は未実装です。
+設定editor連携を利用できます。TUIの書込みフォームは未実装です。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
 ```sh
@@ -24,7 +24,7 @@ NO_COLOR=1 bl        # 色なしでも二重枠・太字・>でfocusを表示
 失敗はstderrに明示して非0で終了します。初期space/projects取得が完了するまで、Esc/Rや候補の移動・確定は受け付けません。
 空projectsの成功と取得失敗を区別します。
 設定project（キー/ID）が候補にあれば初期対象として課題を取得します。設定なし/候補に不在なら
-明示選択を案内し、先頭候補を勝手に確定しません。Workspaceの `*` は未実装の設定入口マーカーです。
+明示選択を案内し、先頭候補を勝手に確定しません。Workspaceの `*` で設定の編集対象を選べます（compact表示でも利用可）。
 
 - Project List: j/k・上下は候補移動だけ（通信なし）。Enterで確定し、focusはProjectに維持します。
   別projectは設定の検索statusを適用して新しい一覧へ切替。同projectの再確定は現在の条件/履歴を保持します。
@@ -64,6 +64,26 @@ NO_COLOR=1 bl        # 色なしでも二重枠・太字・>でfocusを表示
 - 通常画面ではqで終了0（極小サイズでも可）。検索dialogはEscで候補を閉じる／取消、Ctrl+Cで中断します。
   Ctrl+C（キー/SIGINT）は130、実行エラーは1。終了時にraw mode・表示属性・alternate screen・cursorを可能な限り復元し、
   復元失敗も通知します。SIGKILL/端末切断後は保証しません。
+
+### 設定のeditor編集 (#19)
+
+通常画面の **`*`** で共通config／cwd settingsの2対象を表示します。
+**j/k・上下**で循環、**Enter**で開き、**Esc**で取り消します。
+対象は起動時と同じXDG/HOMEルールの共通 `backlog/config.json` と、cwd直下の `.backlog/settings.json` です。
+対象fileや親ディレクトリがない時は作らず、場所を通知します。既存の設定だけを開きます。
+
+設定の `editor` argvに対象pathを独立した引数として追加し、shellなしで実行します。
+editor中はTUIの入力pollを止め、raw mode・alternate screen・cursor等を復元します。
+復帰時はサイズを再取得し、追加キーなしでclear・全体再描画します。focus・選択・検索・ページ・scrollは保持します。
+起動失敗やeditorだけの非0／シグナル終了は画面へ通知して復帰します。
+**保存した設定は非0終了でも巻き戻しません。検証・反映は再起動後だけ**で、実行中のprofile・接続先・editor・既定値は変えません。
+親 `bl` がSIGINTを受けた時は子を停止して回収し、通常端末へ復元を試みて130で終了します。
+editorが必要とする待機引数（例: `--wait`）は利用者が設定してください。
+
+共有libraryの本文編集は原文を本人のみ読書き可能な一時fileへ渡し、正常終了・読取り・UTF-8検証成功時だけ交換します。
+失敗／処理可能な中断では元本文を保持して一時fileを削除します。製品の本文編集フォームは後続Issueの範囲です。
+editor自身の表示やswap／backupは管理せず、SIGKILL・端末切断後の復元／一時file削除は保証しません。
+実端末目視の受入状況は[手動受入記録](docs/testing/manual-acceptance.md#issue-19-editor連携)を参照してください。
 
 ### TUIコメント閲覧 (#18)
 
@@ -186,7 +206,7 @@ API key本体は `apiKeyEnv` で指定した環境変数にだけ設定します
 
 editorは文字列配列で、未指定なら `["vim"]`。空配列・空program・NULや実行不能なprogramは
 設定エラーです。PATH未設定時の探索先は `/usr/bin:/bin`。VISUAL/EDITORは読みません。
-今回のCLIではeditorを起動せず、argvとprogramのfile/実行権限だけを検証します。
+非対話の `bl-cli` はeditorを起動せず、argvとprogramのfile/実行権限だけを検証します。TUIの設定編集は上記のeditorを使います。
 
 cwd直下の `.backlog/settings.json` は省略可能です。親ディレクトリを探索せず、profileも変えません。
 `project` は `issue-type list`・通常の `issue list/mine`・`issue create` の既定値です。

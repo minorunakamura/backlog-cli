@@ -273,3 +273,41 @@ fn shell_rejected_region_events_and_tiny_resize_preserve_focus_and_memory() {
         );
     }
 }
+
+#[test]
+fn workspace_settings_selector_cycles_cancels_and_preserves_focus() {
+    let mut shell = Shell::new(true);
+    key(&mut shell, KeyCode::Char('L'), KeyModifiers::SHIFT, 100, 24);
+    let before = screen(&shell, 100, 24);
+    key(&mut shell, KeyCode::Char('*'), KeyModifiers::SHIFT, 100, 24);
+    assert!(screen(&shell, 100, 24).contains("> Common config"));
+    for code in [
+        KeyCode::Up,
+        KeyCode::Char('k'),
+        KeyCode::Down,
+        KeyCode::Char('j'),
+    ] {
+        key(&mut shell, code, KeyModifiers::NONE, 100, 24);
+        assert!(screen(&shell, 100, 24).contains("> cwd settings"));
+        key(&mut shell, code, KeyModifiers::NONE, 100, 24);
+        assert!(screen(&shell, 100, 24).contains("> Common config"));
+    }
+    assert_eq!(
+        key(&mut shell, KeyCode::Char('q'), KeyModifiers::NONE, 100, 24),
+        None
+    );
+    key(&mut shell, KeyCode::Esc, KeyModifiers::NONE, 100, 24);
+    assert_eq!(screen(&shell, 100, 24), before);
+    key(&mut shell, KeyCode::Char('*'), KeyModifiers::NONE, 40, 12);
+    assert!(screen(&shell, 40, 12).contains("Settings editor"));
+    assert_eq!(
+        key(
+            &mut shell,
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            40,
+            12
+        ),
+        Some(130)
+    );
+}

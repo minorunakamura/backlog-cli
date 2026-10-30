@@ -1601,3 +1601,226 @@ fresh Correctness Review `9c3d8308-04c9-45e9-b64a-46583c44dfe7` と
 fresh Ponytail Review `717fd902-fd05-42bd-8747-96ba3c1591e1` は、対象差分の指摘なし。
 Rootも差分と公開入口の実行結果を照合し、検証条件の維持・同期修正の範囲を確認した。
 修正後のCI結果は、変更を反映して再実行するまで未確認とする。
+
+## Issue #19 editor連携
+
+### 対象・現在の判定（2026-10-30 UTC）
+
+**実装と自動検証まで。実端末の利用者目視、Root最終確認、独立2レビュー／Code Review gateは未実施であり、READY／Issue完了とはしません。**
+前runは30分timeoutでfailedとなり、Rootが差分保持を確認した後、明示的に再開しました。
+再開後は文書・再現手順と限定再検証を完了し、長い全対象testを不要に再実行していません。
+
+対象は設定選択からeditorへの端末引渡し／復帰と、共有libraryの本文編集です。
+後続#20〜23のフォーム・製品用demo／debug flag・実Backlogへの接続／書込みは追加していません。
+Rust 1.99.1／Darwin arm64。release `bl` のSHA-256は
+`e9f94ea1fab2a610f3f95602164cafc1b780ed1e7b4f158c9655a534b90495d6`、
+`bl-cli` は `9eac8fe2d350d0da94de903f15d02ea41da1ab68ff0c389ad5b9589a025dbeaf`。
+release作成後のソース変更はcfg(test)のシグナル終了／temp削除assert追加だけで、製品コードは同じです。
+
+### serial TDDと観測境界
+
+各sliceは公開library操作、公開Shell入力→TestBackend描画、実bl／test binary→PTYを使いました。
+内部private関数形状を固定するtestは追加していません。red／greenはそれぞれ終了101／0です。
+
+| slice／実行filter | redの観測 → greenの観測 |
+| --- | --- |
+| `cargo test --locked --test editor`（初回1件） | 公開editor入口なしでcompile失敗 → 生本文・0600／所有者・literal argvをeditorへ渡し、正常交換とtemp削除 |
+| 同testの `body_interrupt` | 中断を無視して正常交換 → 子停止／reap、元値保持、temp削除、interrupted |
+| `cargo test --locked --test tui_shell workspace_settings` | `*`で対象選択を描画しない → 2対象の上下／j/k循環、Esc取消、元focus保持 |
+| `cargo test --locked --test tui_process settings_editor_owns` | editorが起動せずPTY待機timeout → cooked入力専有、editor中resize、追加キーなしの40x12再描画 |
+| `cargo test --locked --lib tui::tests::body_editor_roundtrip` | ignored本文経路がなく記録file不在 → 同じloop／guardで本文editor往復 |
+
+その後の拡充で、共通library5件・設定PTY6件・本文PTY1件（7経路）を確認しました。
+設定PTYは未作成の場所案内、非0後も保存を保持／同じeditor再起動と同じoriginでR、起動時検証後のprogram削除、
+親SIGINTの130、選択課題／ページ／Detail末尾scroll／左右focus記憶と総GET不変もassertしています。
+本文PTYは正常／非0／editorだけのSIGTERM／不正UTF-8／読取不能（file削除）／親SIGINT／起動失敗です。
+原文CRLF・別欄値／focusの保持、表示だけsecret伏字、TMPDIRに一時本文が残らないことを観測しました。
+共通libraryは同時readyの親中断を子の正常終了より優先することも検証しています。
+
+### コマンドと終了コード
+
+前runのログは `/tmp/issue19-*.log`、再開後は `issue19-resume-*.log` と `issue19-direct-pty.log` にあります。
+一時ログはリポジトリへ格納せず、再実施可能なコマンドと期待をCONTRIBUTINGへ保存しました。
+
+| コマンド | 結果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 前run／再開後とも0 |
+| `cargo test --locked --all-targets` | 前run最終完走0、301成功／2 ignored。最新test-only拡充前の全対象結果で、再開後に全体再実行はしていない |
+| `cargo clippy --locked --all-targets -- -D warnings` | 前run0／再開後の最新差分0、Rust warningなし |
+| `cargo audit --file Cargo.lock`（cargo-audit 0.22.2） | 前run0、1386 advisory／230依存、監査warning・脆弱性報告なし。再開後は依存不変のため再実行なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 前run0、上記2binary。再開後は製品コード不変のため再実行なし |
+| `cargo test --locked --test editor --test tui_shell` | 再開後0、5＋9件成功 |
+| `cargo test --locked --test tui_process settings_` | 前run最終0、6件成功 |
+| `cargo test --locked --lib body_editor_roundtrip_and_failures` | 再開後0、最新7経路すべて成功 |
+| CONTRIBUTINGのrelease直接PTY手順を抽出して`bash /tmp/issue19-direct-pty.sh` | 再開後0、正常／非0／中断／起動失敗の4case、詳細は下記 |
+| `cargo test --locked --lib --no-run --message-format=json`→文書のtest binary抽出→`--list` | 再開後0、本文ignored testの実行fileとexact名を確認（実端末起動自体は未実施） |
+| `git diff --check`／staged files確認 | 再開後0／stagedなし |
+
+lockfileは承認済み`tempfile =3.27.0`と推移fastrand 2.5.0だけ追加し、既存の第三者依存版は変えていません。
+変更前SHA-256は`55a7bd91c9d514359d18d225f0e3c293bb10e20339b47dc1aad6a421b51f8f14`、
+監査前後と再開時はともに`f9ab064dd113a477d2fc897401c8ce3ca95a1f5d7582b8c1472bef61117f5a3a`で不変でした。
+
+途中の失敗も成功へ読み替えません。TDDのred以外に、未公開backend writer APIへのcompile失敗、
+重複`Terminal::clear`のcursor応答待ち失敗があり、既存guardへ戻すためTerminalをdrop／再作成し、
+公開`resize`によるclear＋diff buffer resetへ修正しました。fixtureではCRLFのPython読取正規化、
+同時送信EscのAlt解釈、editor marker位置と簡易VTが対応しない省略cursor座標の問題でassert／timeoutが発生しました。
+原文はbytes decode、Escは別step、markerは明示座標で修正し、最終の対象試験は成功しています。
+最初の全対象実行は240秒のworker tool timeoutで打切り、次の失敗runはfixture座標問題で終了101、
+その後の上記301件完走とは区別します。
+
+**警告の影響判断:** 完走したall-targetsログ408〜435行に、既存HTTPS fixtureの`https_server.py:80`
+（body送信）で`ConnectionResetError: [Errno 54] Connection reset by peer`のtracebackが1件あります。
+並列の中断／切替試験中のclient切断と整合するserver側のログで、Cargoは0、全assert成功です。
+Rust warningや製品stderrの成功扱いではありません。個別の起点request／testの同定は未実施で、無関係なfixture例外処理は変更していません。
+再開後の限定試験とrelease直接4caseではこのtracebackはなく、driver／製品／serverのstderrは期待どおりです。
+Rootによる正式再検証で同じwarningが出た場合も隠さず記録してください。
+
+### release製品の直接観測と未確認
+
+CONTRIBUTING「editor連携 (#19)」のPython blockそのものを抽出・実行しました。
+一時root／TLS／config／fake keyと既存HTTPS／PTY fixtureのみで、終了後にserverとfileを回収しました。
+
+| case | 期待と実測 |
+| --- | --- |
+| 正常 | bl=0、restored=true、4 snapshots、q/j/kを含む`qjk\n`をeditorが全受信、ICANON／ECHO=true、editor中40x12 resizeから通知と元Detailへ即時復帰 |
+| 非0保存 | bl=0、restored=true、4 snapshots、editor非0を通知して復帰、保存済み`{"saved":true}`を巻き戻さない |
+| 親SIGINT | bl=130、restored=true、2 snapshots、stderrに中断、子PIDが残らない |
+| 起動失敗 | config検証後にprogram削除、bl=0、restored=true、3 snapshots、通知後に元Detailへ復帰 |
+
+いずれも実release binaryを直接使い、server stderr空。中断以外の製品stderr空。
+本文UTF-8／読取失敗／temp保護削除は製品設定編集とは異なるため、共通lib＋同じloopのcfg(test)本文PTYで確認しました。
+製品に未実装の本文フォームを追加して直接試したとは報告しません。
+cleanup失敗／復元操作自体の失敗は成功として隠さない実装ですが、今回editor往復でのOS cleanup失敗注入はしていません。
+editor固有swap／backup、SIGKILL・端末切断後の復元／削除は保証対象外です。
+
+### 実端末の必須受入：利用者待ち
+
+正確なセットアップ／起動は[CONTRIBUTINGのeditor手順](../../CONTRIBUTING.md#editor連携-19)を参照してください。
+実Backlog・利用者config・機密本文は不要です。既存「ローカルHTTPSを使う準備」の専用`run_bl`と、
+以下の本文ignored testを利用します。
+
+```sh
+cargo test --locked --lib tui::tests::manual_body_editor_terminal -- --ignored --exact --nocapture --test-threads=1
+```
+
+1. 今回の端末名／版、macOS、IME、TERM／NO_COLOR、release／test binaryのbuildを記録する。
+2. 製品`*`の2対象循環・Esc取消・既存config起動・不在settings非生成、既存settings編集を確認する。
+3. vim等の実editorで日本語／結合文字／emojiと空白・改行を編集し、editor中に100x24→40x12→100x24へresizeする。
+   終了後**追加キーなし**でclear／全体再描画し、選択・検索・ページ・scroll・左右focus記憶が保持されることを目視する。
+4. 本文testでTabで他欄編集→Escで欄外→e。保存成功だけ本文交換、非0／不正UTF-8／read失敗／起動失敗では元本文と他欄・focusを保持する。
+   `BL_TEST_EDITOR_ARGV`による各失敗の最小設定はCONTRIBUTING記載。極小時はq／Ctrl+Cだけで安全に終了する。
+5. editorだけの非0終了で通知して復帰することと、別端末から親PIDへのSIGINTで子停止／temp削除／130になることを分けて確認する。
+   130はcargo wrapperではなく、文書の直接test binary起動手順で観測する。
+6. 終了後に通常shellで入力／削除・cursor／表示属性・`stty -g`を確認し、結果と未確認点をこの節へ追記する。
+
+**今回の実端末目視結果はすべてpendingです。** 既存#14受入や自動PTY成功を#19の実端末受入へ流用しません。
+Root最終確認・独立2レビュー／Code Review gate・GitHub Actionsも未実施。実Backlog書込み・commit／push／release公開はしていません。
+
+### P1 correction：raw／noechoを残すeditorからの復元（2026-10-30 UTC）
+
+上記の成功記録はその時点の観測として保持します。ただし従来のeditor fixtureは引渡し時の
+cooked／echoを確認するだけで、自分でrawへ変更しませんでした。その成功だけでは異常終了した
+実editorからの復元を裏付けられません。Rootの独立2レビューが同じP1を採用し、修正前releaseでは
+rawを残すeditorの親SIGINT／非0終了後に`restored=false`を再現しています。
+その修正前証跡と以下のWorker修正後ログは別物です。
+**今回も実端末利用者目視・修正後Root最終確認／Code Review gateはpendingです。**
+
+今回の追加変更は単一TerminalGuard・最小補助依存・既存fixture／PTY試験とこの記録／CONTRIBUTINGだけです。
+起動前termiosをguardで一度保持し、editor実行中も復元を有効にしたまま、子終了／停止後は
+親中断130のreturn／TUI再enterに先立って復元を試みます。editorが残したraw状態で復元先を上書きしません。
+復元失敗ではTUIを再開せず、元のeditorエラー／中断と復元エラーの両方を返します。
+既存のpartial enter／panic／最終cleanupも同じguardを使用します。
+
+Crosstermの公開APIではhandoff後まで保持できるtermios snapshotを取得できないため、
+既存lock解決済み`rustix =1.1.6`（`termios` feature）の安全な公開`tcgetattr`／`tcsetattr`を直接利用しました。
+独自FFI・外部stty process・別端末管理層は不要です。Cargo.lockは直接依存の辺1行だけ追加し、
+今回のcorrectionでは新crate／既存第三者依存の版変更はありません（元のtempfile／fastrand追加は保持）。
+
+#### TDD／回帰と直接観測
+
+Worker一次ログ：`/tmp/backlog-issue19-correction.oddf58/`。
+Rootの修正前ログを修正後成功の証拠として流用していません。
+
+| コマンド／観測 | 今回の実測 |
+| --- | --- |
+| `cargo test --locked --test tui_process settings_editor_parent_interrupt_stops_raw_child` | red.log：101、親SIGINTは130だが`restored=false`、termios差分あり → green.log：0、同じ公開PTY回帰成功 |
+| `cargo test --locked --test tui_process settings_` | settings.log：0、7 test成功。raw親SIGINTで子消滅／130、raw非0後のeditor再起動と保存保持、raw非0／子SIGTERM／正常終了からresize後の通知→Esc→同focus→q、全termios差分なし |
+| `cargo test --locked --lib body_editor_roundtrip_and_failures` | body.log：0、同loop／guardの本文ignored testをPTYで13経路。従来7＋raw正常／非0／子SIGTERM／親SIGINTの4＋復元失敗2。0600／原文CRLF／元本文と他欄・focus／temp削除・子回収、復元エラーと元エラー／130保持をassert |
+| CONTRIBUTINGの直接PTY Python blockを抽出し`python3 /tmp/backlog-issue19-correction.oddf58/direct-pty.py "$PWD"` | direct-pty.log：0、実release bl＋localhost HTTPS＋PTYで8経路成功（下記） |
+
+直接releaseの従来4経路は正常／非0／親SIGINT／起動失敗。追加4経路はfixtureが`tty.setraw(0)`し
+ICANON／ECHO両方offを記録してから終了する正常／非0／子SIGTERM／親SIGINTです。
+全8経路`restored=true`かつ`termios_diff=[]`（既存の一時PENDINビット除外のみ）。
+親SIGINT2経路は130、子PID消滅、stderrに中断。他6経路は0／stderr空、通知後に元Detailへ復帰してq終了。
+非0でも保存を巻き戻さず、子SIGTERMでは元configのままです。server stderr空、一時rootとTLSは回収済みです。
+本文のraw4経路も正常時だけ交換し、失敗／中断は元本文保持、一時本文を削除します。
+復元失敗2経路は既存Write seamでeditor後のalternate-screen復元エラーを注入し、
+termios復元は継続しつつ、通常のeditorエラーと復元エラーで1、親中断と復元エラーで130を確認しました。
+OSのtcsetattr自体の失敗／temp削除失敗の注入は未実施です。
+
+#### 正式チェックと残るgate
+
+| コマンド | 今回の結果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | fmt.log：0 |
+| `cargo test --locked --all-targets` | test.log：0、302成功／2 ignored（本文ignoredは上記PTY子processから明示実行） |
+| `cargo clippy --locked --all-targets -- -D warnings` | clippy.log：0、Rust warningなし |
+| `cargo audit --file Cargo.lock`（cargo-audit 0.22.2） | audit.log：0、1386 advisory／230依存、脆弱性・監査warningなし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | release.log：0 |
+| `git diff --check`／staged確認 | 0／stagedなし。既存未commit 14fileを保持、commit／pushなし |
+
+監査前後のCargo.lock SHA-256はともに
+`1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16`。
+今回release SHA-256はbl：`af08cc49c133261d3e6ce7e70f1808c2d3115646a66740c98ba42fe10c0fae27`、
+bl-cli：`7c0559278f2f672d7f04596e58b46ac72fae0355613d5079b30bf88fca584a2e`。
+
+**今回の警告相当の出力：** all-targets test.log 422〜451行付近に、既存HTTPS fixture
+`https_server.py:80`のbody送信時`ConnectionResetError: [Errno 54] Connection reset by peer`が1件あります。
+中断／切替試験中のclient切断と整合し、Cargo終了0／全assert成功ですが、起点testの特定はしていません。
+Rust warning／製品stderrではなくserver tracebackとして報告し、無関係なfixture例外処理は変更しません。
+局所settings／bodyと直接release PTYログにはこのtracebackはありません。
+
+実端末の利用者目視、修正後Root独立レビュー／Code Review gate、GitHub Actionsは未確認です。
+SIGKILL・端末切断、editor固有backup管理は従来どおり対象外。実Backlog接続／書込み・merge／push／release公開は行っていません。
+
+### #19 修正後のRoot検証・再レビューと本文の実端末受入
+
+RootがP1修正後の実差分を直接確認し、正式fmt／全対象test／Clippy／audit 0.22.2／release build／diff checkを再実行して、すべて終了0。
+全対象は302成功・2 ignored、最新RootログにはRust warning・HTTPS tracebackともになし。
+監査は1386 advisory／230依存、警告なし、lockfileは監査前後で上記`1d1474e5…`と一致した。
+一次ログは`/tmp/backlog-issue19-root-fixed.6OW1dE/`。release両binaryのhashは上記P1修正後と同一。
+Root自身の別工程の直接検証でも、文書の実release＋HTTPS／PTY設定8経路と、本文test binaryの13経路が成功。
+raw/noechoを残す正常／非0／子SIGTERM／親SIGINTを含め`restored=true`・完全termios差分なし、本文の0600／所有者・原文・temp削除・元値と別欄／focus保持を確認した。
+
+fresh CorrectnessとPonytailの両レビューは同じP1だけを指摘し、Rootが採用して修正した。不採用の指摘はない。
+fresh限定再レビュー`f65a805b-7c12-47ce-962f-ce45c76275d9`でP1解消・追加指摘なしを確認。
+全体の不要な再レビューループは追加せず、共通guardと修正影響範囲を確認した。
+
+利用者は案内した`manual_body_editor_terminal`の5項目について「各項目OK, 端末名などは前回と同じ」と回答した。
+本文の実editor保存、日本語・空白・改行、editor中resizeから追加キーなしの即時再描画、別欄の値／focus保持、
+q終了後の通常shell入力／削除・cursor／表示が正常なことを**利用者の実操作・目視報告**として受け入れる。
+前回の明示記録（#18最終受入）に対応する環境はHerdr 0.8.0／Ghostty 1.3.1、macOS 26.7.1／Apple Silicon。
+IME／keyboardの既存記録はmacOS標準IME／101 keyboard・remapなし。今回のTERM／NO_COLOR個別値は取得しておらず推測しない。
+対象のtest binaryは`target/debug/deps/backlog_cli-510e9221510b9a2a`、Root取得SHA-256は
+`e4e360a246d6ee42938ce7b6d78d5f6ac97c11e4bf8d03f8d62090f5e9b78490`。
+
+今回の回答は上記5項目の受入であり、設定編集・起動失敗／非0／不正UTF-8／読取失敗／親SIGINTの追加実端末確認を済んだとは扱わない。
+これらの残る実端末確認とCode Review gateはpending。GitHub Actions・実Backlog接続／書込み・commit／push／merge／release公開は行っていない。
+
+### #19 実端末の残項目受入完了
+
+上記pendingのうち、実端末の残項目はその後、利用者の実操作と明示確認で完了した。過去のpending／失敗記録は履歴として保持する。
+
+- 非0・起動失敗・読取失敗のignored testは終了0。最初の不正UTF-8用コマンドは、貼付けたJSON文字列に実改行が入り、editor起動前のtest環境変数のparseでpanicした。これは製品のUTF-8編集経路の実行・成功とは扱わず、当該ケースだけ再実施した。
+- 設定確認は最初のshell切替で`run_bl`未定義となり、製品起動前に停止した。shell切替不要の一時launcherでやり直し、隔離localhost HTTPS・fake key・上記修正後releaseを使って2回とも`exit=0 termios unchanged=True`を確認した。1回目の不在settingsを生成しないassert、2回目の既存settingsを開く準備とJSON読取も成功。一時環境は終了時に削除した。
+- 不正UTF-8はJSONをlauncher内で生成し、同じhashのtest binaryを直接起動して再確認した。利用者出力は`mode=utf8 test binary exit=0 termios unchanged=True temp remaining=0`。
+- 親中断は同じtest binary・共通loop／guardで、試験editorがraw/noechoへ変更後、5秒で親へ実SIGINTを送る実端末経路を使った。利用者出力は`Operation interrupted`、`mode=interrupt test binary exit=130 termios unchanged=True temp remaining=0`。cargo wrapperの終了コードと混同していない。
+- 利用者は最終確認で、①設定選択／取消・既存2ファイルのvim起動・resize後の即時復帰、②本文編集の各失敗時の元本文／別欄保持、③終了／中断後の通常shell入力／削除について、**「すべて確認済み・問題なし」**と明示回答した。先の本文正常保存・resize・focus保持の5項目OKと合わせ、#19の実端末受入を完了する。これは利用者の目視報告であり、Root自身の目視やPTY成功への置換ではない。
+
+手順補助のlauncherは`/tmp`限定で、製品ソース／flag／永続設定へ追加していない。Rootは本文launcherのUTF-8／中断2ケースも既存PTYから実行し、期待終了コード・termios一致・temp残存0を確認した。最初のlauncher自己確認では起動前の説明行が簡易VTの未対応alternate-screen処理と重なってmarker待機がtimeoutしたため、余分な説明行を削除して両ケースを再実行し成功した。製品コードの修正は行っていない。
+実端末環境は前節の「前回と同じ」という利用者回答を引き継ぐ。今回のTERM／NO_COLOR個別値や正確な各resize寸法は未取得で推測しない。
+OSのtcsetattr自体／temp削除失敗の注入、GitHub Actionsは未実施。復元操作自体の失敗後の正常利用、SIGKILL・切断、editor独自backupは保証対象外。
+
+採用P1は修正・Root正式チェック／直接検証・fresh限定再レビューで解消し、不採用・未解決の指摘はない。
+最終Code Review gateはこの記録後にRootが呼ぶ。skippedまたは現在差分への明示Approveを確認するまでREADYとはしない。
+実Backlog接続／書込み・commit／push／merge／release公開は行っていない。

@@ -4,7 +4,11 @@ mod comment;
 mod detail;
 mod input;
 mod search;
-use crate::{Error, config::Config, safety};
+use crate::{
+    Error,
+    config::{self, Config},
+    editor, safety,
+};
 use crossterm::{
     cursor::{Hide, Show},
     event::{
@@ -39,6 +43,12 @@ enum Focus {
     Comment,
 }
 
+enum EditorRequest {
+    Settings(usize),
+    #[cfg(test)]
+    Body,
+}
+
 /// Input and rendering boundary, independent of the terminal and network.
 pub struct Shell {
     focus: Focus,
@@ -46,6 +56,8 @@ pub struct Shell {
     right_focus: Focus,
     browse: browse::Browse,
     no_color: bool,
+    settings_selection: Option<usize>,
+    editor_request: Option<EditorRequest>,
     #[cfg(test)]
     input_check: Option<tests::InputCheck>,
 }
@@ -57,6 +69,8 @@ impl Shell {
             right_focus: Focus::Detail,
             browse: browse::Browse::default(),
             no_color,
+            settings_selection: None,
+            editor_request: None,
             #[cfg(test)]
             input_check: None,
         }
@@ -71,6 +85,23 @@ impl Shell {
         }
         #[cfg(test)]
         if let Some(input) = &mut self.input_check {
+            if area.width >= 40
+                && area.height >= 12
+                && !input.focused
+                && input.editor_body.is_some()
+                && key.code == KeyCode::Char('e')
+                && key.modifiers.is_empty()
+            {
+                self.browse.error_notice = None;
+                self.editor_request = Some(EditorRequest::Body);
+                return None;
+            }
+            if self.browse.error_notice.is_some()
+                && matches!(key.code, KeyCode::Esc | KeyCode::Enter)
+            {
+                self.browse.error_notice = None;
+                return None;
+            }
             return input.key(key, area);
         }
         if self.browse.dialog.is_some() && area.width >= 40 && area.height >= 12 {
@@ -78,10 +109,35 @@ impl Shell {
             self.browse.dialog_event(&Event::Key(key), area);
             return None;
         }
+        if let Some(selected) = self.settings_selection.as_mut()
+            && area.width >= 40
+            && area.height >= 12
+        {
+            if !key.modifiers.is_empty() {
+                return None;
+            }
+            match key.code {
+                KeyCode::Char('j' | 'k') | KeyCode::Up | KeyCode::Down => *selected = 1 - *selected,
+                KeyCode::Enter => {
+                    self.editor_request = Some(EditorRequest::Settings(*selected));
+                    self.settings_selection = None;
+                }
+                KeyCode::Esc => self.settings_selection = None,
+                _ => {}
+            }
+            return None;
+        }
         if key.modifiers.is_empty() && key.code == KeyCode::Char('q') {
             return Some(0);
         }
         if area.width < 40 || area.height < 12 {
+            return None;
+        }
+        if key.code == KeyCode::Char('*')
+            && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+        {
+            self.browse.error_notice = None;
+            self.settings_selection = Some(0);
             return None;
         }
         if matches!(key.code, KeyCode::Char('H' | 'L')) {
@@ -209,6 +265,7 @@ impl Shell {
         #[cfg(test)]
         if let Some(input) = &self.input_check {
             input.draw(frame);
+            self.error_popup(frame);
             return;
         }
         let compact = area.width < 100 || area.height < 24;
@@ -227,7 +284,11 @@ impl Shell {
             ),
         };
         let regions = "H:Left L:Right";
-        let exits = "q:quit Ctrl+C:interrupt";
+        let exits = if compact {
+            "*:settings q:quit Ctrl+C:interrupt"
+        } else {
+            "q:quit Ctrl+C:interrupt"
+        };
         let keys = if self.browse.dialog.is_some() {
             if compact {
                 "\n\nEsc: close/cancel Ctrl+C: interrupt".into()
@@ -245,12 +306,13 @@ impl Shell {
             if let Some(dialog) = &self.browse.dialog {
                 dialog.draw(frame, &[&self.browse.secret]);
             }
+            self.settings_popup(frame);
             self.error_popup(frame);
             return;
         }
         let main = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(rows[0]);
         let workspace = format!(
-            "{}  | * settings: not implemented",
+            "{}  | * settings",
             self.browse.space.as_deref().unwrap_or("Loading space...")
         );
         frame.render_widget(
@@ -264,7 +326,31 @@ impl Shell {
         if let Some(dialog) = &self.browse.dialog {
             dialog.draw(frame, &[&self.browse.secret]);
         }
+        self.settings_popup(frame);
         self.error_popup(frame);
+    }
+    fn settings_popup(&self, frame: &mut Frame<'_>) {
+        let Some(selected) = self.settings_selection else {
+            return;
+        };
+        let area = frame.area();
+        let width = area.width.saturating_sub(4).min(56);
+        let popup = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - 6) / 2,
+            width,
+            6,
+        );
+        frame.render_widget(Clear, popup);
+        let text = format!(
+            "{} Common config\n{} cwd settings\nj/k Up/Down Enter:open Esc:cancel\nChanges apply after restart",
+            if selected == 0 { ">" } else { " " },
+            if selected == 1 { ">" } else { " " }
+        );
+        frame.render_widget(
+            Paragraph::new(text).block(Block::bordered().title("Settings editor")),
+            popup,
+        );
     }
     fn error_popup(&self, frame: &mut Frame<'_>) {
         let Some(message) = &self.browse.error_notice else {
@@ -411,6 +497,7 @@ impl Shell {
 
 struct TerminalGuard<W: Write> {
     output: W,
+    original_termios: rustix::termios::Termios,
     active: bool,
 }
 impl<W: Write> TerminalGuard<W> {
@@ -432,6 +519,16 @@ impl<W: Write> TerminalGuard<W> {
         let mut failed = vec![];
         if disable_raw_mode().is_err() {
             failed.push("raw mode");
+        }
+        // The editor may leave raw/noecho behind; Crossterm's snapshot ends at handoff.
+        if rustix::termios::tcsetattr(
+            io::stdin(),
+            rustix::termios::OptionalActions::Now,
+            &self.original_termios,
+        )
+        .is_err()
+        {
+            failed.push("termios");
         }
         if execute!(self.output, DisableBracketedPaste).is_err() {
             failed.push("bracketed paste");
@@ -481,6 +578,8 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         .map_err(|_| Error::new("terminal", "Cannot initialize runtime"))?;
     let mut guard = TerminalGuard {
         output,
+        original_termios: rustix::termios::tcgetattr(io::stdin())
+            .map_err(|_| Error::new("terminal", "Cannot read terminal settings"))?,
         active: false,
     };
     let config = Arc::new(config);
@@ -531,6 +630,48 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                         let size = terminal.size().map_err(|_| Error::new("terminal", "Cannot read terminal size"))?;
                         if let Some(code) = shell.event(event, Rect::new(0, 0, size.width, size.height)) {
                             return if code == 0 { Ok(()) } else { Err(Error::new("interrupted", "Operation interrupted")) };
+                        }
+                        if let Some(target) = shell.editor_request.take() {
+                            drop(terminal);
+                            guard.restore()?;
+                            // Keep restoration armed during editor execution, including unwinding.
+                            guard.active = true;
+                            // No event polling while the editor owns the terminal.
+                            let edited = match target {
+                                EditorRequest::Settings(index) => {
+                                    let path = if index == 0 { config::common_config_path()? } else {
+                                        std::env::current_dir().map_err(|_| Error::new("editor", "Cannot locate cwd settings"))?.join(config::CWD_SETTINGS_PATH)
+                                    };
+                                    editor::edit_file(&config.editor, &path, async { signal.recv().await; }).await
+                                }
+                                #[cfg(test)]
+                                EditorRequest::Body => editor::edit_body(&config.editor, shell.input_check.as_mut().unwrap().editor_body.as_mut().unwrap(), async { signal.recv().await; }).await,
+                            };
+                            if let Err(restore) = guard.restore() {
+                                return match edited {
+                                    Err(mut error) => {
+                                        error.message.push_str(&format!("; {}", restore.message));
+                                        Err(error)
+                                    }
+                                    Ok(()) => Err(restore),
+                                };
+                            }
+                            if edited.as_ref().is_err_and(|error| error.kind == "interrupted") { return edited; }
+                            shell.browse.error_notice = Some(safety::text(&match edited {
+                                Ok(()) => match target {
+                                    EditorRequest::Settings(_) => "Settings editor closed; restart to apply".into(),
+                                    #[cfg(test)]
+                                    EditorRequest::Body => "Body editor finished".into(),
+                                },
+                                Err(error) => error.message,
+                            }, &[&config.api_key]));
+                            guard.enter()?;
+                            terminal = Terminal::new(CrosstermBackend::new(&mut guard.output)).map_err(|_| Error::new("terminal", "Cannot initialize terminal"))?;
+                            let size = terminal.size().map_err(|_| Error::new("terminal", "Cannot read terminal size"))?;
+                            // resize clears the viewport and resets the diff buffer even at the same size.
+                            terminal.resize(Rect::new(0, 0, size.width, size.height)).map_err(|_| Error::new("terminal", "Cannot resize terminal"))?;
+                            terminal.draw(|frame| shell.draw(frame)).map_err(|_| Error::new("terminal", "Cannot draw terminal"))?;
+                            break;
                         }
                     }
                     shell.browse.tick();
@@ -892,12 +1033,14 @@ mod tests {
     pub(super) struct InputCheck {
         pub(super) field: SingleLineInput,
         pub(super) focused: bool,
+        pub(super) editor_body: Option<String>,
     }
     impl InputCheck {
         fn new() -> Self {
             Self {
                 field: SingleLineInput::new(String::new()),
                 focused: true,
+                editor_body: None,
             }
         }
         pub(super) fn key(&mut self, key: KeyEvent, area: Rect) -> Option<u8> {
@@ -918,7 +1061,18 @@ mod tests {
             None
         }
         pub(super) fn draw(&self, frame: &mut Frame<'_>) {
-            frame.render_widget(Paragraph::new("Input check (no network)\nTab/Shift+Tab: focus | Esc: leave input\nOutside input: q: quit | Ctrl+C: interrupt"), Rect::new(0, 0, frame.area().width, 3));
+            frame.render_widget(Paragraph::new(if self.editor_body.is_some() { "Body editor check (no network)\nTab: other field | Esc: leave field\ne: editor (outside field) q: quit Ctrl+C" } else { "Input check (no network)\nTab/Shift+Tab: focus | Esc: leave input\nOutside input: q: quit | Ctrl+C: interrupt" }), Rect::new(0, 0, frame.area().width, 3));
+            if let Some(body) = &self.editor_body {
+                frame.render_widget(
+                    Paragraph::new(safety::text(body, &["test-secret"])).wrap(Wrap { trim: false }),
+                    Rect::new(
+                        1,
+                        6,
+                        frame.area().width.saturating_sub(2),
+                        frame.area().height.saturating_sub(6),
+                    ),
+                );
+            }
             let field = Rect::new(1, 4, frame.area().width.saturating_sub(2), 1);
             self.field
                 .draw(frame, field, self.focused, &["test-secret"]);
@@ -930,6 +1084,195 @@ mod tests {
                 }),
                 Rect::new(0, 3, frame.area().width, 1),
             );
+        }
+    }
+
+    /// Same loop/guard/editor operation as settings; no product-only demo or flags.
+    #[test]
+    #[ignore = "manual editor acceptance; see docs/testing/manual-acceptance.md"]
+    fn manual_body_editor_terminal() {
+        use std::io::IsTerminal;
+        assert!(io::stdin().is_terminal() && io::stdout().is_terminal());
+        let mut shell = Shell::new(std::env::var_os("NO_COLOR").is_some());
+        let mut input = InputCheck::new();
+        input.editor_body = Some("  原文 test-secret\r\n".into());
+        input.field = SingleLineInput::new("other-value e\u{301} 👩‍💻".into());
+        input.focused = false;
+        shell.input_check = Some(input);
+        shell.browse.secret = "test-secret".into();
+        let config = Config {
+            origin: "https://localhost:9".parse().unwrap(),
+            api_key: "test-secret".into(),
+            settings: Default::default(),
+            editor: std::env::var("BL_TEST_EDITOR_ARGV")
+                .map(|s| serde_json::from_str(&s).unwrap())
+                .unwrap_or_else(|_| vec!["vim".into()]),
+        };
+        let output = FaultOutput {
+            output: io::stdout(),
+            seen: vec![],
+            fault: std::env::var("SHELL_TEST_FAULT").unwrap_or_default(),
+            triggered: false,
+        };
+        if let Err(error) = run_shell_on(config, output, shell) {
+            eprintln!("{}", error.message);
+            std::process::exit(error.exit_code().into());
+        }
+    }
+
+    #[test]
+    fn body_editor_roundtrip_and_failures_use_shared_terminal_handoff() {
+        for case in [
+            "body",
+            "nonzero",
+            "signal",
+            "utf8",
+            "unlink",
+            "interrupt",
+            "spawn",
+            "raw-body",
+            "raw-nonzero",
+            "raw-signal",
+            "raw-interrupt",
+            "raw-interrupt-restore-error",
+            "raw-nonzero-restore-error",
+        ] {
+            let (mode, fault) = case
+                .strip_suffix("-restore-error")
+                .map_or((case, ""), |mode| (mode, "editor-restore-error"));
+            let outcome = mode.strip_prefix("raw-").unwrap_or(mode);
+            let dir = tempfile::tempdir().unwrap();
+            let steps = dir.path().join("steps.json");
+            let mut actions = vec![serde_json::json!({"wait":"Body editor check", "keys":"e"})];
+            if outcome == "interrupt" {
+                actions.push(serde_json::json!({"wait":"EDITOR READY", "signal":"SIGINT"}));
+            } else {
+                if mode != "spawn" {
+                    actions.push(serde_json::json!({"wait":"EDITOR READY", "resize":[12,40], "keys":"qjk\n"}));
+                }
+                let notice = match outcome {
+                    "body" => "Body editor finished",
+                    "nonzero" | "signal" => "Editor did not exit successfully",
+                    "spawn" => "Cannot run editor",
+                    _ => "Cannot read editor file as UTF-8",
+                };
+                if fault.is_empty() {
+                    actions.push(serde_json::json!({"wait":notice, "keys":"\u{1b}"}));
+                    actions.push(serde_json::json!({"wait":"Input (unfocused)", "keys":"q"}));
+                }
+            }
+            std::fs::write(&steps, serde_json::to_string(&actions).unwrap()).unwrap();
+            let record = dir.path().join("editor-record");
+            let argv = if mode == "spawn" {
+                serde_json::json!(["/no/such/editor"])
+            } else {
+                serde_json::json!([
+                    "/usr/bin/python3",
+                    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editor.py"),
+                    record,
+                    mode
+                ])
+            };
+            let output = Command::new("python3")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/tty_shell.py"
+                ))
+                .arg("scripted")
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tui::tests::manual_body_editor_terminal",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("SHELL_STEPS_FILE", &steps)
+                .env("TMPDIR", dir.path())
+                .env("SHELL_REQUESTS_FILE", dir.path().join("requests"))
+                .env("BL_TEST_EDITOR_ARGV", argv.to_string())
+                .env("SHELL_TEST_FAULT", fault)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{mode}: {output:?}");
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                result["code"],
+                if outcome == "interrupt" {
+                    130
+                } else if !fault.is_empty() {
+                    1
+                } else {
+                    0
+                },
+                "{mode}: {result}"
+            );
+            assert_eq!(result["restored"], true, "{mode}: {result}");
+            assert_eq!(result["termios_diff"], serde_json::json!([]));
+            if mode != "spawn" {
+                let record: Value =
+                    serde_json::from_str(&std::fs::read_to_string(record).unwrap()).unwrap();
+                assert_eq!(record["mode"], 384);
+                assert_eq!(record["original"], "  原文 test-secret\r\n");
+                assert_eq!(record["cooked"], true);
+                assert_eq!(record["echo"], true);
+                if mode.starts_with("raw-") {
+                    assert_eq!(record["raw_noecho"], true);
+                }
+                assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+                if outcome == "interrupt" {
+                    assert!(
+                        !Command::new("/bin/kill")
+                            .args(["-0", &record["pid"].to_string()])
+                            .output()
+                            .unwrap()
+                            .status
+                            .success()
+                    );
+                } else {
+                    assert_eq!(record["input"], "qjk\n");
+                }
+            }
+            for entry in std::fs::read_dir(dir.path()).unwrap() {
+                let name = entry.unwrap().file_name();
+                assert!(
+                    name == "steps.json" || name == "editor-record",
+                    "temporary editor data remains: {name:?}"
+                );
+            }
+            if !fault.is_empty() {
+                let stderr = result["stderr"].as_str().unwrap();
+                assert!(
+                    stderr.contains("Terminal restoration failed: alternate screen"),
+                    "{case}: {result}"
+                );
+                assert!(
+                    stderr.contains(if outcome == "interrupt" {
+                        "Operation interrupted"
+                    } else {
+                        "Editor did not exit successfully"
+                    }),
+                    "{case}: {result}"
+                );
+                continue;
+            }
+            let screen = result["screen"].as_str().unwrap();
+            if outcome == "body" {
+                assert!(screen.contains("編") && screen.contains("後"), "{result}");
+            } else if outcome != "interrupt" {
+                assert!(
+                    screen.contains("原") && screen.contains("[REDACTED]"),
+                    "{mode}: {result}"
+                );
+            }
+            if outcome != "interrupt" {
+                assert!(
+                    screen.contains("other-value"),
+                    "other field lost: {mode}: {result}"
+                );
+                assert!(screen.contains("Input (unfocused)"));
+                assert!(!result["stdout"].as_str().unwrap().contains("test-secret"));
+            }
         }
     }
 
@@ -1528,6 +1871,12 @@ mod tests {
                 self.output.flush()?;
                 // Hold entry before the first frame until the PTY driver sends SIGINT.
                 io::stdin().read_exact(&mut [0])?;
+            }
+            if self.fault == "editor-restore-error" && bytes == b"\x1b[?1049l" {
+                if self.triggered {
+                    return Err(io::Error::other("test-secret"));
+                }
+                self.triggered = true;
             }
             if self.fault == "restore-error" && bytes == b"\x1b[?1049l" {
                 return Err(io::Error::other("test-secret"));
