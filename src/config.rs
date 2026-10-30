@@ -70,11 +70,7 @@ pub struct Config {
 impl Config {
     /// Load once from the environment and cwd; do not search parent directories.
     pub fn load(profile: &str) -> Result<Self, Error> {
-        let base = env::var_os("XDG_CONFIG_HOME")
-            .filter(|p| Path::new(p).is_absolute())
-            .or_else(|| env::var_os("HOME").map(|p| Path::new(&p).join(".config").into_os_string()))
-            .ok_or_else(|| Error::new("config", "Configuration location is unavailable"))?;
-        let text = read_config(&Path::new(&base).join("backlog/config.json"))
+        let text = read_config(&common_config_path()?)
             .map_err(|_| Error::new("config", "Cannot read common configuration"))?
             .ok_or_else(|| Error::new("config", "Common configuration is absent"))?;
         let common: Common = serde_json::from_slice(&text)
@@ -103,7 +99,7 @@ impl Config {
             .ok_or_else(|| {
                 Error::new("config", "API key environment variable is missing or empty")
             })?;
-        let settings: Settings = match read_config(Path::new(".backlog/settings.json"))
+        let settings: Settings = match read_config(Path::new(CWD_SETTINGS_PATH))
             .map_err(|_| Error::new("config", "Cannot read cwd settings"))?
         {
             Some(text) => serde_json::from_slice(&text)
@@ -130,6 +126,16 @@ impl Config {
         })
     }
 }
+pub(crate) const CWD_SETTINGS_PATH: &str = ".backlog/settings.json";
+
+pub(crate) fn common_config_path() -> Result<PathBuf, Error> {
+    let base = env::var_os("XDG_CONFIG_HOME")
+        .filter(|p| Path::new(p).is_absolute())
+        .or_else(|| env::var_os("HOME").map(|p| Path::new(&p).join(".config").into_os_string()))
+        .ok_or_else(|| Error::new("config", "Configuration location is unavailable"))?;
+    Ok(Path::new(&base).join("backlog/config.json"))
+}
+
 fn read_config(path: &Path) -> io::Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(text) => Ok(Some(text)),

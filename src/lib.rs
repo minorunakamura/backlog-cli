@@ -3,6 +3,7 @@ pub mod api;
 pub mod body;
 pub mod comment;
 pub mod config;
+pub mod editor;
 pub mod safety;
 pub mod service;
 pub mod tui;

@@ -20,7 +20,7 @@ Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語�
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
 `bl` のプロジェクト選択・通常/横断検索ダイアログ・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・コメント閲覧・ブラウザ起動・focus・layout・端末復元も実装しています。
 共有単行入力部品を製品のkeyword欄へ組み込み、開発専用の実端末確認経路も維持しています。
-TUIの書込みフォーム・editorは後続Work Itemの範囲です。
+設定editor連携と共有libraryの本文編集を実装しています。TUIの書込みフォームは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -395,8 +395,8 @@ fixtureはqueryの `minId` / `maxId` を正整数として比較して境界自�
 実API keyは使わないでください。
 
 このローカルharnessは実Backlogへの接続/書込み、実IME/TUI受入、配布tar.gz作成や公開を行いません。
-Issue #17以降の担当機能では承認済みPlanの実Backlog受入が別途必須です。未実施を完了扱いにしません。
-editorの権限検査後のfile変更や、将来起動時のOSによる最終実行可否までは保証しません。
+Issue #17以降の該当機能では承認済みPlanの実Backlog受入が別途必須です（#19は実Backlog接続不要）。未実施を完了扱いにしません。
+editorの権限検査後のfile変更や、起動時のOSによる最終実行可否までは保証しません。
 
 ### 検索ダイアログ (#17)
 
@@ -544,3 +544,147 @@ space/projects/count/list各1）。初期Comment 2からnでComment 1へ、jを1
 H/LでIssueとCommentを往復してもscrollと総GET数を保持します。外部secret／OSCは出ず、`[REDACTED]`を表示します。
 このsequenceは自動手順用です。自由操作では応答段階を固定してください。PTY簡易画面は実端末の字幅／IME確認の代替ではありません。
 最新buildでの実端末と`https://lazybl.backlog.com/`の必須受入結果・未確認事項は[manual-acceptance.md](docs/testing/manual-acceptance.md)を参照してください。
+
+### editor連携 (#19)
+
+`src/editor.rs` の公開 `edit_file`／`edit_body` がshellなしのargv実行を共有します。
+端末の引渡し／復帰は既存TUI loopとTerminalGuardだけが所有します。
+`tempfile =3.27.0` は承認済みPlanの本人限定一時file用で、lock追加は同crateと推移依存fastrand 2.5.0のみです。
+既存依存の版は変更していません。依存変更時のaudit／lock hash前後比較も正式チェックに含めます。
+P1 correctionでは既存lock解決済み`rustix =1.1.6`の公開`termios` APIを直接利用します。
+Crosstermの公開APIではeditorへの引渡しをまたぐ起動前snapshotを保持できないためです。
+単一guardが起動前のtermiosを保持し、editor停止／終了後、130終了／TUI再enterより前に復元します。
+独自FFI／stty子process／別の端末管理層は追加せず、lock差分は直接依存の辺1行のみです。
+
+```sh
+cargo test --locked --test editor --test tui_shell
+cargo test --locked --test tui_process settings_
+cargo test --locked --lib body_editor_roundtrip_and_failures
+```
+
+公開library試験は原文・0600／所有者・literal argv・正常交換・起動失敗／非0／読取失敗／不正UTF-8／中断時保持と削除、
+同時readyの親中断優先を検証します。実bl＋HTTPS／PTYは設定選択、未作成の場所案内、保存の非巻戻し、実行中config不変、
+cooked入力の専有、resizeから追加キーなしの再描画、元の選択／ページ／scroll／focus保持と130／termios復元を検証します。
+本文は後続フォームを作らず、cfg(test)限定ignored経路を同じloop／guardへ接続してPTYで確認します。
+従来7経路にraw／noechoを残す正常・非0・子SIGTERM・親SIGINTの4経路と、editor後の復元失敗2経路を加えています。
+起動前後の全termios項目一致（既存のmacOS一時PENDIN除外のみ）、元本文・他欄・temp削除、
+復元失敗時に元のeditorエラー／中断130も保持して通知することをassertします。
+`tty_shell.py`のscripted stepの`signal`は親へ送信、`remove`は起動後の実行file不在を再現するテスト境界です。
+
+#### release製品の設定編集を直接PTYで再実施
+
+リポジトリ直下から実行します。loopback HTTPS・一時config・fake keyだけを使い、利用者設定を開きません。
+設定編集は本文のようなUTF-8再読取をしないので、保存内容の検証は再起動時です。不正UTF-8／読取失敗は下の本文経路で確認します。
+
+```sh
+cargo build --locked --release --target aarch64-apple-darwin --bins
+python3 - "$PWD" <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+binary = repo / 'target/aarch64-apple-darwin/release/bl'
+for mode in ['settings', 'nonzero', 'interrupt', 'spawn',
+             'raw-settings', 'raw-nonzero', 'raw-signal', 'raw-interrupt']:
+    outcome = mode[4:] if mode.startswith('raw-') else mode
+    with tempfile.TemporaryDirectory(prefix='backlog-editor-') as name:
+        root = pathlib.Path(name)
+        (root / 'backlog').mkdir()
+        (root / 'response.json').write_text(json.dumps({'routes': {
+            '/api/v2/space': {'body': '{"name":"Editor local test"}'},
+            '/api/v2/projects': {'body': '[]'}}}))
+        server = subprocess.Popen([sys.executable, str(repo / 'tests/fixtures/https_server.py'), name],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            port = int(server.stdout.readline())
+            argv = [sys.executable, str(repo / 'tests/fixtures/editor.py'), str(root / 'record'), mode]
+            steps = [{'wait':'Editor local test', 'keys':'L*\r'}]
+            if mode == 'spawn':
+                program = root / 'editor'
+                program.write_text('#!/usr/bin/python3\n')
+                program.chmod(0o700)
+                argv = [str(program)]
+                steps[0]['remove'] = str(program)
+            config = {'editor': argv, 'profiles': {'default': {
+                'spaceUrl': f'https://localhost:{port}', 'apiKeyEnv': 'TEST_KEY'}}}
+            (root / 'backlog/config.json').write_text(json.dumps(config))
+            if outcome == 'interrupt':
+                steps += [{'wait':'EDITOR READY', 'signal':'SIGINT'}]
+            else:
+                if mode != 'spawn':
+                    steps += [{'wait':'EDITOR READY', 'resize':[12,40], 'keys':'qjk\n'}]
+                notice = {'settings':'Settings editor closed; restart',
+                          'nonzero':'Editor did not exit successfully',
+                          'signal':'Editor did not exit successfully', 'spawn':'Cannot run editor'}[outcome]
+                steps += [{'wait':notice, 'keys':'\x1b'}, {'wait':'> Issue Detail', 'keys':'q'}]
+            (root / 'steps.json').write_text(json.dumps(steps))
+            env = dict(HOME=name, XDG_CONFIG_HOME=name, TEST_KEY='test-secret', NO_COLOR='1',
+                       PATH='/usr/bin:/bin', SSL_CERT_FILE=str(root / 'tls/localhost-cert.pem'),
+                       SHELL_STEPS_FILE=str(root / 'steps.json'), SHELL_REQUESTS_FILE=str(root / 'requests'))
+            run = subprocess.run([sys.executable, str(repo / 'tests/fixtures/tty_shell.py'),
+                                  'scripted', str(binary)], cwd=name, env=env, capture_output=True, text=True)
+            assert run.returncode == 0, run.stderr
+            result = json.loads(run.stdout)
+            assert result['code'] == (130 if outcome == 'interrupt' else 0), result
+            assert result['restored'] and not result['termios_diff'], result
+            assert ('interrupted' in result['stderr'] if outcome == 'interrupt' else not result['stderr']), result
+            if mode != 'spawn':
+                record = json.loads((root / 'record').read_text())
+                assert record['cooked'] and record['echo'], record
+                if mode.startswith('raw-'):
+                    assert record['raw_noecho'], record
+                if outcome == 'interrupt':
+                    assert subprocess.run(['/bin/kill','-0',str(record['pid'])], capture_output=True).returncode != 0
+                else:
+                    assert record['input'] == 'qjk\n', record
+                    expected = record['original'] if outcome == 'signal' else '{"saved":true}'
+                    assert (root / 'backlog/config.json').read_text() == expected
+            print(mode, 'exit=', result['code'], 'restored=', result['restored'], 'snapshots=', len(result['snapshots']))
+        finally:
+            server.terminate()
+            _, errors = server.communicate(timeout=5)
+            assert not errors, errors
+PY
+```
+
+#### 実端末：製品設定編集と本文の最小手順
+
+**PTYは目視受入の代替ではありません。** 端末名／版・macOS／IME・TERM／NO_COLOR・対象build hashを
+[manual-acceptance.md](docs/testing/manual-acceptance.md#issue-19-editor連携)へ記録します。
+
+製品設定編集は同文書冒頭「ローカルHTTPSを使う準備」の専用bash／一時root／`run_bl`を使用します。
+そのセットアップで作る共通configのeditor省略時はvimです。利用者のconfigで試す必要はありません。
+`run_bl`で起動し、`*`→上下／j/kで2対象循環→Esc取消→再度`*`→Enterで共通configを開きます。
+vim中に100x24→40x12へresizeして`:q!`。追加キーを押さず、新サイズの元focusへ戻ることを目視します。
+cwd settingsは不在のまま`*`→j→Enterで場所案内だけになることを確認します。
+既存settingsを開く確認はTUI終了後に試験担当が`mkdir -p "$root/.backlog"; printf '{}\n' > "$root/.backlog/settings.json"`
+でfixtureを準備して再起動します（製品による生成ではありません）。保存後も起動中の設定は変わらず、再起動後だけ検証します。
+
+本文の実端末確認は次のignored testだけに存在します。製品にdemo画面／flagはありません。
+
+```sh
+cargo test --locked --lib tui::tests::manual_body_editor_terminal -- --ignored --exact --nocapture --test-threads=1
+```
+
+eでvimへ渡す原文は`  原文 test-secret\r\n`、別欄は`other-value é 👩‍💻`です（すべてfixture）。
+Tabで別欄編集、Escで欄外、eで本文編集。空白／改行／日本語を保存して戻り、別欄の値とfocusが保持されること、
+失敗では元本文表示が残ること、表示側だけsecretが伏字になることを確認します。100x24／40x12／それ未満も試します。
+本文の一時fileは本人限定、戻った時点で削除されます。editor独自swap／backupは対象外です。
+
+失敗を手動再現する時は、このtestだけが読む`BL_TEST_EDITOR_ARGV`を使えます。
+例: `BL_TEST_EDITOR_ARGV='["/usr/bin/false"]'`（非0）、`'["/no/such/editor"]'`（起動失敗）、
+`'["/usr/bin/python3","-c","import pathlib,sys; pathlib.Path(sys.argv[-1]).write_bytes(bytes([255]))"]'`（不正UTF-8）、
+`'["/usr/bin/python3","-c","import pathlib,sys; pathlib.Path(sys.argv[-1]).unlink()"]'`（読取失敗）を上のcargoコマンドへ付けます。
+この変数を製品blが読むことはありません。正常・失敗とも通知をEscで閉じ、欄外qで終了してください。
+
+中断の正確な終了コードを観測する時はcargo wrapperを避けてtest binaryを直接起動します。
+
+```sh
+test_bin=$(cargo test --locked --lib --no-run --message-format=json | python3 -c 'import json,sys; print([r["executable"] for r in map(json.loads,sys.stdin) if r.get("executable")][0])')
+before=$(stty -g)
+"$test_bin" --exact tui::tests::manual_body_editor_terminal --ignored --nocapture --test-threads=1
+code=$?; printf 'test binary exit=%s\n' "$code"
+[ "$(stty -g)" = "$before" ] && echo 'termios unchanged'
+```
+
+editor中に別端末から**親のbl／test binaryのPID**へ`kill -INT <PID>`し、子停止・一時file削除・通常shell復元・130を確認します。
+editor自身だけの非0／シグナル終了は通知して元画面へ戻る別経路です。cargo経由でtest processが130終了するとcargoの終了は101になるため混同しません。
+終了後は実shellで文字入力・削除・cursor／表示属性を目視します。SIGKILL・切断後の復元／削除は保証対象外です。

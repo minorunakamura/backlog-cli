@@ -99,6 +99,10 @@ try:
                         height, width = step["resize"]
                         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", height, width, 0, 0))
                         child.send_signal(signal.SIGWINCH)
+                    if "remove" in step:
+                        os.unlink(step["remove"])
+                    if "signal" in step:
+                        child.send_signal(getattr(signal, step["signal"]))
                     os.write(master, step.get("keys", "").encode())
                     steps.pop(0)
                     step_ready_at = None
