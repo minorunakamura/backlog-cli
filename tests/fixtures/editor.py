@@ -30,6 +30,8 @@ elif mode == "utf8":
     p.write_bytes(b"\xff")
 elif mode == "unlink":
     p.unlink()
+elif mode == "body-file":
+    p.write_bytes(pathlib.Path(record).with_name("editor-body").read_bytes())
 elif mode == "body":
     p.write_text(" 編集後\n\n")
 else:

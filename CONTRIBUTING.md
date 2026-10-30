@@ -20,7 +20,8 @@ Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語�
 `issue list/mine/view/create/update` / `issue comment list/view/add/update` と共通libraryの候補/名前解決/検索/詳細・コメント取得/追加/本文更新・課題作成/部分更新・Markdown/Backlog本文の安全表示を実装しています。
 `bl` のプロジェクト選択・通常/横断検索ダイアログ・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・コメント閲覧・ブラウザ起動・focus・layout・端末復元も実装しています。
 共有単行入力部品を製品のkeyword欄へ組み込み、開発専用の実端末確認経路も維持しています。
-設定editor連携と共有libraryの本文編集を実装しています。TUIの書込みフォームは後続Work Itemの範囲です。
+設定editor連携と共有libraryの本文編集、TUI課題作成フォームを実装しています。
+#20の実端末／実Backlog受入結果は手動受入記録を参照してください。課題更新・コメント書込みのTUIフォームは後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -152,6 +153,107 @@ macOSの一時的なPENDIN（再表示待ち）ビットだけはtermios比較�
 cargo test --locked --test tui_shell --test tui_process
 cargo test --locked --lib tui::tests::shell_ -- --nocapture
 ```
+
+### TUI課題作成 (#20): releaseの直接ローカル検証
+
+`tests/tui_process.rs` の `bl_create_` と `bl_new_create_interrupt_` は製品PTY/HTTPS境界で、
+既定値/解除・複数milestone・必須値/実在日付・単行原文/全欄伏字・全確認本文・editor/resize/失敗・
+差分だけの破棄確認・確認Enterの非POSTと独立送信・busy中の操作禁止・count/listの原子的交換/履歴保持・
+取消した候補取得の世代・Ctrl+C/SIGINTの3段階の確度を確認します。
+`tests/service.rs` の `create_task_abort_joins_without_detached_http_or_later_certainty_changes` は、
+公開Serviceと共有CreateProgressから、送信前/送信後/201 headers後のabort+joinと、回収後に確度が変わらないことを確認します。
+HTTP futureは外側の操作taskが直接所有します。新しいtaskを切り離したままにせず、TUI終了/panic/描画失敗でも
+write taskをabort+joinしてから確度を読み、端末復元を試みます。既存CLIの確度試験も維持します。
+
+```sh
+cargo test --locked --test tui_process bl_create_ -- --nocapture
+cargo test --locked --test tui_process bl_new_create_interrupt_ -- --nocapture
+cargo test --locked --test service create_task_abort_joins -- --nocapture
+```
+
+以下は **cargo testとは別に、実release `bl` を直接起動する** 自己完結のlocalhost HTTPS + PTY検証です。
+リポジトリ直下でrelease build後に実行してください。実設定／実keyを読み込まず、実サービスへ接続しません。
+Python/OpenSSL以外の追加依存は不要です。一時rootとserverは最後に回収します。
+
+```sh
+cargo build --locked --release --target aarch64-apple-darwin --bins
+python3 - <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path.cwd()
+bl = repo / 'target/aarch64-apple-darwin/release/bl'
+with tempfile.TemporaryDirectory(prefix='bl-create-local-') as directory:
+    root = pathlib.Path(directory)
+    routes = {
+        '/api/v2/space': {'body': json.dumps({'name': 'Local create check'})},
+        '/api/v2/projects': {'body': json.dumps([{'id': 1, 'projectKey': 'LOCAL', 'name': 'Local project'}])},
+        '/api/v2/issues/count': {'body': '{"count":0}'},
+        'GET /api/v2/issues': {'body': '[]'},
+        'POST /api/v2/issues': {'status': 201, 'delay': 0.3, 'body': '{"id":9,"issueKey":"LOCAL-9"}'},
+        '/api/v2/projects/1/issueTypes': {'body': '[{"id":2,"name":"Task"}]'},
+        '/api/v2/priorities': {'body': '[{"id":3,"name":"Normal"}]'},
+        '/api/v2/projects/1/users': {'body': '[{"id":4,"name":"Alice"}]'},
+        '/api/v2/projects/1/versions': {'body': '[{"id":5,"name":"First"},{"id":6,"name":"Second"}]'},
+    }
+    (root / 'response.json').write_text(json.dumps({'routes': routes}))
+    server = subprocess.Popen([sys.executable, str(repo / 'tests/fixtures/https_server.py'), str(root)], stdout=subprocess.PIPE, text=True)
+    try:
+        origin = 'https://localhost:' + server.stdout.readline().strip()
+        (root / 'backlog').mkdir()
+        (root / '.backlog').mkdir()
+        (root / 'backlog/config.json').write_text(json.dumps({
+            'editor': ['/usr/bin/python3', str(repo / 'tests/fixtures/editor.py'), str(root / 'editor-record'), 'body-file'],
+            'profiles': {'local-check': {'spaceUrl': origin, 'apiKeyEnv': 'TEST_KEY'}}}))
+        (root / '.backlog/settings.json').write_text(json.dumps({'issue': {'create': {'issueType': 'Task', 'priority': 'Normal', 'assignee': 'Alice'}}}))
+        body = ' Raw body\n\n'
+        (root / 'editor-body').write_text(body)
+        steps = [
+            {'wait': 'Local project', 'keys': '\r'},
+            {'wait': 'total 0', 'keys': 'lc'},
+            {'wait': 'Assignee: Alice', 'keys': ' Raw title \x01'},
+            {'wait': 'Assignee: Alice', 'keys': '\x7f\t2024-02-29\t2024-03-01\t\r'},
+            {'wait': 'Milestones candidates', 'keys': ' j \r'},
+            {'wait': 'Milestones: First', 'keys': '\t\r'},
+            {'wait': 'EDITOR READY', 'keys': '\n'},
+            {'wait': 'Body editor finished', 'keys': '\t\r'},
+            {'wait': 'Confirm create', 'keys': '\r'},
+            {'wait': 'Confirm create', 'keys': 's'},
+            {'wait': 'Sending', 'keys': 's\r\x1bq\x14bad'},
+            {'wait': 'Created; list refreshed', 'keys': '\r'},
+            {'wait': 'Issue List', 'keys': 'q'},
+        ]
+        (root / 'shell-steps.json').write_text(json.dumps(steps))
+        env = {'HOME': directory, 'XDG_CONFIG_HOME': directory, 'TEST_KEY': 'test-secret', 'NO_COLOR': '1',
+               'PATH': '/usr/bin:/bin', 'SSL_CERT_FILE': str(root / 'tls/localhost-cert.pem'),
+               'SHELL_STEPS_FILE': str(root / 'shell-steps.json'), 'SHELL_REQUESTS_FILE': str(root / 'requests')}
+        run = subprocess.run([sys.executable, str(repo / 'tests/fixtures/tty_shell.py'), 'scripted', str(bl), '--profile', 'local-check'],
+                             cwd=root, env=env, capture_output=True, text=True, timeout=15)
+        assert run.returncode == 0, run.stderr
+        result = json.loads(run.stdout)
+        assert (result['code'], result['restored'], result['stderr']) == (0, True, ''), result
+        assert len(result['snapshots']) == len(steps), result
+        assert result['request_counts'][8] == result['request_counts'][9], 'confirmation Enter sent a request'
+        assert 'Profile: local-check' in result['snapshots'][9]
+        assert 'Raw body' in result['snapshots'][9]
+        requests = [json.loads(line) for line in (root / 'requests').read_text().splitlines()]
+        posts = [r for r in requests if r['method'] == 'POST']
+        assert len(posts) == 1, requests
+        assert posts[0]['form'] == {'projectId': ['1'], 'summary': [' Raw title '], 'issueTypeId': ['2'], 'priorityId': ['3'],
+            'description': [body], 'startDate': ['2024-02-29'], 'dueDate': ['2024-03-01'], 'milestoneId[]': ['5', '6']}, posts
+        assert sum(r['path'].startswith('/api/v2/issues/count?') for r in requests) == 2
+        assert sum(r['method'] == 'GET' and r['path'].startswith('/api/v2/issues?') for r in requests) == 2
+        assert 'test-secret' not in result['stdout']
+        print('PASS: release bl; confirm Enter=0 POST; explicit send=1 POST; raw form/default clear/milestones/editor; refresh=2 count+2 list; exit=0; termios restored')
+    finally:
+        server.terminate()
+        server.wait(timeout=3)
+PY
+shasum -a 256 target/aarch64-apple-darwin/release/bl target/aarch64-apple-darwin/release/bl-cli
+```
+
+期待結果は最後の`PASS:`と両binaryのSHA-256です。これはPTYでのローカル検証であり、実端末の表示・IMEや
+`https://lazybl.backlog.com/`への必須受入ではありません。対象buildと実測結果／pendingは
+[手動受入記録](docs/testing/manual-acceptance.md#issue-20-tui課題作成)へ記録します。
+実サービスの作成は接続先・project・内容について別の明示許可を得てからにしてください。
 
 ### 単行入力部品 (#14)
 

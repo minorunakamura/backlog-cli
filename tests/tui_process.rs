@@ -3653,3 +3653,513 @@ fn settings_editor_failure_preserves_selected_issue_page_detail_scroll_and_regio
             .contains("> Issue Detail")
     );
 }
+
+fn create_routes() -> Value {
+    json!({"routes": {
+        "/api/v2/space":{"body":"{\"name\":\"Actual space\"}"},
+        "/api/v2/projects":{"body":"[{\"id\":1,\"projectKey\":\"A\",\"name\":\"Alpha\"}]"},
+        "/api/v2/issues/count":{"body":"{\"count\":0}"},
+        "/api/v2/issues":{"body":"[]"},
+        "/api/v2/projects/1/issueTypes":{"body":"[{\"id\":2,\"name\":\"Task\"}]"},
+        "/api/v2/priorities":{"body":"[{\"id\":3,\"name\":\"Normal\"}]"},
+        "/api/v2/projects/1/users":{"body":"[{\"id\":4,\"name\":\"Alice\"}]"},
+        "/api/v2/projects/1/versions":{"body":"[{\"id\":5,\"name\":\"First\"},{\"id\":6,\"name\":\"Second\"}]"}
+    }})
+}
+
+#[test]
+fn bl_create_is_one_modal_preserving_text_and_only_confirms_changed_discard() {
+    let h = Harness::new(create_routes());
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Alpha", "keys":"\r"},
+            {"wait":"total 0", "keys":"lc"},
+            {"wait":"Create issue", "keys":"\u{001b}"},
+            {"wait":"Issue List", "keys":"c"},
+            {"wait":"Create issue", "keys":"qhljkHL"},
+            {"wait":"qhljkHL", "keys":"\t\u{001b}"},
+            {"wait":"Discard changes?", "keys":"\u{001b}"},
+            {"wait":"Create issue", "keys":"\u{0014}"},
+            {"wait":"qhljkHL", "keys":"\u{001b}"},
+            {"wait":"Discard changes?", "keys":"\r"},
+            {"wait":"Issue List", "keys":"q"}
+        ]),
+    );
+    assert_eq!(result["snapshots"].as_array().unwrap().len(), 11);
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+}
+
+#[test]
+fn bl_create_resolves_defaults_clears_assignee_and_posts_once_after_full_confirmation() {
+    let mut routes = create_routes();
+    routes["routes"]["POST /api/v2/issues"] =
+        json!({"status":201,"body":"{\"id\":9,\"issueKey\":\"A-9\"}","delay":0.3});
+    let h = Harness::new(routes);
+    std::fs::create_dir(h.root.join(".backlog")).unwrap();
+    std::fs::write(
+        h.root.join(".backlog/settings.json"),
+        json!({"issue":{"create":{"issueType":"Task","priority":"Normal","assignee":"Alice"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Alpha", "keys":"\r"},
+            {"wait":"total 0", "keys":"lc"},
+            {"wait":"Assignee: Alice", "keys":" Raw title \u{0001}"},
+            {"wait":"Assignee: Alice", "keys":"\u{007f}\t2024-02-29\t2024-03-01\t\r"},
+            {"wait":"Milestones candidates", "keys":" j \r"},
+            {"wait":"Milestones: First", "keys":"\t\t\r"},
+            {"wait":"Confirm create", "keys":"", "pause":0.2},
+            {"wait":"Confirm create", "keys":"s"},
+            {"wait":"Sending", "keys":"s\r\u{001b}q\u{0014}bad"},
+            {"wait":"Created: A-9", "keys":"\r"},
+            {"wait":"Issue List", "keys":"q"}
+        ]),
+    );
+    let requests = h.requests();
+    let post: Vec<_> = requests.iter().filter(|r| r["method"] == "POST").collect();
+    assert_eq!(post.len(), 1, "{requests:?}");
+    assert_eq!(
+        post[0]["form"],
+        json!({"projectId":["1"],"summary":[" Raw title "],"issueTypeId":["2"],"priorityId":["3"],"startDate":["2024-02-29"],"dueDate":["2024-03-01"],"description":[""],"milestoneId[]":["5","6"]})
+    );
+    assert_eq!(
+        result["request_counts"][6], result["request_counts"][5],
+        "confirmation must not POST"
+    );
+    let confirm = result["snapshots"][6].as_str().unwrap();
+    for text in [
+        "Profile: default",
+        "Origin: https://localhost:",
+        "Space: Actual space",
+        "Project: A",
+        "Raw title",
+        "Assignee: (cleared)",
+        "First (5)",
+        "Second (6)",
+        "2024-02-29",
+        "2024-03-01",
+        "Body:",
+    ] {
+        assert!(confirm.contains(text), "missing {text}: {confirm}");
+    }
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"]
+                .as_str()
+                .unwrap()
+                .starts_with("/api/v2/issues/count"))
+            .count(),
+        2,
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn bl_create_interrupt_aborts_and_joins_write_preserving_each_observed_outcome() {
+    for (phase, response, marker, outcome) in [
+        (
+            "before",
+            json!({"status":201,"body":"{}"}),
+            "",
+            "not_created",
+        ),
+        (
+            "sent",
+            json!({"status":201,"header_delay":20,"body":"{}"}),
+            "post-received",
+            "unknown",
+        ),
+        (
+            "headers",
+            json!({"status":201,"delay":20,"body":"{}"}),
+            "post-headers-sent",
+            "created",
+        ),
+    ] {
+        for interrupt in ["key", "signal"] {
+            let mut routes = create_routes();
+            routes["routes"]["POST /api/v2/issues"] = response.clone();
+            let h = Harness::new(routes);
+            let mut steps = vec![
+                json!({"wait":"Alpha", "keys":"\r"}),
+                json!({"wait":"total 0", "keys":"lc"}),
+                json!({"wait":"Create issue", "keys":"title\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r", "pause":0.3}),
+                json!({"wait":"Confirm create", "keys": if phase == "before" { "" } else { "s" }}),
+            ];
+            let mut last = json!({"wait": if phase == "before" { "Confirm create" } else { "Sending" }, "wait_file":marker, "pause":0.15});
+            if interrupt == "key" {
+                last["keys"] = json!("\u{0003}");
+            } else {
+                last["signal"] = json!("SIGINT");
+            }
+            steps.push(last);
+            std::fs::write(h.root.join("shell-steps.json"), json!(steps).to_string()).unwrap();
+            let result = shell(&h, "scripted", &[]);
+            assert_eq!(result["code"], 130, "{phase}/{interrupt}: {result}");
+            assert_eq!(result["restored"], true, "{result}");
+            assert!(
+                result["stderr"].as_str().unwrap().contains(outcome),
+                "{phase}/{interrupt}: {result}"
+            );
+            assert!(result["elapsed"].as_f64().unwrap() < 5.0, "{result}");
+            assert_eq!(
+                h.requests()
+                    .iter()
+                    .filter(|r| r["method"] == "POST")
+                    .count(),
+                usize::from(phase != "before")
+            );
+        }
+    }
+}
+
+#[test]
+fn bl_create_masks_entire_input_and_keeps_editor_body_dates_and_focus_through_resize() {
+    let mut routes = create_routes();
+    routes["routes"]["POST /api/v2/issues"] =
+        json!({"status":201,"body":"{\"id\":9,\"issueKey\":\"A-9\"}"});
+    let h = Harness::new(routes);
+    h.config(json!({"editor":["/usr/bin/python3", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editor.py"), h.root.join("editor-record"), "body-file"], "profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    let body = format!(
+        "  raw body\n{}\nLAST BODY LINE test-secret\u{001b}]52;c;unsafe\u{0007}\n",
+        "long body value ".repeat(120)
+    );
+    std::fs::write(h.root.join("editor-body"), &body).unwrap();
+    let title = format!("test-secret{}", "PRIVATE-SUFFIX".repeat(20));
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Alpha", "keys":"\r"},
+            {"wait":"total 0", "keys":"lc"},
+            {"wait":"Create issue", "pause":0.3, "keys":title},
+            {"wait":"[REDACTED]", "keys":"\u{0019}\r\r\u{0010}\r\r\u{0001}\t2023-02-29\t2024-03-01\u{0002}"},
+            {"wait":"Body edit", "pause":0.1, "keys":""},
+            {"wait":"Body edit", "keys":"\r"},
+            {"wait":"EDITOR READY", "resize":[12,40], "keys":"qhljk\n"},
+            {"wait":"Body editor finished", "keys":"\t\r"},
+            {"wait":"real YYYY-MM-DD", "keys":"\u{001b}"},
+            {"wait":"Discard changes?", "keys":"\u{001b}"},
+            {"wait":"Create issue", "keys":"\u{0001}\t\u{0015}2024-02-29\u{0002}\t\r"},
+            {"wait":"Confirm create", "keys":"G"},
+            {"wait":"[End of all input]", "resize":[11,39], "keys":"s\r\tbad"},
+            {"wait":"Terminal too small", "resize":[24,100], "keys":""},
+            {"wait":"[End of all input]", "keys":"s"},
+            {"wait":"Created: A-9", "keys":"\r"},
+            {"wait":"Issue List", "keys":"q"}
+        ]),
+    );
+    let output = result["stdout"].as_str().unwrap();
+    assert!(
+        !result["snapshots"][3]
+            .as_str()
+            .unwrap()
+            .contains("PRIVATE-SUFFIX"),
+        "whole input must be masked, including its visible suffix: {}",
+        result["snapshots"][3]
+    );
+    assert!(!output.contains("test-secret") && !output.contains("\u{001b}]52"));
+    let record: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.root.join("editor-record")).unwrap())
+            .unwrap();
+    assert_eq!(record["original"], "");
+    assert_eq!(record["input"], "qhljk\n");
+    assert_eq!(record["mode"], 0o600);
+    assert_eq!(record["cooked"], true);
+    assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+    let requests = h.requests();
+    let post: Vec<_> = requests.iter().filter(|r| r["method"] == "POST").collect();
+    assert_eq!(post.len(), 1);
+    assert_eq!(post[0]["form"]["summary"], json!([title]));
+    assert_eq!(post[0]["form"]["description"], json!([body]));
+    assert_eq!(post[0]["form"]["startDate"], json!(["2024-02-29"]));
+    assert_eq!(
+        result["request_counts"][13], result["request_counts"][12],
+        "tiny input must not send"
+    );
+    let confirm_end = result["snapshots"][12].as_str().unwrap();
+    assert!(
+        confirm_end.contains("LAST BODY LINE [REDACTED]"),
+        "{confirm_end}"
+    );
+}
+
+#[test]
+fn bl_create_cancelled_candidate_load_cannot_fill_a_new_confirmed_target() {
+    let mut routes = create_routes();
+    routes["routes"]["/api/v2/projects"]["body"] = json!(
+        "[{\"id\":1,\"projectKey\":\"A\",\"name\":\"Alpha\"},{\"id\":2,\"projectKey\":\"B\",\"name\":\"Beta\"}]"
+    );
+    routes["routes"]["/api/v2/projects/1/issueTypes"]["header_delay"] = json!(0.6);
+    for (path, body) in [
+        ("issueTypes", "[{\"id\":22,\"name\":\"Beta task\"}]"),
+        ("users", "[]"),
+        ("versions", "[]"),
+    ] {
+        routes["routes"][format!("/api/v2/projects/2/{path}")] = json!({"body":body});
+    }
+    let h = Harness::new(routes);
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Alpha", "keys":"\r"},
+            {"wait":"total 0", "keys":"lc"},
+            {"wait":"Loading create candidates", "keys":"\u{001b}[27uhj\rlc"},
+            {"wait":"Project: B", "pause":0.8, "keys":"\u{0019}\r"},
+            {"wait":"Beta task", "keys":"\u{001b}[27u\u{001b}[27u"},
+            {"wait":"Issue List", "keys":"q"}
+        ]),
+    );
+    assert!(
+        result["snapshots"][4]
+            .as_str()
+            .unwrap()
+            .contains("Beta task")
+    );
+    assert!(
+        h.requests()
+            .iter()
+            .any(|r| r["path"] == "/api/v2/projects/2/issueTypes")
+    );
+}
+
+#[test]
+fn bl_new_create_interrupt_does_not_inherit_a_previous_created_outcome() {
+    let mut routes = create_routes();
+    routes["routes"]["POST /api/v2/issues"] =
+        json!({"status":201,"body":"{\"id\":9,\"issueKey\":\"A-9\"}"});
+    let h = Harness::new(routes);
+    std::fs::write(h.root.join("shell-steps.json"), json!([
+        {"wait":"Alpha", "keys":"\r"},
+        {"wait":"total 0", "keys":"lc"},
+        {"wait":"Create issue", "pause":0.3, "keys":"title\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
+        {"wait":"Confirm create", "keys":"s"},
+        {"wait":"Created; list refreshed", "keys":"\rc\u{0003}"}
+    ]).to_string()).unwrap();
+    let result = shell(&h, "scripted", &[]);
+    assert_eq!(result["code"], 130, "{result}");
+    assert_eq!(result["restored"], true, "{result}");
+    assert!(
+        result["stderr"].as_str().unwrap().contains("not_created"),
+        "{result}"
+    );
+    assert_eq!(
+        h.requests()
+            .iter()
+            .filter(|r| r["method"] == "POST")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn bl_create_refresh_swaps_history_only_after_both_reads_and_never_injects_created_issue() {
+    for failure in ["none", "count", "list"] {
+        let mut routes = create_routes();
+        routes["routes"]["POST /api/v2/issues"] =
+            json!({"status":201,"body":"{\"id\":9,\"issueKey\":\"A-9\"}"});
+        routes["routes"]["/api/v2/issues/count"] = json!({"sequence":[{"body":"{\"count\":40}"}, if failure == "count" { json!({"status":500}) } else { json!({"body":"{\"count\":1}"}) }]});
+        routes["routes"]["GET /api/v2/issues"] = json!({"sequence":[{"body":issue_items(1,20)},{"body":issue_items(21,40)}, if failure == "list" { json!({"status":503}) } else { json!({"body":issue_items(99,99)}) }]});
+        routes["routes"]["/api/v2/projects/2"] =
+            json!({"body":"{\"textFormattingRule\":\"markdown\"}"});
+        for n in [1, 21, 38, 99] {
+            let key = format!("B-{n}");
+            routes["routes"][format!("/api/v2/issues/{key}")] =
+                json!({"body":detail_issue(&key, "Preview").to_string()});
+            routes["routes"][format!("/api/v2/issues/{key}/comments")] = json!({"body":"[]"});
+        }
+        let h = Harness::new(routes);
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"Alpha", "keys":"\r"},
+                {"wait":"total 40", "keys":"ln"},
+                {"wait":"B-21", "keys":"jjjjjjjjjjjjjjjjj"},
+                {"wait":"> B-38", "keys":"c"},
+                {"wait":"Create issue", "pause":0.3, "keys":"title\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
+                {"wait":"Confirm create", "keys":"s"},
+                {"wait": if failure == "none" { "Created; list refreshed" } else { "Created; list refresh failed" }, "keys":"\r"},
+                {"wait": if failure == "none" { "> B-99" } else { "> B-38" }, "keys":"p"},
+                {"wait": if failure == "none" { "> B-99" } else { "> B-1" }, "keys":"n"},
+                {"wait": if failure == "none" { "> B-99" } else { "> B-38" }, "keys":"q"}
+            ]),
+        );
+        let snapshots = result["snapshots"].as_array().unwrap();
+        if failure != "none" {
+            let list = |i: usize| {
+                snapshots[i]
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .skip(10)
+                    .take(13)
+                    .map(|line| line.chars().take(40).collect::<String>())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                list(3),
+                list(7),
+                "{failure}: selection/page/scroll must remain"
+            );
+            assert_eq!(list(3), list(9), "{failure}: page history must remain");
+        }
+        assert_eq!(
+            result["request_counts"][8], result["request_counts"][9],
+            "history navigation must be local: {failure}"
+        );
+        let requests = h.requests();
+        let counts: Vec<_> = requests
+            .iter()
+            .filter(|r| {
+                r["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("/api/v2/issues/count")
+            })
+            .collect();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[0]["path"], counts[1]["path"]);
+        let lists: Vec<_> = requests
+            .iter()
+            .filter(|r| {
+                r["method"] == "GET" && r["path"].as_str().unwrap().starts_with("/api/v2/issues?")
+            })
+            .collect();
+        assert_eq!(
+            lists.len(),
+            if failure == "count" { 2 } else { 3 },
+            "{requests:?}"
+        );
+        if failure != "count" {
+            assert_eq!(lists[0]["path"], lists[2]["path"]);
+        }
+        assert_eq!(requests.iter().filter(|r| r["method"] == "POST").count(), 1);
+        assert!(!snapshots[7].as_str().unwrap().contains("> A-9"));
+    }
+}
+
+#[test]
+fn bl_create_requires_explicit_choices_and_compares_current_values_not_a_dirty_flag() {
+    let h = Harness::new(create_routes());
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Alpha", "keys":"\r"},
+            {"wait":"total 0", "keys":"lc"},
+            {"wait":"Create issue", "pause":0.3, "keys":"x\u{0002}\t\r"},
+            {"wait":"Issue type and priority are required", "keys":"\u{0014}\u{0015}\u{001b}"},
+            {"wait":"Issue List", "resize":[12,40], "keys":"c"},
+            {"wait":"Create issue", "pause":0.3, "keys":"\t"},
+            {"wait":"> Issue type", "keys":"\t"},
+            {"wait":"> Priority", "keys":"\t"},
+            {"wait":"> Assignee", "keys":"\t"},
+            {"wait":"> Start date", "keys":"\t"},
+            {"wait":"> Due date", "keys":"\t"},
+            {"wait":"> Milestones", "keys":"\t"},
+            {"wait":"> Body edit", "keys":"\t"},
+            {"wait":"> Review", "keys":"\t"},
+            {"wait":"> Cancel", "keys":"\u{001b}"},
+            {"wait":"Issue List", "keys":"q"}
+        ]),
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("Discard changes?")
+    );
+    for index in 6..=14 {
+        assert!(
+            result["snapshots"][index]
+                .as_str()
+                .unwrap()
+                .contains("Tab/S-Tab focus Esc cancel")
+        );
+    }
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+}
+
+#[test]
+fn bl_create_editor_failures_keep_other_inputs_and_do_not_change_the_empty_body() {
+    for mode in ["nonzero", "utf8", "unlink"] {
+        let h = Harness::new(create_routes());
+        h.config(json!({"editor":["/usr/bin/python3", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editor.py"), h.root.join("editor-record"), mode],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"Alpha", "keys":"\r"},
+                {"wait":"total 0", "keys":"lc"},
+                {"wait":"Create issue", "pause":0.3, "keys":"retained title\u{0002}\r"},
+                {"wait":"EDITOR READY", "resize":[12,40], "keys":"qjk\n"},
+                {"wait":"Create issue", "keys":"\u{0014}"},
+                {"wait":"retained title", "keys":"\u{0002}"},
+                {"wait":"Body edit: 0 chars", "keys":"\u{001b}"},
+                {"wait":"Discard changes?", "keys":"\r"},
+                {"wait":"Issue List", "keys":"q"}
+            ]),
+        );
+        let record: Value =
+            serde_json::from_str(&std::fs::read_to_string(h.root.join("editor-record")).unwrap())
+                .unwrap();
+        assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+        assert_eq!(record["cooked"], true);
+        assert_eq!(record["original"], "");
+        assert!(result["snapshots"][4].as_str().unwrap().contains("0 chars"));
+        assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+    }
+}
+
+#[test]
+fn bl_create_result_does_not_downgrade_success_headers_or_refresh_an_unreadable_created_response() {
+    for (response, outcome) in [
+        (
+            json!({"status":201,"body":"bad json"}),
+            "Created; response processing failed",
+        ),
+        (
+            json!({"status":201,"truncate":true,"body":"{}"}),
+            "Created; response processing failed",
+        ),
+        (
+            json!({"status":500,"body":"{}"}),
+            "Unknown: creation result unknown",
+        ),
+        (
+            json!({"status":400,"body":"{\"errors\":[{\"code\":7,\"message\":\"Rejected\"}]}"}),
+            "NotCreated: issue not created",
+        ),
+    ] {
+        let mut routes = create_routes();
+        routes["routes"]["POST /api/v2/issues"] = response;
+        let h = Harness::new(routes);
+        scripted(
+            &h,
+            json!([
+                {"wait":"Alpha", "keys":"\r"},
+                {"wait":"total 0", "keys":"lc"},
+                {"wait":"Create issue", "pause":0.3, "keys":"title\u{0019}\r\r\u{0010}\r\r\u{0002}\t\r"},
+                {"wait":"Confirm create", "keys":"\r", "pause":0.15},
+                {"wait":"Confirm create", "keys":"s"},
+                {"wait":outcome, "keys":"s\r"},
+                {"wait":"Issue List", "keys":"q"}
+            ]),
+        );
+        let requests = h.requests();
+        assert_eq!(requests.iter().filter(|r| r["method"] == "POST").count(), 1);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("/api/v2/issues/count"))
+                .count(),
+            1,
+            "unusable success response must not GET just to confirm certainty"
+        );
+    }
+}

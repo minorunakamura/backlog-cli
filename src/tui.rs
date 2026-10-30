@@ -1,6 +1,7 @@
 //! Read-only project, issue-list and detail browsing.
 mod browse;
 mod comment;
+mod create;
 mod detail;
 mod input;
 mod search;
@@ -45,6 +46,7 @@ enum Focus {
 
 enum EditorRequest {
     Settings(usize),
+    CreateBody,
     #[cfg(test)]
     Body,
 }
@@ -56,6 +58,11 @@ pub struct Shell {
     right_focus: Focus,
     browse: browse::Browse,
     no_color: bool,
+    create: Option<create::Create>,
+    create_generation: u64,
+    create_progress: crate::CreateProgress,
+    profile: String,
+    origin: String,
     settings_selection: Option<usize>,
     editor_request: Option<EditorRequest>,
     #[cfg(test)]
@@ -69,6 +76,11 @@ impl Shell {
             right_focus: Focus::Detail,
             browse: browse::Browse::default(),
             no_color,
+            create: None,
+            create_generation: 0,
+            create_progress: crate::CreateProgress::default(),
+            profile: "default".into(),
+            origin: String::new(),
             settings_selection: None,
             editor_request: None,
             #[cfg(test)]
@@ -103,6 +115,17 @@ impl Shell {
                 return None;
             }
             return input.key(key, area);
+        }
+        if self.create.is_some() {
+            if area.width >= 40 && area.height >= 12 {
+                self.create_event(&Event::Key(key), area);
+            } else if key.code == KeyCode::Char('q')
+                && key.modifiers.is_empty()
+                && !self.create.as_ref().unwrap().sending()
+            {
+                return Some(0);
+            }
+            return None;
         }
         if self.browse.dialog.is_some() && area.width >= 40 && area.height >= 12 {
             self.browse.error_notice = None;
@@ -210,6 +233,19 @@ impl Shell {
             };
             document.key(key.code, body_area, &self.browse.secret, text);
         }
+        if self.focus == Focus::Issue && key.code == KeyCode::Char('c') {
+            if let Some(project) = self.browse.create_target() {
+                self.create_generation += 1;
+                self.create_progress = crate::CreateProgress::default();
+                self.create = Some(create::Create::new(
+                    project,
+                    &self.profile,
+                    &self.origin,
+                    self.browse.space.as_deref().unwrap_or(""),
+                ));
+            }
+            return None;
+        }
         self.browse.key(key.code, self.focus, rows);
         match key.code {
             KeyCode::Char('h' | 'l') | KeyCode::Tab | KeyCode::BackTab => {
@@ -228,6 +264,16 @@ impl Shell {
         }
         None
     }
+    fn create_event(&mut self, event: &Event, area: Rect) {
+        match self.create.as_mut().unwrap().event(event, area) {
+            create::Action::None => {}
+            create::Action::Close => {
+                self.create = None;
+                self.set_focus(Focus::Issue);
+            }
+            create::Action::Editor => self.editor_request = Some(EditorRequest::CreateBody),
+        }
+    }
     fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
         match focus {
@@ -238,6 +284,12 @@ impl Shell {
     fn event(&mut self, event: Event, area: Rect) -> Option<u8> {
         match event {
             Event::Key(key) => self.key(key, area),
+            Event::Paste(_) | Event::Resize(..)
+                if self.create.is_some() && area.width >= 40 && area.height >= 12 =>
+            {
+                self.create_event(&event, area);
+                None
+            }
             Event::Paste(_) | Event::Resize(..)
                 if self.browse.dialog.is_some() && area.width >= 40 && area.height >= 12 =>
             {
@@ -266,6 +318,10 @@ impl Shell {
         if let Some(input) = &self.input_check {
             input.draw(frame);
             self.error_popup(frame);
+            return;
+        }
+        if let Some(create) = &self.create {
+            create.draw(frame, &[&self.browse.secret]);
             return;
         }
         let compact = area.width < 100 || area.height < 24;
@@ -562,8 +618,14 @@ impl<W: Write> Drop for TerminalGuard<W> {
 
 /// Own the terminal and state on the calling task; communication never blocks input.
 pub fn run(config: Config) -> Result<(), Error> {
-    run_on(config, io::stdout())
+    run_with_profile(config, "default")
 }
+pub fn run_with_profile(config: Config, profile: &str) -> Result<(), Error> {
+    let mut shell = Shell::new(std::env::var_os("NO_COLOR").is_some());
+    shell.profile = profile.into();
+    run_shell_on(config, io::stdout(), shell)
+}
+#[cfg(test)]
 fn run_on<W: Write>(config: Config, output: W) -> Result<(), Error> {
     run_shell_on(
         config,
@@ -584,6 +646,10 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
     };
     let config = Arc::new(config);
     let mut pending = Vec::new();
+    let mut create_load: Option<(u64, tokio::task::JoinHandle<Result<create::Loaded, Error>>)> =
+        None;
+    let mut create_write: Option<tokio::task::JoinHandle<Result<serde_json::Value, Error>>> = None;
+    shell.origin = config.origin.to_string();
     let result = catch_unwind(AssertUnwindSafe(|| runtime.block_on(async {
         // Register eagerly: raw-mode entry must never precede the SIGINT handler.
         let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
@@ -623,6 +689,21 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             if std::mem::take(&mut shell.browse.focus_issue) { shell.set_focus(Focus::Issue); }
                         } else { index += 1; }
                     }
+                    if let Some((generation, task)) = &mut create_load {
+                        if *generation != shell.create_generation || !shell.create.as_ref().is_some_and(|c| c.loading()) {
+                            task.abort(); let _ = create_load.take().unwrap().1.await;
+                        } else if task.is_finished() {
+                            let loaded = create_load.take().unwrap().1.await.map_err(|_| Error::new("terminal", "Create candidate task failed"))?;
+                            shell.create.as_mut().unwrap().loaded(loaded);
+                        }
+                    }
+                    if create_write.as_ref().is_some_and(|task| task.is_finished()) {
+                        let result = create_write.take().unwrap().await.map_err(|_| Error::new("terminal", "Create task failed"))?;
+                        if shell.create.as_mut().unwrap().finished(result) { shell.browse.refresh_after_create(); }
+                    }
+                    if let Some(result) = shell.browse.create_refresh_result.take() {
+                        shell.create.as_mut().unwrap().refreshed(result);
+                    }
                     // Bound work per tick even during a stream of paste/resize events.
                     for _ in 0..32 {
                         if !event::poll(Duration::ZERO).map_err(|_| Error::new("terminal", "Cannot poll terminal input"))? { break; }
@@ -644,6 +725,7 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                                     };
                                     editor::edit_file(&config.editor, &path, async { signal.recv().await; }).await
                                 }
+                                EditorRequest::CreateBody => editor::edit_body(&config.editor, &mut shell.create.as_mut().unwrap().body, async { signal.recv().await; }).await,
                                 #[cfg(test)]
                                 EditorRequest::Body => editor::edit_body(&config.editor, shell.input_check.as_mut().unwrap().editor_body.as_mut().unwrap(), async { signal.recv().await; }).await,
                             };
@@ -660,11 +742,13 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             shell.browse.error_notice = Some(safety::text(&match edited {
                                 Ok(()) => match target {
                                     EditorRequest::Settings(_) => "Settings editor closed; restart to apply".into(),
+                                    EditorRequest::CreateBody => "Body editor finished".into(),
                                     #[cfg(test)]
                                     EditorRequest::Body => "Body editor finished".into(),
                                 },
                                 Err(error) => error.message,
                             }, &[&config.api_key]));
+                            if let Some(create) = &mut shell.create { create.notice = shell.browse.error_notice.take().unwrap_or_default(); }
                             guard.enter()?;
                             terminal = Terminal::new(CrosstermBackend::new(&mut guard.output)).map_err(|_| Error::new("terminal", "Cannot initialize terminal"))?;
                             let size = terminal.size().map_err(|_| Error::new("terminal", "Cannot read terminal size"))?;
@@ -672,6 +756,17 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             terminal.resize(Rect::new(0, 0, size.width, size.height)).map_err(|_| Error::new("terminal", "Cannot resize terminal"))?;
                             terminal.draw(|frame| shell.draw(frame)).map_err(|_| Error::new("terminal", "Cannot draw terminal"))?;
                             break;
+                        }
+                    }
+                    if let Some(create) = &shell.create {
+                        if create.loading() && create_load.is_none() {
+                            let config = Arc::clone(&config); let project = create.project.id.clone();
+                            create_load = Some((shell.create_generation, tokio::spawn(async move { create::load(&config, &project).await })));
+                        }
+                        if create.sending() && create_write.is_none() {
+                            let submission = create.submission();
+                            let service = crate::service::Service::with_create_progress(&config, shell.create_progress.clone())?;
+                            create_write = Some(tokio::spawn(submission.run(service)));
                         }
                     }
                     shell.browse.tick();
@@ -685,6 +780,14 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
             }
         }
     }))).unwrap_or_else(|_| Err(Error::new("terminal", "TUI stopped after an internal panic")));
+    if let Some((_, task)) = create_load {
+        task.abort();
+        let _ = runtime.block_on(task);
+    }
+    if let Some(task) = create_write {
+        task.abort();
+        let _ = runtime.block_on(task);
+    }
     for (_, task) in pending {
         task.abort();
         let _ = runtime.block_on(task);
@@ -699,6 +802,21 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
             Err(error)
         }
         (Err(error), Ok(())) => Err(error),
+    };
+    let result = if shell.create.is_some() {
+        result.map_err(|mut error| {
+            let (outcome, status) = shell.create_progress.snapshot();
+            error.http_status = status;
+            let label = match outcome {
+                crate::WriteOutcome::Created => "created: issue created; do not resend",
+                crate::WriteOutcome::Unknown => "unknown: creation result unknown; do not resend",
+                _ => "not_created: issue not created",
+            };
+            error.message.push_str(&format!("; {label}"));
+            error.with_create_outcome(outcome)
+        })
+    } else {
+        result
     };
     result.map_err(|mut error| {
         error.message = safety::text(&error.message, &[&config.api_key]);

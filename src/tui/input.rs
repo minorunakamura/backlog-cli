@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::Paragraph,
 };
 use tui_input::{Input, InputRequest, backend::crossterm::EventHandler};
@@ -57,11 +57,10 @@ impl SingleLineInput {
         if screen.width < 40 || screen.height < 12 || area.is_empty() {
             return;
         }
-        // Inspect the whole original before constructing any rendering widget.
+        // Mask any display transformation: raw cursor offsets must not address a changed value.
         if self.value().chars().any(char::is_control)
-            || secrets
-                .iter()
-                .any(|secret| !secret.is_empty() && self.value().contains(secret))
+            || crate::tui_text::display(Text::from(self.value().to_owned()), secrets).to_string()
+                != self.value()
         {
             frame.render_widget(
                 Paragraph::new(crate::safety::text("[REDACTED]", secrets)),

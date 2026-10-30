@@ -39,7 +39,8 @@ fn main() -> ExitCode {
             "bl requires both stdin and stdout to be TTYs",
         ))
     } else {
-        Config::load(&args.profile).and_then(backlog_cli::tui::run)
+        Config::load(&args.profile)
+            .and_then(|config| backlog_cli::tui::run_with_profile(config, &args.profile))
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -1886,3 +1886,217 @@ fresh限定再レビュー`0f62af1e-6430-4f25-9d88-f39d6f9428f8`は原因に対�
 製品コードを変更しないテスト同期修正のため、元feature全体の2レビューや実端末受入を無条件に繰り返さず、修正影響範囲を再検証した。
 この追記後にRootが現在差分のCode Review gateを実行する。修正後GitHub Actionsは未実行で、ローカル成功をCI成功とみなさない。
 この時点でcommit／pushは未実施。失敗runや過去buildの成功・承認を修正後CIの結果として流用しない。
+
+# Issue #20: TUI課題作成
+
+状態: **ローカル実装／自動試験段階。実端末・実Backlogの必須受入はpending、Issue #20全体の受入完了ではない。**
+過去Issueの端末／実API確認を今回の成功として流用しない。
+最初のworker runは1800000msでtimeoutし、部分差分を残した。その後、同じ差分を保持してローカル検証と記録を再開した。
+実サービス接続・書込み、実credentialの参照、Issue編集、commit/pushは行っていない。
+
+## 今回のローカル対象buildと観測
+
+| 項目 | 記録 |
+| --- | --- |
+| 記録日 / 実施者 | 2026-10-30 UTC / implementation worker（自動実行のみ） |
+| 環境 | macOS 26.7.1 (25G241)、arm64。PTYはPython標準library、HTTPSは既存localhost fixture |
+| revision | HEAD `bba5c248b91a8dca35167cfefcf03e7f1c2706e1` + 未コミットの#20差分 |
+| release `bl` SHA-256 | `2c04bf537f9c0f6e2172d503808696df41f1fbb9bf7ff9810aec7e33d19c3482` |
+| release `bl-cli` SHA-256 | `7b79bd8ef4c58a64d37d1dc9ead790991cec17f67f2c45be2ff9e104ee596487` |
+| release target | `cargo build --locked --release --target aarch64-apple-darwin --bins` 終了0。両binaryとも`file`はMach-O arm64 |
+| 監査 | cargo-audit 0.22.2、`cargo audit --file Cargo.lock` 終了0。1386 advisories / 230 dependencies、警告・DB失敗なし |
+| lockfile SHA-256（監査前＝後） | `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` |
+| その他 | fmt / Clippy (`-D warnings`) / `git diff --check` 終了0。依存版・設定schema変更なし |
+
+CONTRIBUTINGの「TUI課題作成 (#20): releaseの直接ローカル検証」にあるPython blockをそのまま抽出し、
+実release `bl --profile local-check` + localhost HTTPS + PTYで実行した（cargo test経由ではない）。終了0、出力:
+
+```text
+PASS: release bl; confirm Enter=0 POST; explicit send=1 POST; raw form/default clear/milestones/editor; refresh=2 count+2 list; exit=0; termios restored
+```
+
+この実行はfake keyだけの一時HOME/XDG/cwdを使い、profile identity、確認Enterの非送信、sで単一POST、
+送信中の追加入力禁止、既定担当者解除・複数milestone・実在日付・タイトル/本文の前後空白と改行のform原文、
+editor往復、count/list再取得、終了0とtermios復元をassertで照合した。
+ログは `/tmp/issue20-release-repro.log`、抽出した同一コードは `/tmp/issue20-release-repro.py`。
+一時fixtureの設定・鍵・HTTP記録は回収済み。実端末の目視成功や実Backlog登録成功を意味しない。
+
+公開PTY/HTTPS境界の縦sliceのred/greenログは `/tmp/issue20-slice{1..6}-{red,green}.log`。
+対象はmodal文字入力と変更時だけの破棄、全項目/default/clear/独立送信、3段階の中断確度、
+全欄伏字とeditor/resize/長い確認本文、取消した候補の世代、新しいフォームへの旧created確度非継承。
+追加の回帰確認は `bl_create_` 9件成功、新フォーム中断1件成功、公開Service abort/join試験成功。
+`/tmp/issue20-create-focused.log`、`/tmp/issue20-slice6-green.log`、`/tmp/issue20-service-abort.log`を参照。
+これらに加え、現在差分での正式チェックの最終結果を下に記録する。
+最初の全対象コマンドは240秒のtool timeoutで打ち切られ、後の初回全対象終了0も追加回帰試験前の結果なので最終結果にはしない。
+
+## 操作と再開する必須受入
+
+製品のキーはREADME「TUI課題作成 (#20、実環境受入pending)」、直接ローカル再現はCONTRIBUTINGを参照。
+フォームのTab順はタイトル→種別→優先度→担当者→開始日→期限日→マイルストーン→本文編集→確認へ→取消。
+Ctrl+T/Y/P/A/Bで直接focusし、Ctrl+Bはfocusのみ。候補Enter/Space、milestoneはSpace複数選択、
+本文編集操作のEnter/Spaceでeditor、候補/本文のDelete/Backspaceでクリア。
+確認ではj/k・PgUp/PgDn・Space・g/G・Home/Endで全文を読み、Enterは非送信、独立したsだけで送る。
+送信中の編集/再送/破棄/qは無効、Ctrl+Cは確度を保持して中断する。
+
+**未実施／再開条件（成功扱いしない）:**
+
+1. Apple Silicon Macの実端末で、対象hash・端末名/版・macOS・IME・TERM・NO_COLORを記録し、
+   100x24 / 40x12 / それ未満でfocus/help、全確認本文、長い日本語・結合文字・emoji、IME候補/cursor、
+   通常文字キー、editor前後のresize/失敗/中断、値保持、秘匿、終了後の通常shell操作を目視確認する。
+   Rootが別途許可を求めて実施し、PTY成功を実端末受入の代替にしない。
+2. **別の明示的な書込み許可が必要**。接続先 `https://lazybl.backlog.com/`、使用profile、許可projectと
+   作成内容を利用者と確認した後だけ、TUIの入力→全文確認→独立送信で検証課題を作成する。
+   Backlog上の全登録値とTUIのキー/URL/結果表示を照合し、対象課題識別子と結果をこの節へ追記する。
+   許可前の接続・書込み、既存課題の無断変更・cleanupはしない。実環境の複数project確認は既存制約により対象外。
+3. Rootによる独立レビューと受入判定。実端末/実Backlog未実施のまま、Issue #20を完了・受入済みと宣言しない。
+
+## 現在差分の正式チェック結果
+
+- `cargo fmt --all -- --check`: 終了0、`/tmp/issue20-final-fmt.log`。
+- `cargo test --locked --all-targets`: 終了0、最終ログ `/tmp/issue20-final-tests.log`、exit記録 `/tmp/issue20-final-tests.exit`。
+  公開PTYの`tests/tui_process.rs`は82件成功。実端末用ignored testは自動実行していない。
+- `cargo clippy --locked --all-targets -- -D warnings`: 終了0、`/tmp/issue20-final-clippy.log`。
+- `cargo audit --file Cargo.lock`: 終了0、`/tmp/issue20-final-audit.log`。上表のlock hash前後一致。
+- `cargo build --locked --release --target aarch64-apple-darwin --bins`: 終了0、`/tmp/issue20-final-release.log`。hashは上表。
+- `git diff --check`: 終了0。staged fileなし。ローカル自動検証の結果であり、上記の未実施gateは残る。
+
+## #20 Rootの独立検証・送信前の実端末受入と書込み許可
+
+Rootが実差分（untracked `src/tui/create.rs`を含む）と接続コードを直接確認し、現在差分で正式チェックを独立実行した。
+ログは `/tmp/backlog20-root.Z1MF62/`。fmt／全対象test（313成功・0失敗・実端末用2 ignored）／Clippy／
+cargo-audit 0.22.2／release build／diff checkはすべて終了0。Rust warning・HTTPS traceback・監査警告／DB失敗なし。
+監査は1386 advisory／230依存、Cargo.lock SHA-256は監査前後とも上記`1d1474e5…`で不変。
+release両binaryのhashも上表と一致した。
+
+Rootは別工程としてCONTRIBUTINGの#20 Python blockをそのまま抽出し、
+`python3 /tmp/backlog20-root.Z1MF62/direct-release.py`でrelease製品をlocalhost HTTPS／PTYから直接実行した。
+終了0、`direct-release.log`に上記と同じPASS。確認Enterの非送信・独立sの単一POST・原文form／担当者既定値解除・
+複数milestone・editor往復・2 count＋2 list・終了0／termios復元をassertで確認した。実サービスや実設定は使用していない。
+
+利用者はこのhashのrelease `bl --profile default`を実端末で操作し、送信前手順について
+**「指定値で確認画面まで進め、各確認は問題なし」**と回答した。これは利用者の実操作／目視報告であり、Root自身の目視ではない。
+確認対象は日本語／emojiの入力位置・IME候補、focus移動、100x24／40x12／極小からの復帰、
+Ctrl+Bだけではeditorを開かず次のEnterで開くこと、editor中resize後の入力保持、全確認内容の末尾までの閲覧、
+確認Enterで送信せずEscで戻っても値を保持すること。実端末のeditor異常終了／中断や終了後shell復元は、
+この送信前回答だけで新たに確認済みとはしない（ローカル自動試験と#19の過去受入は別の根拠として保持）。
+環境は選択肢の「以前の記録と同じ」という利用者回答を引き継ぎ、Herdr 0.8.0／Ghostty 1.3.1、
+macOS 26.7.1／Apple Silicon、macOS標準IME／101 keyboard・remapなし。今回のTERM／NO_COLOR個別値は未取得で推測しない。
+
+Rootが共通設定のprofile名／spaceUrlだけを安全に読み、`default`が`https://lazybl.backlog.com/`を指すことを確認した。
+このAgentの環境に指定keyの値はなく、他の保存先から補わず利用者の認証済み端末で実受入する。
+key本体は表示・記録・チャットで要求していない。
+
+利用者は別の質問に **「上記の1件だけ作成を許可する」**と明示回答した。許可範囲は次の検証課題1件だけで、
+既存課題の変更・削除・再送・cleanupは含まない。送信前確認の回答をこの許可の代用にしていない。
+
+- profile `default`、origin `https://lazybl.backlog.com/`、project `BLCLI`
+- title `backlog-cli Issue #20 TUI作成検証 日本語👩‍💻`
+- 種別 `タスク`、優先度 `中`、担当者未設定
+- 開始日 `2026-10-30`、期限日 `2026-10-31`、マイルストーン未選択
+- 本文（2行）: `Issue #20 のTUI作成受入テストです。`／`入力・確認・独立送信を検証します。`
+- 状態／完了理由はAPIの初期値。まだsを押さず独立レビュー後の案内を待つよう依頼した。
+
+独立Correctness／Ponytail reviewerは双方が1800000msでtimeoutした。これは指摘なしではなく結果未取得であり、
+Rootが終了記録・差分不変・コード変更なしを確認し、それぞれ同じreviewerを公開resume APIで再開した。
+この時点では実Backlog作成、最終結果／登録内容、終了後shell復元、独立レビューの結論とCode Review gateはpending。
+commit／push／Issue変更は行っていない。
+
+## #20 安全表示P1の限定修正・現在buildの再検証（2026-10-30 UTC）
+
+Rootが受理したP1は、候補名 `test-\u{200b}secret`（実データの中央はU+200B）に対し、
+key `test-secret` の完全一致検査後にParagraphが幅0のgraphemeを落とし、画面でkeyを再構成する問題。
+同じ原因を共通単行入力でも再現した。上記の過去build／利用者の送信前目視結果は保持するが、
+**修正後buildの実端末再確認・独立再レビュー／Code Review gate・実Backlogの1件作成と登録値照合はpending。
+実書込みは引き続きON HOLD**。このworkerは実サービス・実credentialにアクセスしていない。
+
+- `create.rs`内の既存safe closureに既存`tui_text::display`を適用し、
+  project／loading・error／選択済み値／notice／候補popupを同じ順序で安全化。popupは可視化・最終secret検査後に水平sliceする。
+- 共通`SingleLineInput::draw`は同じ既存helperで原文全体を検査し、表示変換が必要なら欄全体を固定伏字化する。
+  原文・編集・paste処理は変えず、伏字時cursorは欄左端へ固定する。変換した表示へ未変換のcursorを置く方式は採らない。
+- 公開seamの回帰2件を追加。候補fixtureの初期化だけはRoot承認により`create.rs`のtest moduleに置き、
+  操作／観測は`Shell::key/draw`とTestBackend bufferを使用（private method／内部状態assertなし）。
+  40x12／100x24でpopup、左右scroll、選択後フォームにkeyが出ず、可視escapeが出ることを確認する。
+  `tests/tui_input.rs`では公開new/value/event/drawで幅0・control・offscreenの固定伏字、狭幅・focus、
+  固定cursorと原文編集保持を確認する。既存の日本語・結合文字・ZWJ emoji・長文scroll／cursor試験も維持する。
+
+一次ログ／抽出script／終了コードは `/tmp/issue20-security/`。実装変更前の各REDはともに終了101で、
+TestBackend bufferに`test-secret`が出ることを確認した（`create-red.log`／`input-red.log`）。
+候補の最小修正後に1件GREEN、次に単行入力のRED→最小修正→全9件GREENの順で実行した。
+
+| コマンド／観測 | 終了コード／結果（同directory内のlog） |
+| --- | --- |
+| `cargo test --locked --lib create_candidate_popup_and_selected_form_do_not_reconstruct_secrets` | 0、1成功（`focused-create.log`） |
+| `cargo test --locked --test tui_input` | 0、9成功（`focused-input.log`） |
+| `cargo fmt --all -- --check` | 0（`fmt.log`） |
+| `cargo test --locked --all-targets` | 0、315成功・0失敗・既存実端末専用2 ignored（`all-targets.log`）、warning／HTTPS tracebackなし |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0（`clippy.log`） |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0（`release.log`） |
+| `cargo audit --file Cargo.lock` | 0、1386 advisory／230依存、警告なし（`audit.log`） |
+| `python3 /tmp/issue20-security/direct-release.py` | 0、CONTRIBUTINGの#20 Python blockをそのまま抽出し、現在releaseのlocalhost HTTPS／PTY直接検証が同じPASS（`direct-release.log`） |
+| `python3 /tmp/issue20-security/direct-zero-width.py` | 0、同じlocalhost手順の候補／既定種別名とtitleだけにU+200Bを入れた追加self-check（`direct-zero-width.log`） |
+
+追加self-checkも確認Enter=0 POST、独立送信=1 POST、原文title（U+200Bと前後spaceを含む）・種別ID等のform完全一致、
+既定担当者解除・複数milestone・editor往復・2 count＋2 list・終了0／termios復元・stdoutにkeyがないことをassertした。
+scriptは`/tmp`のみで製品／fixture／依存／Planに追加していない。実サービスのPOSTではない。
+
+現在release SHA-256（古いhashを上書きしない）:
+
+- `bl`: `4fe1f3fa98b93afa071cdc494d82e3383ed394b27ef83b52c1440b0de4e633cf`
+- `bl-cli`: `0896c75947cfb2dc9ec0140544628d76051d73e08c06420a03c4302f17e356ed`
+
+Cargo.lock SHA-256は監査前後とも上記`1d1474e5…`で不変。既存#20差分とRoot文書を保持し、
+今回の変更は`src/tui/create.rs`／`src/tui/input.rs`／`tests/tui_input.rs`／本追記のみ。
+commit／stash／push／Issue変更なし、staged fileなし。現在buildの必須受入をローカル自動成功で代用しない。
+
+## #20 修正後のRoot検証・独立レビュー・実Backlog受入完了
+
+RootはP1修正後の実差分と既存`tui_text::display`／入力部品／Ratatuiの幅0文字処理を直接確認した。
+正式チェックを現在差分で再実行し、fmt／全対象test（315成功・0失敗・既存実端末専用2 ignored）／Clippy／
+cargo-audit 0.22.2／release build／diff checkはすべて終了0。Rootログは `/tmp/backlog20-root-fixed.NeeIxj/`。
+Rust warning・HTTPS traceback・監査警告／DB取得失敗なし。1386 advisory／230依存を監査し、lockfileは前後不変。
+release hashは直前の修正後hash（bl `4fe1f3fa…e633cf`、bl-cli `0896c759…356ed`）と一致した。
+
+Rootは別工程として、CONTRIBUTINGからそのまま抽出した `direct-release.py` と、内容を直接確認した
+`/tmp/issue20-security/direct-zero-width.py` を実行し、両方終了0／PASSを確認した。
+通常経路とU+200B入り候補／titleについて、実releaseからの確認Enter=0 POST・独立送信=1 POST・原文form保持・
+editor／一覧再取得・終了0／termios復元・fake key非表示を確認した。これはlocalhostのみの検証である。
+
+独立したfresh Correctness Reviewは具体的な指摘なし。
+fresh Ponytail ReviewのP1（候補／選択値のゼロ幅文字除去後のsecret再構成）をRootが採用し、
+同じ原因の新しいタイトル入力経路も含めて最小修正した。不採用の指摘はない。
+修正後、別のfresh限定再レビュー `391e61ef-de94-4610-a068-5733760fcfb9` がP1解消・影響範囲の追加指摘なしを確認した。
+全体の2レビューを無条件に繰り返さず、表示／入力／原文／cursorと回帰テストの修正影響範囲を再確認した。
+元の2レビューはtimeout後の同一reviewer再開で実結果を取得し、失敗を指摘なしと扱っていない。
+Correctness実結果 `2fd8c307-6021-4d03-8010-303a2a7f7c4e`、Ponytail実結果 `3551b87a-a7ae-4bd7-bcf0-8a31a698d065`。
+Reviewerはread-onlyで、自身による試験再実行／実端末操作／実サービスアクセスではなくコードとRootログを確認した。
+
+Rootは旧buildから送信しないよう依頼し、修正後hashの製品を起動し直す自己完結の手順を提示した。
+利用者は許可済みの同じ入力について、送信前にIME／cursor、focus、100x24／40x12／極小復帰、editor中resize後の
+値保持、変更時の破棄確認と編集復帰、全入力の確認、確認Enter非送信／Esc後の値保持を再確認してから、
+独立したsを一度だけ押す手順を実施した。既存課題の変更・削除・再送・cleanupは依頼していない。
+
+利用者の今回の明示回答:
+
+- 課題URL: **https://lazybl.backlog.com/view/BLCLI-2**
+- TUIの作成・一覧更新結果: **OK**
+- Backlogの登録値: **全項目一致**
+- 修正後buildの送信前確認: **問題なし**
+- 終了後のshell: **正常**
+- 端末環境: **前回と同じ**
+
+この回答は修正後buildの実操作・Web登録内容の照合についての利用者報告として受け入れ、Rootが実APIを独立読取りしたとはしない。
+対象はprofile `default`／origin `https://lazybl.backlog.com/`／project `BLCLI`、課題キー`BLCLI-2`。
+登録内容は上記の許可済みtitle／本文2行、種別タスク・優先度中・担当者なし、開始日2026-10-30・期限日2026-10-31・
+マイルストーンなし（状態／完了理由はAPI初期値）との全項目一致である。
+実端末環境は利用者の「前回と同じ」という回答に基づきHerdr 0.8.0／Ghostty 1.3.1、macOS 26.7.1／Apple Silicon、
+macOS標準IME／101 keyboard・remapなしを引き継ぐ。今回のTERM／NO_COLOR個別値は未取得で推測しない。
+新しいbuildの受入を過去buildの結果で代用せず、過去のpending／timeout／P1履歴も保持した。
+
+Issue #20の実端末・実Backlog受入は上記回答で完了。障害／中断／応答逆転等はローカルHTTPS／PTY試験による根拠と区別する。
+実サービスへの意図的な障害・過大負荷・複数project検証は行っていない。GitHub Actionsは未実行。
+実端末でのeditor異常終了／中断の追加注入は今回の正常作成手順には含めず、共通editorの#19受入と今回の自動試験を維持する。
+SIGKILL／端末切断後の復元やeditor独自backupは従来どおり保証対象外。
+
+この記録とREADME／CONTRIBUTINGの未実施表示を整合した後、Rootが最終Code Review gateを呼ぶ。
+その結果がskippedまたは現在差分への明示ApproveとなるまでREADY_FOR_MERGEとはしない。
+commit／push／merge／release公開／deploy／GitHub Issue変更は行っていない。
