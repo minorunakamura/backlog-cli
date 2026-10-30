@@ -301,6 +301,8 @@ pub(super) struct Browse {
     pub(super) focus_issue: bool,
     create_refresh: bool,
     pub(super) create_refresh_result: Option<Result<(), String>>,
+    update_comments: Option<(u64, String)>,
+    pub(super) update_comments_result: Option<Result<(), String>>,
     generation: u64,
     projects_busy: Option<u64>,
     issues_busy: Option<u64>,
@@ -393,6 +395,24 @@ impl Browse {
                 }
                 if response.target == Target::Comments {
                     self.comment.document.status = "Comment preview failed";
+                    if self
+                        .update_comments
+                        .as_ref()
+                        .is_some_and(|(generation, key)| {
+                            *generation == response.generation
+                                && self.comment.document.key.as_ref() == Some(key)
+                        })
+                    {
+                        self.update_comments = None;
+                        let status = error
+                            .http_status
+                            .map_or_else(String::new, |status| format!("HTTP {status}: "));
+                        self.update_comments_result = Some(Err(safety::text(
+                            &format!("{status}{}", error.message),
+                            &[&self.secret],
+                        )));
+                        return Ok(());
+                    }
                 }
                 self.error_notice = Some(notice);
                 return Ok(());
@@ -403,6 +423,16 @@ impl Browse {
             Data::Comments(key, direction, items) => {
                 if self.comment.document.key.as_ref() == Some(&key) {
                     self.comment.replace(items, direction);
+                    if self
+                        .update_comments
+                        .as_ref()
+                        .is_some_and(|(generation, target)| {
+                            *generation == response.generation && target == &key
+                        })
+                    {
+                        self.update_comments = None;
+                        self.update_comments_result = Some(Ok(()));
+                    }
                 }
             }
             Data::Candidates(items) => {
@@ -527,6 +557,18 @@ impl Browse {
             self.create_refresh_result = Some(Err("No current search to refresh".into()));
         }
     }
+    pub(super) fn refresh_comments_after_update(&mut self, key: String) {
+        self.comment.document.due = None;
+        self.request(
+            Target::Comments,
+            Operation::Comments {
+                key: key.clone(),
+                direction: Direction::Latest,
+                boundary: None,
+            },
+        );
+        self.update_comments = Some((self.generation, key));
+    }
     pub(super) fn create_target(&mut self) -> Option<Project> {
         if self.search.as_ref().is_some_and(|s| s.project.is_none()) {
             self.error_notice = Some("Select a concrete project: h/l or Tab -> Project, then Enter for normal search / create target".into());
@@ -538,10 +580,21 @@ impl Browse {
         self.browser_busy = None;
         Some(project)
     }
+    pub(super) fn update_target(&mut self) -> Option<String> {
+        let key = self.detail.key.clone()?;
+        self.issues_busy = None;
+        self.cancel_previews();
+        self.browser_busy = None;
+        Some(key)
+    }
     pub(super) fn open_browser(&mut self) {
         if let Some(key) = self.selected_key() {
             self.request(Target::Browser, Operation::Browser { key });
         }
+    }
+    pub(super) fn invalidate_detail(&mut self) {
+        self.detail_busy = None;
+        self.detail.due = None;
     }
     pub(super) fn cancel_previews(&mut self) {
         if self.comments_busy.is_some() || self.comment.document.due.is_some() {
@@ -558,7 +611,9 @@ impl Browse {
         self.detail.due = None;
     }
     pub(super) fn comment_status(&self) -> String {
-        let status = if self.comments_busy.is_some() {
+        let status = if self.update_comments.is_some() {
+            "Loading..."
+        } else if self.comments_busy.is_some() {
             "Loading... Esc: cancel"
         } else {
             ""

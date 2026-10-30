@@ -2100,3 +2100,426 @@ SIGKILL／端末切断後の復元やeditor独自backupは従来どおり保証�
 この記録とREADME／CONTRIBUTINGの未実施表示を整合した後、Rootが最終Code Review gateを呼ぶ。
 その結果がskippedまたは現在差分への明示ApproveとなるまでREADY_FOR_MERGEとはしない。
 commit／push／merge／release公開／deploy／GitHub Issue変更は行っていない。
+
+## Issue #21: TUI課題更新
+
+状態: **Workerのローカル実装・自動検証。実端末／実Backlog必須受入は未実施（pending）**。
+過去の#20以前の確認はこの更新フォームの受入へ流用しません。開始HEAD `3d9523c` + #21未コミット差分。
+実施日: 2026-10-30 UTC。Workerは実サービス・利用者config・secretを参照していません。
+Rootによる独立Review／Code Review gateも別工程であり、この記録で完了扱いにしません。
+
+### 実装と自動検証の境界
+
+- Detailのeで最新課題→最新projectIdの候補・記法を取得。createの既定値を流用せず全更新値を初期表示します。
+- createフォームの入力／phase／候補／確認s／editor／安全表示を共用します。Serviceの既存差分・検証を
+  crate内のopaqueなprepare/sendへ分離し、確認内容と単一PATCHを一致させます。CLI/commentの部分指定契約は維持します。
+- 正常成功objectだけをDetailへ交換。古いDetail取得を失効させます。一覧の旧タイトル／条件／ページ履歴／選択／scrollと
+  Commentの選択／scrollは保持し、成功確認や一覧／Comment更新のGETは追加しません。
+- API共有確度は対象operationを一致させて更新にも用い、既存CreateProgress公開契約を維持します。
+  HTTP futureを直接所有し、TUI終了はabort+join→snapshot→通知／端末復元です。
+
+TDDは承認済みの実bl+PTY入力→描画／HTTPS境界を使用しました。private関数の形状固定試験は追加していません。
+最初の試験で画面外本文をwaitしてしまった失敗は機能REDの根拠にしません。修正した試験を開始HEADの隔離buildへ当て、
+e後に最新フォームへ進まないRED（exit101）を再確認しました（`/tmp/issue21-baseline-red.log`）。
+同じ現行製品試験はGREEN（`/tmp/issue21-green1.log`）。必要候補clearと同ID候補名違いのRED→GREENも実測しました
+（`/tmp/issue21-red2.log`→`green2.log`、`red3.log`→`green3.log`）。
+
+更新PTY試験は全項目／解除／ID0／集合同値／無変更／確認だけ非送信／一回送信／一覧・Comment保持／世代取消／
+入力・editor失敗・resize・極小・キー衝突／secret・制御・zero-width／中断3段階と200後失敗を含みます。
+個別実測ログ: `/tmp/issue21-allfields.log`, `clears.log`, `interrupt.log`, `failures.log`, `generation.log`,
+`validation.log`, `safety.log`, `editor.log`, `preservation.log`, `fixture.log`（すべて同じ`issue21-`接頭辞）。
+既存create試験で検出したloading文言回帰は修正し、`/tmp/issue21-create-regression.log`で再確認しました。
+
+正式全対象testの初回はtoolの240秒timeoutでtui_process開始後に途切れ、完走の成功として扱っていません。
+正式チェックの完走・release直接検証結果は下の追記へ記録します。
+
+### Root／利用者による必須の実端末受入（未実施）
+
+対象buildのSHA-256、端末名／版、macOS、IME、TERM／NO_COLORを記録してください。最新releaseを使い、
+CONTRIBUTING「TUI課題更新 (#21): releaseの直接ローカル検証」の一時localhost設定／fixtureでまず目視します。
+PTY成功は実IME・字幅・終了後の通常shell確認の代替ではありません。
+
+1. Detail e→最新値（タイトル・本文・種別・優先度・担当者・状態・完了理由・開始／期限日・複数milestone）。
+   create既定値と異なる値も現値のままであることを確認します。
+2. 100x24／40x12／それ未満で全欄へのfocus・候補popup・左右全文・日本語／結合文字／emoji・IME候補と確定、
+   q/h/l/j/k/H/L等の文字入力、秘密値／制御／zero-widthの安全表示を確認します。極小では編集・確認・送信しません。
+3. タイトル／本文／各候補／日付の変更と明示解除、完了理由ID0、milestone複数・同じ集合・未変更を確認します。
+   変更と解除だけの確認でEnter非送信→独立s一回、確認Esc→編集、変更ありだけの破棄確認を確認します。
+4. editor正常・非0／起動失敗／不正UTF-8／読取失敗、editor中resizeと追加キーなしの再描画、本文原文／他欄／focus保持を確認します。
+5. 送信中の編集・破棄・再送禁止。結果表示とCtrl+C／SIGINT、not_updated／unknown／updatedと再送誘導なし、
+   終了後の入力・削除・cursor・termios／属性復元を目視します。
+6. 正常成功Detail反映後の「更新済み・コメント表示更新中」→完了を待ち、Rなしで最新Comment／本文なし変更履歴と本文先頭へ移ることを確認します。
+   待機中のEnter／Esc・s／e／H／L・極小qで閉鎖／再送／背面focus変更せず、結果scroll・resize・Ctrl+C／SIGINT中断130と端末復元が可能なことを確認します。
+   表示更新失敗時は更新済みDetailと旧Commentページ・選択／scroll（空／未取得含む）保持、updated／旧表示保持・再送不要・Comment R案内を確認します。
+   一覧旧タイトル・全行・条件・total・ページ履歴・選択／scrollは維持し、一覧R後の新表示と区別します。
+
+### Rootによる実Backlog段階的受入（未実施）
+
+接続先はPlanの `https://lazybl.backlog.com/`。使用profileのoriginを確認し、**別途の明示許可**がある検証用課題・
+変更／解除内容だけを使います。対象／内容／復元が未許可なら書き込みません。Workerは実接続していません。
+
+- 実施前に対象課題の識別子と変更する項目／解除、保持する項目を記録し、TUI Detail eから開始します。
+- 現値初期表示→変更だけの確認→独立s一回。Backlog上の変更／解除と、未指定項目の保持、TUI結果とDetailを照合します。
+- RなしでComment最新履歴が表示されることをWeb等と照合します。今回の更新履歴IDを探索する動作ではありません。
+- 一覧タイトル・全行・検索条件／total／ページ履歴／選択／scrollは保持され、一覧Rで初めて取得されることを確認します。
+- 記録にAPI key・機密本文・raw responseを入れず、対象build・手順・結果・未確認事項を追記します。
+  許可／認証／権限／対象不足や失敗はpending／未完了として報告し、#24へ先送りして成功扱いにしません。
+
+### Workerローカル完走記録（2026-10-30 UTC）
+
+| コマンド／確認 | 実終了コード | 実測／ログ |
+| --- | --- | --- |
+| `cargo fmt --all -- --check` | 0 | `/tmp/issue21-fmt.log`、警告なし |
+| `cargo test --locked --all-targets`（最初から再実行） | 0 | 328 passed／0 failed／2 ignored（実端末用）。`/tmp/issue21-all-tests.log` と `.exit` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0 | `/tmp/issue21-clippy.log` と `.exit`、警告なし |
+| `cargo audit --file Cargo.lock` | 0 | cargo-audit 0.22.2、1386 advisories／230依存、警告／脆弱性出力なし。DB取得・registry更新失敗なし。`/tmp/issue21-audit.log` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 | `/tmp/issue21-build.log` と `.exit` |
+| CONTRIBUTINGの#21 Python blockを抽出し、`python3 /tmp/issue21-direct.py`（release製品の直接起動） | 0 | `/tmp/issue21-direct.log`、raw結果 `/tmp/issue21-direct-result.json` |
+| `git diff --check` | 0 | `/tmp/issue21-diff-check.log` |
+
+監査前後の`Cargo.lock` SHA-256はいずれも
+`1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16`。manifest／lock／設定schema／Plan／design差分なし。
+Clippyの途中のcollapsible-if指摘は修正後に正式コマンドを再実行し、上記は最終差分の結果です。
+
+直接release検証は10 snapshots、最新値、確認Enter時HTTP増加なし、独立sでPATCH一回、変更title／本文・担当者解除／
+resolution0／milestone2件の正確なform、**17 GET + 1 PATCH**、追加の一覧／Comment／成功確認GETなし、
+更新Detailと旧一覧title・Comment併存、q=0／空stderr／termios全項目復元（既存のmacOS PENDIN除外のみ）をassertしました。
+これはcargo testと別に製品を直接起動したローカルHTTPS/PTY検証で、実Backlogや実端末／IMEの成功ではありません。
+RootはCONTRIBUTINGの自己完結手順を同じrelease buildで再実行できます。
+
+対象release SHA-256:
+- `bl`: `957da0e959990bbf591bcf4ba006134f1c3441ac49f34557726a2ba2e141010e`
+- `bl-cli`: `479eea31b5c34676c2d01008746fc88b51dce681cef3c513779e9a6f2eb5d515`
+
+**未確認**: 実端末／実IMEと実Backlogの必須受入、Rootの2独立レビュー／Code Review gate。ローカル成功をこれらの完了扱いにしません。
+
+### #21 accepted review findings 3件の修正・再検証（2026-10-30 UTC）
+
+上記Worker完走記録とRootの `/tmp/backlog21-root.MvmnKr/` は**修正前の履歴**です。
+今回の開始HEADも `3d9523c4e01325fb30398d0923f29bb4fe92dada` で、継承した未コミット差分をすべて保持しました。
+修正は承認された3原因だけです。Plan／design／Cargo／CLIの部分object成功契約／設定schemaは変更せず、
+実サービス・利用者config・secret参照、依存追加、commit／stage／stash／push等は行っていません。
+
+| accepted finding | 最小修正と公開PTY/HTTPSでのRED → GREEN |
+| --- | --- |
+| 更新前の一覧・Comment要求が背面の対象を変更 | 更新対象取得時に既存busy失効と `cancel_previews` を使用し、一覧／Detail／Commentの未完了要求を無効化。成功交換は固定対象と現在Detail key一致時だけ。`bl_update_invalidates_pending_` は遅延pageの後着でB-1選択待機timeout（101）→ 遅延page／一覧R／Comment G・Rの4ケースが0。1PATCH後もB-1・旧一覧・Comment保持、pで追加通信なし、Detail RもB-1だけを取得 |
+| 部分成功objectのDetail描画panic | `issue_view` の既存必要field検証をcrate内で最小共通化し、TUIの表示反映前にも使用。共通send／CLIのid/keyだけの成功契約は維持。`bl_update_incomplete_or_mistyped_` はid/keyだけの200で製品exit1（101）→ id/keyのみ、13 fieldそれぞれの欠落／型不正、milestone.name不正の計28ケースが0。旧Detail保持、updated応答処理失敗・Do not resend、1PATCH・追加GETなし・q正常終了 |
+| 最新GET／成功PATCHが別keyでも採用 | GET直後・候補取得前に固定要求key一致を確認。PATCHも表示検証時に固定key一致を確認し、不一致はupdatedの応答処理失敗。`bl_update_latest_get_for_another_key_` と `bl_update_patch_success_for_another_key_` は完全なB-2 objectを返し各待機timeout（101）→ 各0。GET不一致は候補／フォーム初期化／PATCHなし、PATCH不一致は旧Detail・updated保持、再送／追加GETなし |
+
+新規4テストは承認済みの実bl入力／PTY→描画＋HTTPS送受信のみを観測し、private形状固定試験は追加していません。
+REDログは `/tmp/backlog21-fixes/red1.log`, `red2.log`, `red3-get.log`, `red3-patch.log`、各`.exit`は101。
+対応GREENは同じ接頭辞の `green1`, `green2`, `green3-get`, `green3-patch`（各`.exit`は0）です。
+途中の試験側修正も区別します。最初のgreen1試行はComment記法用GETを数えず期待3／実4で101、期待を既存通信どおり4へ訂正。
+最初のgreen3-get試行はLoadFailedのEnterで既存の明示再試行を発生させ、GET期待2／実3で101でした。
+送信しないsだけにして余分な再試行を除きました。これらを製品不具合や最終成功と混同していません。
+
+| 変更後に順次実行したコマンド | 終了コード／観測（ログ `/tmp/backlog21-fixes/`） |
+| --- | --- |
+| `cargo test --locked --test tui_process bl_update_` | 0／17成功、`focused-update.log` |
+| `cargo test --locked --test tui_process create_` | 0／10成功（前回作成確度の非継承を含む）、`focused-create.log` |
+| `cargo test --locked --test service issue_update_` | 0／2成功、`service-update.log`。部分object成功を維持 |
+| `cargo test --locked --test issue_update --test comment_add` | 0／各14成功、`cli-update-comment.log` |
+| `cargo fmt --all -- --check` | 0／差分なし、`fmt.log` |
+| `cargo test --locked --all-targets` | 0／**332成功・0失敗・実端末用2 ignored**、22 suite。`all-targets.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0／警告なし、`clippy.log` |
+| `cargo audit --version` | 0／cargo-audit 0.22.2、`audit-version.log` |
+| `shasum -a 256 Cargo.lock`（監査前／後） | 各0／同一hash、`lock-before.log`／`lock-after.log` |
+| `cargo audit --file Cargo.lock` | 0／1386 advisories・230依存、通常DB取得・index更新成功、警告／脆弱性／照会失敗なし、`audit.log` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0／両binary成功、`build.log` |
+| CONTRIBUTING #21の既存Python blockをそのまま抽出し `python3 /tmp/backlog21-fixes/direct-release.py` | 0／**変更後release製品を直接起動**、`direct-release.log`／`direct-result.json` |
+| `git diff --check`／stagedなし | 0／空出力。既存未コミット差分・untracked fixture保持 |
+
+各コマンドの終了コードは `exits.log` と各`.exit`。focused／CLI／全対象test・clippy・buildのRust warning、
+fixture traceback、実行失敗はありません。監査前後のlock hashは
+`1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で不変です。
+
+直接release検証はcargo testとは別工程で、10 snapshots、最新値、確認Enterで通信増加なし、独立sの1PATCH、
+正確な変更／解除・resolution0・milestone form、17 GET + 1 PATCH、追加の一覧／Comment／成功確認GETなし、
+更新Detail＋旧一覧title＋Comment保持、exit0・空stderr・termios復元をassertしました。fixture server stderrも空です。
+今回の変更後release SHA-256（`release-hashes.log`）:
+
+- `bl`: `6281c47ec4788054ddfc6a4ed8f2b37c842c42287ea61b85c70dd948a59121c3`
+- `bl-cli`: `7ba53d9ef675b1bb93f7d601c6e585dc5fac8ad7ea16714eed6c93662ba1c89a`
+
+一時ログは永続成果物ではありません。新規失敗条件は上の公開PTYテスト、通常release手順はCONTRIBUTINGで再実行可能です。
+**実端末／実IME・実Backlog必須受入は引き続き未実施（pending）。Rootの独立review／Code Review gateも別工程です。**
+ローカル成功をIssue完了・READY_FOR_MERGE・merge承認として扱いません。実サービス接続／書込みやGit変更は行っていません。
+
+### #21 Root検証で判明した既存create試験の非同期カウント修正
+
+Rootの `/tmp/backlog21-root-fixed.Xe6rA2/test.log` は `tui_process` が98成功／1失敗。
+`bl_create_refresh_swaps_history_only_after_both_reads_and_never_injects_created_issue` のlist失敗ケースで、
+`request_counts[8]=12`／`[9]=14` により「history navigation must be local」が失敗しました。
+同じassertは既存HEADにもあり、全要求カウントにページ再訪時の非同期preview＋project GET 2件が混入します。
+一覧履歴のローカル性を検証するため、この比較だけを既存fixtureの `browse_request_counts`（Detail／Comment／個別project取得を除外）へ変更。
+count／listのHTTP回数・同一path、POST一回、作成課題非注入、選択／page／scroll保持のassertは変更していません。
+製品コード・依存・Plan・他テスト、上記の過去成功履歴は変更していません。
+
+| 限定再検証 | 終了コード／結果（ログ `/tmp/backlog21-count-fix.TiRmkF/`） |
+| --- | --- |
+| `cargo test --locked --test tui_process bl_create_refresh_swaps_history_only_after_both_reads_and_never_injects_created_issue -- --exact` ×3 | 各0／各1成功、`exact-1.log`〜`exact-3.log` |
+| `cargo test --locked --test tui_process`（timeout 600秒） | 0／99成功・0失敗、既存create系と`bl_update_`全件を含む。44.59秒、`tui-process.log` |
+| `cargo fmt --all -- --check`／`git diff --check` | 各0／出力なし、`fmt.log`／`diff-check.log` |
+
+各終了値は同名の`.exit`に記録。testの警告・fixture tracebackなし。ローカルHTTPS／fake keyのみで実サービス・secret参照・Git書込みなし。
+全対象test／Clippy／audit／release build／実端末・実IMEは今回再実行せず、Rootの全体検証と独立review gateは別工程です。
+
+### #21 修正後のRoot独立検証・限定再レビュー（2026-10-30 UTC）
+
+RootはP1修正と既存create試験のカウント比較1行を直接確認しました。採用したP1は、更新開始前の未完了一覧／Commentによる対象ずれ、不完全な成功objectの描画panic、最新GET／PATCHの別key応答採用の3件です。いずれも既存の通信失効・表示用検証と対象key照合の最小修正で対応し、不採用の指摘はありません。CLIの部分object成功契約は維持しました。
+
+初回の独立Correctness／Ponytailレビューが同じ3原因を指摘し、fresh限定再レビュー `5677285a-cb47-4d8a-9652-29b792f3fac5` で3件解消・影響範囲の追加指摘なしを確認しました。全体2レビューの無条件再実行はしていません。同Reviewerはカウント比較修正も確認し、Rootの全対象test再実行を残条件としていました。
+
+| Rootが実行した検証 | 終了コード／結果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets`（カウント比較修正後） | 0／332成功、0失敗、既存manual専用2件ignored。警告／fixture tracebackなし |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0／警告なし |
+| `cargo audit --file Cargo.lock`（P1修正後） | 0／cargo-audit 0.22.2、230依存・1386 advisory、警告／DB・registry取得失敗なし。lockfile SHA-256は前後とも上記 `1d1474e5…` と一致 |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0／P1修正後。後続変更はテストassert1行と受入記録のみ |
+| CONTRIBUTING #21のPython blockを抽出したrelease製品の直接HTTPS／PTY検証 | 0／17 GET＋1 PATCH、確認Enter非送信、変更・解除form一致、旧一覧／Comment保持、exit 0・空stderr・端末復元 |
+| `git diff --check` | 0 |
+
+最終Rootログは `/tmp/backlog21-root-fixed.Xe6rA2/` の `final-exits.log`／`final-{fmt,test,clippy,diff}.log`、P1修正後のaudit／build／directログです。同ディレクトリの旧 `test.log` の101は失敗履歴として保持し、最終成功へ書き換えていません。最後のshell wrapperは異常語句検索の無一致によって終了1でしたが、各正式チェックの終了コードは直後に個別取得して上表の0を確認しています。
+
+対象releaseはP1修正後の `bl` SHA-256 `6281c47ec4788054ddfc6a4ed8f2b37c842c42287ea61b85c70dd948a59121c3`、`bl-cli` は `7ba53d9ef675b1bb93f7d601c6e585dc5fac8ad7ea16714eed6c93662ba1c89a` です。
+
+実Backlog受入について利用者は、origin `https://lazybl.backlog.com/` のBLCLI-2でタイトル末尾へ ` [#21更新検証]` を追加し期限日を解除した後、この2項目だけ検証開始時の値へ復元することを明示許可しました。Rootはdefault profileのorigin一致を確認しましたが、Agent環境にAPI keyがないため、別の認証情報源を探索せず利用者の認証済み端末での操作を依頼します。現時点では実端末／実IME・実Backlog受入は未実施です。Code Review gateも未実施で、Issue #21完了・READY_FOR_MERGEとは判定していません。
+
+### #21 実端末フィードバック：単行入力の編集キー横取り修正（2026-10-30 UTC）
+
+#### 利用者からの修正前buildの報告（今回の修正後buildへ流用しない）
+
+- 利用者が確認した修正前 `bl` SHA-256 は `6281c47ec4788054ddfc6a4ed8f2b37c842c42287ea61b85c70dd948a59121c3`（hash一致）。
+  タイトル内Ctrl+Aが行頭移動でなくAssigneeへ移る不具合を報告した。
+- 許可済みBLCLI-2のタイトル末尾 ` [#21更新検証]` 追加／期限日解除、およびその2項目だけの復元を完了し、
+  Webでも元値へ戻ったことを確認したという回答を得た。Workerによる実Backlog接続／書込みではない。
+- CommentがRまで変わらないのは正式仕様どおり。Issue Listのタイトル末尾は見えず、手動での旧タイトル保持確認は未完了
+  （自動試験による保持確認とは区別）。ほかIME／resize／editor／終了の個別成功は未報告であり、成功と推測しない。
+
+#### 限定修正・公開境界でのRED→GREEN
+
+正式Planの「通常文字や編集キーをグローバル操作に横取りしない」へ合わせるbug fixのみ。
+`src/tui/create.rs` の作成／更新共用eventで、Formかつpopupなしのタイトル／開始日／期限日に限り、
+インストール済み `tui-input 0.15.5` の公開 `backend::crossterm::to_input_request` が認識する編集を先に既存入力部品へ渡す。
+公開APIの実ソースも確認した。値が変わらない空欄／端でも認識したeventを消費し、focus shortcutへ漏らさない。
+キー一覧を複製せず、`src/tui/input.rs`／依存／Plan／service/APIは変更していない。
+入力欄外のCtrl+Y/A/B、編集キーでないCtrl+T/P、Tab/Shift+Tab、Enter/Esc、popup、phase、Ctrl+C、極小保護は維持する。
+
+新規 `bl_create_and_update_single_line_editing_precedes_form_shortcuts_even_when_edit_is_noop` は、
+実blのPTY入力→描画＋localhost HTTPSを公開seamとして作成・更新の両方を通す。
+空欄のCtrl+A/B/Y、行頭のCtrl+A/Bのno-op後も入力欄に留まり、先頭挿入／1文字戻り／Ctrl+K削除→Ctrl+Y貼戻しを確認。
+日本語・結合文字・ZWJ emojiの貼付けとq/h/l/j/k/H/Lの通常文字、日付2欄の同じ編集、欄外の既存shortcut、
+確認Enter非送信→独立sの1回送信を描画と原文formで照合する（実IME未確定文字の試験ではない）。
+既存の安全表示原文保持・busy保護・中断・対象固定・成功field検証・別key拒否も全対象試験で維持した。
+旧キー横取りに依存した既存試験／fixture steps／CONTRIBUTING直接手順は、先にTab等で欄外へ出る操作へ整合。
+開始日からは期限日も入力欄なので、shortcut前にTabを2回使う。
+
+| 検証 | exit／結果 | ログ |
+|---|---|---|
+| `cargo test --locked --test tui_process bl_create_and_update_single_line_editing -- --nocapture` 修正前 | **101 RED**、空欄Ctrl+A/B/Yの後にIssue typeへ移り、タイトル編集結果を描画できずtimeout | `/tmp/issue21-keys/red.log` |
+| 同試験、最小guard追加後 | **0 GREEN**、作成／更新両経路成功 | `/tmp/issue21-keys/green.log` |
+| 既存create／updateの部分試験（手順移行途中） | 各101、開始日からTab1回では期限日に留まりCtrl+Bが編集になる旧shortcut手順が2件残存。Tab2回へ修正し、各個別試験0、下記全対象0 | `create.log`／`update.log`、`create-repaired.log`／`update-repaired.log`（同一tmp directory） |
+| `cargo fmt --all -- --check` | 0 | `/tmp/issue21-keys/fmt.log` |
+| `cargo test --locked --all-targets`（timeout 900秒） | 0、**333 passed／0 failed／2 ignored**。ignoredは実端末／IMEと本文editorの既存手動専用試験。tui_processは100件成功 | `/tmp/issue21-keys/test-all.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし | `/tmp/issue21-keys/clippy.log` |
+| `cargo audit --file Cargo.lock`（cargo-audit 0.22.2） | 0、DB取得成功・1395 advisories／230 dependencies、脆弱性／warning報告なし。DB失敗による未検証ではない | `/tmp/issue21-keys/audit.log` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 | `/tmp/issue21-keys/build.log` |
+| `git diff --check` | 0 | `/tmp/issue21-keys/diff-check.log` |
+| CONTRIBUTING #20の自己完結Python blockを抽出し `python3 /tmp/issue21-keys/direct-20.py` | 0、**変更後release blを直接起動**。確認Enter=0 POST／独立送信=1 POST、原文／既定値解除／milestones／editor一致、refresh=2 count＋2 list、exit0／空stderr／端末復元 | `/tmp/issue21-keys/direct-20.log` |
+| CONTRIBUTING #21の自己完結Python blockを抽出し `python3 /tmp/issue21-keys/direct-21.py` | 0、**変更後release blを直接起動**。最新値／変更・解除form一致、確認Enter非送信／独立s=1 PATCH、17 GET＋1 PATCH、旧一覧／Comment保持、exit0／空stderr／termios差分なし。server警告なし | `/tmp/issue21-keys/direct-21.log`、raw結果 `/tmp/issue21-direct-result.json` |
+
+全検証はfake key／一時config／localhost HTTPSのみ。利用者config／secret探索、実サービス通信、Git書込みは行っていない。
+HEAD `3d9523c4e01325fb30398d0923f29bb4fe92dada`＋保持した全未コミット実装＋今回の限定修正。
+既存create履歴の `browse_request_counts` 修正を維持し、今回無関係の既存実装ファイルも開始時とbyte一致を確認した。
+Cargo.lock SHA-256は監査前後とも `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で不変。
+
+変更後release SHA-256:
+
+- `bl`: `a1fc596156e4223b93c5605382a6f7fc484c00c131fcc51f03a3af7ab0f5fe7b`
+- `bl-cli`: `1b9bb92930d38b792073edc29c65d3bb9400337c3e29d46e2a1aad339f5e49f1`
+
+**残件**: このhashのbuildについてRootの独立レビューと利用者による実端末再受入が必要。
+タイトル／開始日／期限日でCtrl+A/B/Yの編集・no-op時focus保持と、Tabで欄外へ出た後のshortcutを再確認する。
+修正後buildでの実IME／resize／editor／終了の個別確認と、Issue List旧タイトル保持の手動確認は未実施。
+修正前buildの実Backlog更新／復元成功や過去レビューを、この修正後buildの成功へ流用せず、Issue #21の完了とは宣言しない。
+Workerは実端末・実Backlogを実施していない。
+
+### #21 入力優先修正後のRoot検証・限定再レビュー（2026-10-30 UTC）
+
+Rootは共用フォームの追加6行と入力部品の公開キー判定を直接確認し、CONTRIBUTINGから#20／#21のPython blockを改めて抽出して変更後releaseを直接起動しました。両方の直接HTTPS／PTY検証、fmt／Clippy／audit／release build／diff checkは終了0。監査はcargo-audit 0.22.2、230依存・1386 advisory、警告・DB／registry取得失敗なし、lockfile前後不変です。ログは `/tmp/backlog21-root-keys.xjeAdU/`。
+
+最初の全対象testは既存 `search_dialog_multiselects_all_fields_and_applies_identical_count_list_filters` がsummary待機で失敗して終了101でした。失敗結果のsnapshot11は、まだApplying中のdialog背面にある `> Issue List` を待機条件が拾った画面で、snapshot12では正しい `S:2 A:2 G:2` が反映されていました。今回の製品修正は作成／更新フォーム内だけで検索dispatchは未変更です。Rootは検索試験・fixture・期待値を変更せず、単独再実行の終了0を確認してから全対象を最初から再実行し、終了0／22 suite・333成功・0失敗・既存manual2 ignoredを確認しました。初回101は `test.log` に保持し、`search-exact.log` と `test-rerun.log`／`test-rerun.exit` を区別しています。既存検索PTY試験の待機raceによる不安定性は残り、再実行成功で隠していません。
+
+fresh限定再レビュー `65700284-a7aa-42f6-9fe3-9be79d1a287d` は、この6行・関連試験・fixture・手順の範囲で追加指摘なし。編集no-opのfocus非漏出、欄外shortcut維持、phase／popup／Ctrl+C／極小保護、原文送信とcaller整合を確認しました。以前の全体2レビュー／3P1再レビューを無条件に繰り返してはいません。
+
+対象hashは直前のWorker記録の `a1fc5961…`／`1b9bb929…` と一致しています。利用者へこの新buildでの実端末／IME・resize・editor・終了と、許可済みと同じ2項目の実Backlog変更／解除／復元の再確認を依頼します。現時点では新buildの手動受入と最終Code Review gateは未完了です。
+
+### #21 入力優先修正後buildの利用者受入とComment更新への要望
+
+利用者は新build `bl` SHA-256 `a1fc596156e4223b93c5605382a6f7fc484c00c131fcc51f03a3af7ab0f5fe7b` の一致を回答しました。以下は利用者の実端末／実Backlog操作・Web照合の報告であり、Rootが独立して実APIを読み取った結果ではありません。
+
+- Ctrl+A/B/Yと日本語IME：OK。
+- resize・editor往復・破棄確認：OK。
+- BLCLI-2の変更／期限日解除・他項目保持・Detail反映：OK。
+- タイトル・期限日の復元：OK。
+- 終了コード0・通常shell利用：OK。
+- 一覧タイトルについては、利用者が先頭を変更して更新確認済みと補足しました。末尾が不可視だったという先行報告とは区別します。この補足だけから、一覧Rの前後のどちらで新旧タイトルを確認したかは推測しません。自動試験の旧一覧保持の根拠は別に維持します。
+- 端末環境は利用者の「前回と同じ」との回答に基づき、Herdr 0.8.0／Ghostty 1.3.1、macOS 26.7.1／Apple Silicon、macOS標準IME／101 keyboard・remapなしを引き継ぎます。今回のTERM／NO_COLOR個別値は未取得です。
+
+同時に「CommentがRしないと更新されないのが納得いかない」との指摘がありました。現Approved Plan／基本設計とIssue #21は、課題更新後のComment自動更新を明示的に行わない契約です。Rootは現動作の理由と、自動更新への変更には正式な再計画が必要なことを説明し、方針確認中です。この要望をPlan変更の承認とは扱いません。最終Code Review gateは未実施で、READY_FOR_MERGEとは判定していません。
+
+### #21 Comment自動更新への仕様変更要求による停止
+
+後続Issue #22／#23の最新本文・コメントを取得し、#22はコメント追加後の最新ページ自動取得、#23は既存の同じコメントの成功応答反映であり、どちらも#21のDetail eによる課題更新後のComment非更新契約を変更しないことを確認しました。説明後、利用者は「では今回のIssueで修正する」と回答しました。RootはIssue #21で課題更新成功後のComment自動更新を求める変更要求として受け付けましたが、Plan改訂の正式承認とは扱いません。
+
+現Approved Plan／基本設計／Issue #21はCommentを自動更新せずRへ任せる契約のため、状態を **REPLAN_REQUIRED** としてImplementationを停止します。自動取得後の表示対象・scroll／選択、取得失敗・中断時の保持と更新済み確度、旧応答失効、一覧非更新の維持と検証範囲は再計画で決定する未決事項です。このセッションでは自動更新の製品実装、Plan／基本設計／Issueの改訂、Planning／Workerの追加起動は行いません。
+
+すべての未コミット差分・untracked fixtureを保持し、commit／stash／破棄／push／merge／release／deployは行いません。直前buildの実端末／実Backlog受入成功と復元完了、333件成功等の検証・独立レビューは旧仕様に対する履歴として残し、今後変更する差分の検証・承認には流用しません。最終Code Review gateは未実施です。正式な改訂Planの明示Approve・保存と、整合するWork Itemの確認・保存・公開を新しいPlanning Rootで行い、その後別のImplementationセッションで再開する必要があります。
+
+### #21 再計画後：Comment自動更新の実装・ローカル検証（2026-10-30 UTC）
+
+正式入力はIssue #21本文と全2改訂コメント（最新 `issuecomment-6525860173`）、Approved Planの「Issue #21 再計画：課題更新成功後のComment自動再取得」、基本設計「更新」。上記の停止記録・旧hash・旧受入・旧17 GET＋1 PATCHは履歴として保持し、新差分へ流用しません。今後の手順だけを改訂契約へ整合しました。開始HEAD `3d9523c4e01325fb30398d0923f29bb4fe92dada` と既存の全未コミット差分／untrackedを保持しています。正式Plan／基本設計、API／Service／lib、Cargo設定／lockfile／依存は今回編集していません。
+
+#### 今回の差分と検証境界
+
+- `src/tui.rs`：対象一致・表示準備・実Detail反映が成功した後だけ、固定keyで既存Comments Latestを起動。200後の不正body／JSON／必須field／別key応答では起動しません。結果待機の極小qを閉じ、送信中／取得中の極小画面にもq終了を案内しません。
+- `src/tui/browse.rs`：既存20／desc／境界なし、本文時だけのissue／project記法GET、全preview準備、世代／key検査・runtime abort+joinを再利用。更新後Commentの完了を結果画面へ通知するメモリ内状態だけを追加しました。再select・count／list再取得・一覧の直接書換えはありません。
+- `src/tui/create.rs`：作成の一覧更新とは分離した更新済み・コメント表示更新中／完了／失敗。既存refreshingの閉鎖ガード・scrollを利用し、Enter／Esc／再編集／再送／背面focusを待機中は受け付けません。失敗はupdated／旧表示保持・再送不要・Comment R案内を安全表示します。
+- 実bl＋既存PTY入力／画面／exit／termiosとlocalhost HTTPSだけを公開seamとして追加5試験・既存更新経路を整合。private型／内部task数の固定や新harnessはありません。旧ページの非先頭選択・非ゼロscrollからLatest／本文先頭へ交換、通常本文・他者の最新投稿＋記法GET、本文なし履歴、正常空ページを区別しました。
+- Commentの403／通信切断／不正JSON／必須field不正／記法GET拒否／後続項目の安全表示不正（伏字後object key衝突）の6ケースで、更新済みDetail・旧選択ID／scrollを保持。手動Rの503失敗でも保持し、その後R成功で交換しました。元から空／未取得の失敗保持→Rの正常空成功も別に確認しました。
+- 遅延取得中にEnter／Esc・s／e／H／L・通常移動を送っても結果画面を維持。100×24／40×12／極小を往復し、長い固定対象keyの結果で40×12のEnd→Homeによる実scrollを確認しました。極小qでも終了しません。Ctrl+C／SIGINTそれぞれ通常／極小で130・updated／再送不要・termios全項目復元・4秒未満の終了を確認しました。
+- 古い一覧page／一覧R／Comment G／Comment Rの成功と403失敗を遅延させ、新しい自動取得の完了・通知・内容を壊さないことを確認しました。旧Detail／取消loadの成功・失敗、未送信／無変更／取消、PATCH拒否／unknown／200後応答処理失敗の自動取得ゼロ、一覧条件／total／訪問済みページ／選択／scroll保持は既存試験を回帰しました。
+
+#### RED→GREENと途中失敗（成功へ丸めない）
+
+ログと実exitは `/tmp/issue21-comments/` の各 `.log`／`.exit` です。
+
+| 実行 | exit／実測 | ログ |
+|---|---|---|
+| `cargo test --locked --test tui_process bl_update_local_acceptance_fixture_ -- --nocapture` 実装前 | **101 RED**。旧実装はUpdated結果からComment完了にならずPTY待機timeout | `red.log`／`red.exit` |
+| 同コマンド、最小実装後の最初 | 101。Comment更新そのものは成功したが、試験の履歴labelをSUMMARYと誤記（既存表示はTITLE）。labelだけを訂正 | 初期`green.log`は後続成功で置換。toolが保存した当時のtail出力を`green-initial-tail.log`へ回収 |
+| 同コマンド、訂正後 | **0 GREEN**。旧一覧＋新しいTITLE変更履歴、1 PATCH＋最新1 GET | `green.log`／`green.exit` |
+| 既存更新試験の移行途中 | 101、16成功／1失敗。本文Commentの既存記法用issue GETが1増える期待の整合漏れ。成功確認GETではない | `update-first.log`／`.exit` |
+| 追加Comment試験の最初 | 101、2成功／2失敗。全画面modalの背面Comment可視assertと、fixtureのraw body順序をdescと思い込んだ回復待機を修正。製品変更なし | `comments-first.log`／`.exit` |
+| 同追加試験再実行 | 0、4成功 | `comments-second.log`／`.exit` |
+| 更新試験の中間実行 | 101、21成功／1失敗。未取得Commentの1行本文領域に2行目statusが見えるとしたassertを、対象key保持／正常空表示ではないことへ修正 | `update.log`／`.exit` |
+| 更新focusedの完走 | 0、22成功 | `update-final.log`／`.exit` |
+| 長い固定keyによる結果scroll強化後の個別実行 | 0 | `scroll.log`／`.exit` |
+
+途中の101は上記のとおり分離し、機能REDと試験期待ミスを混同していません。汎用refresh・retry・PATCH再送・永続化・競合merge・#22／#23は追加していません。
+
+#### 正式チェック・releaseの直接実行
+
+| コマンド | 実exit／結果 | `/tmp/issue21-comments/` のログ |
+|---|---|---|
+| `cargo test --locked --test tui_process bl_create_and_update_single_line_editing_` | 0、1成功（両フォーム） | `shared-input.log`／`.exit` |
+| `cargo test --locked --test tui_process bl_create_` | 0、10成功 | `create.log`／`.exit` |
+| `cargo test --locked --test service issue_update_` | 0、2成功 | `service-update.log`／`.exit` |
+| `cargo test --locked --test issue_update --test comment_add --test issue_comment` | 0、issue_update 14／comment_add 14／issue_comment 15成功 | `cli-comments.log`／`.exit` |
+| `cargo test --locked --test tui_shell` | 0、9成功 | `tui-shell.log`／`.exit` |
+| `cargo fmt --all -- --check` | 0 | `fmt.log`／`.exit` |
+| `cargo test --locked --all-targets` 初回 | 0、**338成功／0失敗／既存manual2 ignored**、22 suite。tui_process105成功。今回は既存検索PTY待機raceの失敗なし | `test-all.log`／`.exit` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし | `clippy.log`／`.exit` |
+| `cargo audit --file Cargo.lock` | 0、cargo-audit 0.22.2。DB取得・crates.io index更新成功、1395 advisories／230依存、脆弱性・warningなし | `audit.log`／`.exit`、`audit-version.log` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 | `build.log`／`.exit` |
+| `git diff --check` | 0 | `diff-check.log`／`.exit` |
+| 更新済みCONTRIBUTING #21の自己完結Pythonを抽出し `python3 /tmp/issue21-comments/direct-21.py` | 0。**変更後release製品を直接起動**、確認Enter=0 PATCH、明示s=1 PATCH、解除・ID0・milestone form一致、18 GET＋1 PATCH。PATCH後は最新Comment GETだけ。旧一覧＋新しい本文なし履歴、fake-secret非表示、exit0／空stderr／termios差分なし。server stderr空 | `direct-21.log`／`.exit`、`direct-21-result.json`（fakeデータだけ） |
+| 同CONTRIBUTING #20を抽出し `python3 /tmp/issue21-comments/direct-20.py` | 0。変更後releaseで作成確認非POST・独立1 POST、原文／解除／milestone／editor、2 count＋2 list、exit0／空stderr／termios復元 | `direct-20.log`／`.exit` |
+
+本文なし履歴のこのfixtureは、初期space／projects／count／list各1、初期Detailのissue／project各1、初期CommentのComments／記法issue／project各1、編集loadのissue／project＋候補6、最後にPATCH＋Comment Latest各1で、**18 GET＋1 PATCH**です。本文ありの最新応答なら必要な記法issue＋project GETが別に2増えます。全fixture経路を一律件数へ固定していません。
+
+監査前後のCargo.lock SHA-256はともに `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で不変（`lock-before.sha256`／`lock-after.sha256`）。開始時に保存したAPI／Service／lib／正式Plan／基本設計／Cargo.lockのhash照合も全件OKです。
+
+今回release SHA-256（`release.sha256`）:
+
+- `bl`: `707bd5d1bf1ee0ed3af11932d4db5111788f53d6d2c2d1ec9f94f4b6ff13b4be`
+- `bl-cli`: `87c1a7ac9fb3af62cb7592a7d55d80aa0ab7a55c783600843bff3e8902bb7fc3`
+
+**残件／再開条件**: この変更後buildの実端末／実IME／実BacklogはWorker未実施、許可も導出していません。Rootが利用者に対象build・端末名／版・macOS・IME／keyboard・TERM／NO_COLOR、100×24／40×12／極小、入力優先・editor・破棄・独立送信・終了復元を確認し、profile origin `https://lazybl.backlog.com/`・対象候補BLCLI-2・変更／解除／復元の別の明示許可を得て必須受入を行う必要があります。RなしのComment最新表示とWeb照合、一覧R前後の新旧表示、未指定項目保持・復元を新hashで再確認します。旧buildの利用者成功を流用しません。2件の独立レビューと最終Code Review gateも未実施であり、このローカル結果だけではIssue完了／READY_FOR_MERGEではありません。Git stage／commit／stash／破棄、実サービスアクセス、Issue変更、push／merge／公開release／deployは行っていません。既存検索PTY待機race、SIGKILL／端末切断後の復元非保証、実API競合非検出は残ります。
+
+結果scroll強化と旧失敗通知の非上書きassert追加後も `cargo fmt --all -- --check`、`cargo test --locked --all-targets`、`cargo clippy --locked --all-targets -- -D warnings` を最初から再実行し、すべて0でした（`fmt-final.log`／`test-all-final.log`／`clippy-final.log` と各 `.exit`）。全対象は再度338成功／0失敗／既存manual2 ignored、tui_process105成功で、検索PTYの再試行は今回も不要でした。製品ソースはrelease build時から不変、変更は試験／説明のみです。最終 `git diff --check` も0（`diff-check-final.log`／`.exit`）。stagedファイルなしを確認しました。
+
+#### 最終追記：自動取得失敗のHTTP status表示（同日）
+
+最終ソース照合でPlan要件7のHTTP status表示が既存Comment notice流用では欠けることを発見しました。公開PTYの失敗試験へ、Comment API拒否／記法GET拒否の両方で `HTTP 403` を結果画面に表示するassertを追加し、`cargo test --locked --test tui_process bl_update_comment_refresh_failures_ -- --nocapture` が101 RED（`http-status-red.log`／`.exit`）になることを確認しました。自動取得の失敗通知だけ、既存Errorの任意statusとmessageを合わせて既存safetyで安全化する最小修正後、同じ試験は0 GREEN（`http-status-green.log`／`.exit`）です。通常Comment R／API／Serviceの契約は変えていません。
+
+この製品修正後に再実行した**最終結果**（すべて `/tmp/issue21-comments/`、各 `.exit` も保存）:
+
+| コマンド／直接検証 | exit／結果 | ログ |
+|---|---|---|
+| `cargo test --locked --test tui_process bl_update_` | 0、22成功 | `update-status-final.log` |
+| `cargo fmt --all -- --check` | 0 | `fmt-status-final.log` |
+| `cargo test --locked --all-targets` | 0、338成功／0失敗／既存manual2 ignored、tui_process105成功。検索PTY待機raceの失敗・再試行なし | `test-all-status-final.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし | `clippy-status-final.log` |
+| `cargo audit --file Cargo.lock` | 0、cargo-audit 0.22.2、DB取得・index更新成功、1395 advisories／230依存、脆弱性・warningなし | `audit-status-final.log` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 | `build-status-final.log` |
+| `python3 /tmp/issue21-comments/direct-21.py`（更新済みCONTRIBUTINGから抽出） | 0。新releaseで18 GET＋1 PATCH、確認非送信／独立1 PATCH・form一致・旧一覧／Rなし最新履歴・fake-secret非表示・exit0／空stderr／termios差分なし・server stderr空 | `direct-21-status-final.log`、`direct-21-status-final-result.json` |
+| `python3 /tmp/issue21-comments/direct-20.py` | 0。新releaseの共用作成フォーム・原文／解除／milestone／editor・非送信確認／独立1 POST・2 count＋2 list・exit0／空stderr／termios復元 | `direct-20-status-final.log` |
+| `git diff --check` | 0 | `diff-check-status-final.log` |
+
+監査前後lockfile hashは再度 `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` のまま（`lock-status-before.sha256`／`lock-status-after.sha256`）。保護対象6ファイルの開始時hash照合はすべてOK、stagedファイルなしです。
+
+**Rootの再検証・今後の必須受入で使う最終release SHA-256**（`release-status-final.sha256`）:
+
+- `bl`: `8e5312fa548567724777eb70940055d5ee2ae21380b08c04b10ad4fb9db2f91d`
+- `bl-cli`: `d7e37ee164234fcf796939617cd9fc6bd9917b11a89747d09c0a7a094666f4f1`
+
+直前の`707bd5d1…`／`87c1a7ac…`はHTTP status表示修正前のローカル履歴です。最終hashへの実端末／実Backlog受入、2独立レビュー／Code Review gateは引き続き未実施で、Issue完了とはしません。
+
+### #21 改訂実装後のRoot独立検証（2026-10-30 UTC）
+
+Rootは正式Issue本文・全2改訂コメントと改訂Plan／基本設計を再取得・確認し、blocker #10／#20のcompleted理由と実装／完了記録を照合しました。開始時の全差分・untrackedを保持し、今回追加分を一次コードとテストで再確認しました。ログは `/tmp/issue21-root.7YQMCL/` です。
+
+| Root実行コマンド | exit／結果 |
+|---|---|
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0、22 suite・338成功／0失敗／既存manual2 ignored。検索PTY待機raceの失敗・再試行なし |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし |
+| `cargo-audit --version` | 0、cargo-audit 0.22.2 |
+| `cargo audit --file Cargo.lock` | 0、DB取得・index更新成功、1395 advisory／230依存。脆弱性・警告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| `git diff --check` | 0 |
+| 更新済みCONTRIBUTINGの#21 Pythonを新たに抽出し `python3 /tmp/issue21-root.7YQMCL/direct-21.py` | 0。release blを直接起動、18 GET＋1 PATCH、確認非送信・指定form／解除／ID0／milestone一致、PATCH後はLatest Comments一回だけ。旧一覧保持・Rなし最新履歴・fake-secret非表示・exit0／空stderr／termios差分なし |
+| 同#20を抽出し `python3 /tmp/issue21-root.7YQMCL/direct-20.py` | 0。共有フォームの非送信確認／独立1 POST・原文／解除／editor・2 count＋2 list・exit0／空stderr／termios復元 |
+
+監査前後のlockfile SHA-256は `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で一致。Root再build後も上記最終release hash `8e5312fa…`／`d7e37ee1…` と一致しました。実ログにRust warning・監査警告・HTTPS tracebackはありません。チェックと直接release検証は別工程として実行し、Workerの自己申告だけを証拠にしていません。
+
+利用者はこの再開セッションで、origin `https://lazybl.backlog.com/`・profile `default`・対象 `BLCLI-2`、検証開始時タイトル末尾へ ` [#21更新検証]` を追加し期限日を解除、その後この2項目だけ検証開始時の値へ復元する範囲を明示許可しました。他項目の変更・コメント投稿・削除は許可範囲外です。Rootはdefault profileのorigin一致を確認しましたが、指定API key環境変数がAgent環境では空のため、別の認証情報源を探索していません。変更後buildの必須実端末／実IME・実Backlog受入は利用者の認証済み端末で行う必要があり、現時点で未実施です。独立2レビューと最終Code Review gateも別工程で、Issue完了／READY_FOR_MERGEとは判定していません。
+
+### #21 新差分の独立2レビュー（2026-10-30 UTC）
+
+別々のfresh built-in reviewerによるCorrectness Review（`27c79bec-6e14-454b-962f-4f553258df72`）と、ponytail-review Skill付きPonytail Review（`04f51bd0-ef3a-4f72-b0d0-757c5b416cf3`）を完了しました。両者は現在の全未コミット差分、untracked fixture、正式Issue本文・全改訂コメント、改訂Plan／基本設計、Rootの実チェック・直接release検証ログを読取り専用で確認し、具体的な修正要求なしでした。Rootも根拠と要求解釈を照合し、採用／不採用に分ける指摘はありません。旧333成功・旧受入・旧Reviewは根拠にしていません。
+
+Rootがread-onlyで取得保存した `/tmp/issue21-root.7YQMCL/full-current.diff`（全3417行、SHA-256 `72221d32557b966a86bfc634c7c51cce86762f104fda6cdce4ad9306c57bb832`）と `issue21.json` を、shell権限のないReviewerにも提供しました。Reviewerによるコマンド再実行・実端末・実サービス検証は行っておらず、実行結果はRootログで確認した技術レビューです。必須の新hash実端末／実IME・実Backlog受入と、その記録後の最終Code Review gateは未完了です。
+
+### #21 Comment自動取得buildへの利用者報告（2026-10-30 UTC）
+
+Rootが最終release `bl` SHA-256 `8e5312fa548567724777eb70940055d5ee2ae21380b08c04b10ad4fb9db2f91d` の起動・検証手順を提示した後、利用者から以下の報告を受けました。これは利用者の認証済み実端末／実Backlog操作の報告であり、Rootの実API独立読取りではありません。
+
+- 端末名／版・macOS、IME／keyboard・remap、TERM／NO_COLOR：前回／以前と同じ。
+- 送信前の入力・resize・editor・破棄確認：OK。
+- 許可済みBLCLI-2の変更／他項目保持／Detail反映：OK。
+- RなしのComment最新履歴：OK。
+- タイトル・期限日2項目の復元：OK。
+- 終了後のshell：OK。
+- 一覧R前後については「一覧はRをしなくても更新されていたのが、今回更新されなくなった。なぜ？」との質問。今回の自動試験・直接release観測は改訂Plan要件10どおり一覧非更新。Rootは現在の一次コードと今回の追加差分、旧受入記録を照合し、今回削除した自動更新処理はなく、開始時の部分実装も一覧非更新だったこと、作成後の一覧自動再取得とは別契約であることを説明しました。以前のRなし更新の具体経路・buildは不明で、利用者の観測を否定／別操作と断定していません。一覧仕様の受入判断は確認待ちです。
+
+環境の既存明示値はHerdr 0.8.0／Ghostty 1.3.1、macOS 26.7.1／Apple Silicon、macOS標準IME／101 keyboard・remapなし。TERM／NO_COLORの過去の個別値は記録がなく、「以前と同じ」から値を推測しません。利用者側hash実照合結果とTERM／NO_COLORの具体値も未取得です。最終Code Review gateは未実施で、READY_FOR_MERGEとは判定していません。
+
+### #21 新build受入の残確認・一覧仕様の合意（2026-10-30 UTC）
+
+上記報告の後、利用者は「今回はRで更新する仕様でよい」と明示回答しました。これは改訂Plan要件10どおりの受入で、新しい一覧自動更新の要求／Plan変更ではありません。以前のRなし更新についての原因は未特定のままで、今回の全差分・初期部分実装に削除された一覧自動更新はありません。今回の一覧非更新・履歴保持と一覧Rの契約の根拠は、現在buildの利用者受入、Rootの直接release観測と自動回帰を区別して維持します。
+
+利用者は起動対象hashとして **`8e5312fa548567724777eb70940055d5ee2ae21380b08c04b10ad4fb9db2f91d`** を回答しました。これはRootが再build・直接検証した最終blと一致します。TERM／NO_COLOR取得の最初のprintfは全角スペースによる `command not found` で失敗し、この失敗を環境値の取得成功とは扱いません。その後提示したPythonコマンドに対する利用者の実出力は次のとおりです。
+
+```text
+TERM: 'xterm-256color'
+NO_COLOR: None
+```
+
+したがって、今回の実端末はTERM `xterm-256color`、NO_COLORは未設定です。端末名／版・macOS・IME／keyboardは利用者の「前回／以前と同じ」に基づき上記の明示値を引き継ぎ、推測した個別値はありません。
+
+この新hashに対する送信前のIME／単行編集・100×24／40×12／極小往復・editor／resize・破棄確認、許可範囲のBLCLI-2変更／期限日解除・未指定項目保持・Detail反映・RなしComment最新表示、タイトル／期限日の復元、終了後の通常shellについて、提示済み手順への利用者のOK報告を受入結果として記録します。障害注入・中断・旧応答・空結果・失敗時保持はlocalhost HTTPS／PTYの観測であり、実サービスへ障害や過大負荷を与えていません。Root／Reviewer自身による実API読取りや実IME操作の成功とはしません。
+
+Issue #21の改訂後実端末／実Backlog必須受入は上記の利用者報告で確認しました。最終Code Review gateはこの記録と最終diff確認の後にRootが呼びます。skippedまたは現在差分に対する明示Approveを確認するまでREADY_FOR_MERGEとはしません。GitHub Actionsは未実行、stage／commit／stash／破棄／push／merge／release公開／deploy／GitHub Issue変更は行っていません。

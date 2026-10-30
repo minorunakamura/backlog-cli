@@ -104,6 +104,17 @@ pub enum CommentOrder {
     Asc,
 }
 
+/// A validated update, kept opaque so confirmation and transmission use the same changes.
+pub(crate) struct PreparedIssueUpdate {
+    issue: String,
+    form: Vec<(&'static str, String)>,
+}
+impl PreparedIssueUpdate {
+    pub(crate) fn changes(&self) -> &[(&'static str, String)] {
+        &self.form
+    }
+}
+
 pub struct Service {
     api: Api,
 }
@@ -120,6 +131,14 @@ impl Service {
     ) -> Result<Self, Error> {
         Ok(Self {
             api: Api::with_create_progress(config, progress)?,
+        })
+    }
+    pub(crate) fn with_update_progress(
+        config: &Config,
+        progress: crate::CreateProgress,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            api: Api::with_update_progress(config, progress)?,
         })
     }
     pub async fn comment_update(
@@ -191,6 +210,7 @@ impl Service {
                     clear_resolution: add.clear_resolution,
                     ..Default::default()
                 },
+                None,
             )
             .await?
         } else {
@@ -225,20 +245,36 @@ impl Service {
         }
     }
     pub async fn issue_update(&self, issue: &str, update: IssueUpdate<'_>) -> Result<Value, Error> {
-        self.update_issue_inner(issue, update)
-            .await
-            .map_err(|error| error.with_update_outcome(WriteOutcome::NotUpdated))
+        let prepared = self.prepare_issue_update(issue, update, None).await?;
+        self.send_issue_update(prepared).await
     }
-    async fn update_issue_inner(
+    pub(crate) async fn prepare_issue_update(
         &self,
         issue: &str,
         update: IssueUpdate<'_>,
-    ) -> Result<Value, Error> {
-        let form = self.issue_update_form(issue, update).await?;
+        latest: Option<&Value>,
+    ) -> Result<PreparedIssueUpdate, Error> {
+        let form = self
+            .issue_update_form(issue, update, latest)
+            .await
+            .map_err(|error| error.with_update_outcome(WriteOutcome::NotUpdated))?;
         if form.is_empty() {
-            return Err(Error::new("input", "No fields have changed"));
+            return Err(Error::new("input", "No fields have changed")
+                .with_update_outcome(WriteOutcome::NotUpdated));
         }
-        let mut value = self.api.update_issue(issue, &form).await?;
+        Ok(PreparedIssueUpdate {
+            issue: issue.into(),
+            form,
+        })
+    }
+    pub(crate) async fn send_issue_update(
+        &self,
+        prepared: PreparedIssueUpdate,
+    ) -> Result<Value, Error> {
+        let mut value = self
+            .api
+            .update_issue(&prepared.issue, &prepared.form)
+            .await?;
         if !valid_written_issue(&value) {
             return Err(
                 invalid_response("Updated issue response has invalid required fields")
@@ -254,6 +290,7 @@ impl Service {
         &self,
         issue: &str,
         update: IssueUpdate<'_>,
+        latest: Option<&Value>,
     ) -> Result<Vec<(&'static str, String)>, Error> {
         validate_issue_identifier(issue)?;
         if update.title.is_some_and(|title| title.trim().is_empty()) {
@@ -310,7 +347,14 @@ impl Service {
                     .await?;
             }
         }
-        let latest = self.api.get(&["issues", issue]).await?;
+        let fetched;
+        let latest = match latest {
+            Some(latest) => latest,
+            None => {
+                fetched = self.api.get(&["issues", issue]).await?;
+                &fetched
+            }
+        };
         let project = response_id(&latest["projectId"], false)?.to_string();
         let project = project.as_str();
         let mut form = Vec::new();
@@ -727,39 +771,7 @@ impl Service {
             ));
         }
         let mut value = self.api.get(&["issues", issue_id_or_key]).await?;
-        let named = |v: &Value| v.get("name").is_some_and(Value::is_string);
-        let valid = ["id", "projectId"].iter().all(|field| {
-            value
-                .get(field)
-                .and_then(Value::as_number)
-                .is_some_and(|id| positive_integer(&id.to_string()))
-        }) && value
-            .get("issueKey")
-            .and_then(Value::as_str)
-            .is_some_and(issue_key)
-            && ["summary", "created", "updated"]
-                .iter()
-                .all(|field| value.get(field).is_some_and(Value::is_string))
-            && ["description", "startDate", "dueDate"].iter().all(|field| {
-                value
-                    .get(field)
-                    .is_some_and(|v| v.is_null() || v.is_string())
-            })
-            && ["issueType", "priority", "status"]
-                .iter()
-                .all(|field| value.get(field).is_some_and(named))
-            && ["assignee", "resolution"]
-                .iter()
-                .all(|field| value.get(field).is_some_and(|v| v.is_null() || named(v)))
-            && value
-                .get("milestone")
-                .and_then(Value::as_array)
-                .is_some_and(|items| items.iter().all(named));
-        if !valid {
-            return Err(invalid_response(
-                "Issue response has invalid required fields",
-            ));
-        }
+        validate_issue_view(&value)?;
         let url = self
             .api
             .issue_url(value["issueKey"].as_str().expect("validated issue key"));
@@ -1175,7 +1187,7 @@ fn valid_comment(value: &Value) -> bool {
         })
 }
 
-fn positive_integer(value: &str) -> bool {
+pub(crate) fn positive_integer(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|c| c.is_ascii_digit())
         && value.bytes().any(|c| c != b'0')
@@ -1228,4 +1240,41 @@ fn search_offset(offset: &str) -> Result<Number, Error> {
     }
     .parse()
     .map_err(|_| Error::new("input", "Invalid offset"))
+}
+
+pub(crate) fn validate_issue_view(value: &Value) -> Result<(), Error> {
+    let named = |v: &Value| v.get("name").is_some_and(Value::is_string);
+    let valid = ["id", "projectId"].iter().all(|field| {
+        value
+            .get(field)
+            .and_then(Value::as_number)
+            .is_some_and(|id| positive_integer(&id.to_string()))
+    }) && value
+        .get("issueKey")
+        .and_then(Value::as_str)
+        .is_some_and(issue_key)
+        && ["summary", "created", "updated"]
+            .iter()
+            .all(|field| value.get(field).is_some_and(Value::is_string))
+        && ["description", "startDate", "dueDate"].iter().all(|field| {
+            value
+                .get(field)
+                .is_some_and(|v| v.is_null() || v.is_string())
+        })
+        && ["issueType", "priority", "status"]
+            .iter()
+            .all(|field| value.get(field).is_some_and(named))
+        && ["assignee", "resolution"]
+            .iter()
+            .all(|field| value.get(field).is_some_and(|v| v.is_null() || named(v)))
+        && value
+            .get("milestone")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().all(named));
+    if !valid {
+        return Err(invalid_response(
+            "Issue response has invalid required fields",
+        ));
+    }
+    Ok(())
 }

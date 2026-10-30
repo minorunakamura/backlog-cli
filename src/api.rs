@@ -47,7 +47,7 @@ pub struct Api {
     client: Client,
     origin: reqwest::Url,
     key: HeaderValue,
-    create_progress: Option<CreateProgress>,
+    write_progress: Option<(&'static str, CreateProgress)>,
 }
 impl Api {
     pub fn new(config: &Config) -> Result<Self, Error> {
@@ -64,7 +64,7 @@ impl Api {
             client,
             origin: config.origin.clone(),
             key,
-            create_progress: None,
+            write_progress: None,
         })
     }
     pub(crate) fn with_create_progress(
@@ -72,7 +72,15 @@ impl Api {
         progress: CreateProgress,
     ) -> Result<Self, Error> {
         let mut api = Self::new(config)?;
-        api.create_progress = Some(progress);
+        api.write_progress = Some(("issue.create", progress));
+        Ok(api)
+    }
+    pub(crate) fn with_update_progress(
+        config: &Config,
+        progress: CreateProgress,
+    ) -> Result<Self, Error> {
+        let mut api = Self::new(config)?;
+        api.write_progress = Some(("issue.update", progress));
         Ok(api)
     }
     /// Fetch the formal workspace name without changing or discarding unknown fields.
@@ -193,13 +201,12 @@ impl Api {
                 Error::new("input", "Cannot construct write request")
                     .with_write_outcome(operation, not_written)
             })?;
-        let state = if operation == "issue.create" {
-            self.create_progress
-                .clone()
-                .unwrap_or_else(|| CreateProgress::new(not_written))
-        } else {
-            CreateProgress::new(not_written)
-        };
+        let state = self
+            .write_progress
+            .as_ref()
+            .filter(|(tracked, _)| *tracked == operation)
+            .map(|(_, progress)| progress.clone())
+            .unwrap_or_else(|| CreateProgress::new(not_written));
         let progress = state.clone();
         let client = self.client.clone();
         let communication = async move {
