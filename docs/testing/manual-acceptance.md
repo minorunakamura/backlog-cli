@@ -2523,3 +2523,36 @@ NO_COLOR: None
 この新hashに対する送信前のIME／単行編集・100×24／40×12／極小往復・editor／resize・破棄確認、許可範囲のBLCLI-2変更／期限日解除・未指定項目保持・Detail反映・RなしComment最新表示、タイトル／期限日の復元、終了後の通常shellについて、提示済み手順への利用者のOK報告を受入結果として記録します。障害注入・中断・旧応答・空結果・失敗時保持はlocalhost HTTPS／PTYの観測であり、実サービスへ障害や過大負荷を与えていません。Root／Reviewer自身による実API読取りや実IME操作の成功とはしません。
 
 Issue #21の改訂後実端末／実Backlog必須受入は上記の利用者報告で確認しました。最終Code Review gateはこの記録と最終diff確認の後にRootが呼びます。skippedまたは現在差分に対する明示Approveを確認するまでREADY_FOR_MERGEとはしません。GitHub Actionsは未実行、stage／commit／stash／破棄／push／merge／release公開／deploy／GitHub Issue変更は行っていません。
+
+### #21 / PR #52 CI検索PTY待機raceの限定修正（2026-10-30 UTC）
+
+対象はbranch `feat/tui-issue-update`、CI対象SHA `684d62664593233484d9c240c30ef6f7ae1e3b6b`、Actions run `41092304496` / job `124189046171` のQuality Test失敗です。CIログは `tui_process` 104成功／1失敗・exit101で、`search_dialog_multiselects_all_fields_and_applies_identical_count_list_filters` の「summary must show all applied fields」が失敗しました。snapshot[11]は検索のApplying中で、背面の `> Issue List` と旧条件 `K:Any S:0 A:0` を拾い、[12]では適用済み `K:fix qhljk S:2 A:2 G:2` になっています。背景focusは適用完了の証拠になりません。単独再実行成功でこのCI失敗を取り消していません。
+
+変更は `tests/tui_process.rs` の適用Enter直後のwait **1行だけ**を `> Issue List` から `K:fix qhljk S:2 A:2 G:2` に変更したものです。既存のsummary assert、選択値の行、巨大ID、count/list同条件、同project再確定の余計検索なし・4 queryの検証を維持しています。timeout増加・retry・固定sleep追加・期待値緩和、製品／共有driver／fixture／Plan／基本設計／依存の変更はありません。
+
+以下のログと個別 `.exit` は `/tmp/issue21-ci.oUz8G0/` に保存しました。公開seamは既存の実bl＋PTYの入力・画面・exit／termiosと、localhost HTTPSのHTTP記録です。
+
+| 実行 | exit／実測 | ログ（同名 `.exit`） |
+|---|---|---|
+| 修正前exact（完全な上記test名＋`-- --exact`） | 0、1成功。Rootの別の修正前exactも0で、CIのREDとは区別 | `worker-before-exact.log`（Root分 `before-exact.log`） |
+| 同じtestの適用count/list応答だけ各`header_delay=0.25`を一時注入、旧wait | **101 RED**。h/Enterが適用前に進み、次のProject focus待機がtimeout。CIのsummary assert失敗とは現れ方が異なる | `worker-delayed-red.log`、注入差分 `worker-delay-only.patch` |
+| 同じ遅延・同じ手順、新wait | **0 GREEN**、1成功。遅延以外の期待値は不変 | `worker-delayed-green.log`、`worker-delay-and-wait.patch` |
+| 遅延注入を除去後のexact | 0、1成功。最終repoには遅延を残していない | `worker-after-exact.log` |
+| `cargo test --locked --test tui_process search_dialog_` | 0、20成功、初回成功・再試行なし | `worker-search-dialog.log` |
+| `cargo fmt --all -- --check` | 0 | `worker-fmt.log` |
+| `cargo test --locked --all-targets` | 0、22 suite、338成功／0失敗／既存manual2 ignored、tui_process105成功。全対象初回成功・再試行なし | `worker-all-targets.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし | `worker-clippy.log` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0。bl SHA-256 `8e5312fa548567724777eb70940055d5ee2ae21380b08c04b10ad4fb9db2f91d`（製品不変） | `worker-build-release.log`、`worker-release.sha256` |
+| `bash /tmp/issue21-ci.oUz8G0/worker-direct-multiselect.sh` | 0。CONTRIBUTING #17の直接release手順を利用し、/tmpの応答・stepsだけを対象testと同等の15 stepへ変更。15 GETのみ、count/list各2、全条件・巨大ID一致、新waitのsnapshot[11]は適用済みsummaryでApplying modalなし。選択値行・同project余計検索なし、fake-secret非表示、exit0／空stderr／termios復元 | `worker-direct-multiselect.log`、`worker-direct-applied-screen.txt`、`worker-direct-check.log` |
+| 無変更のCONTRIBUTING #17直接release手順 | 起動0、26 snapshots、count/list各5のquery一致、fake-secret非表示、空stderr／termios復元、focus移動[18..25]でGET増加なし。ただし**実総数33 GETで文書記載28とは不一致**。28固定の初回照合assertは1、この不一致を成功へ丸めていない | `worker-direct-17.log`、`worker-direct-check-attempt1.log`（1）、不一致明記の残りの照合 `worker-direct-check.log`（0） |
+| `git diff --check` | 0 | `worker-diff-check.log`（追記後は `worker-diff-check-final.log`） |
+
+直接multiselect手順の/tmp準備は最初にsteps抽出対象を誤りIndexError（準備exit1）、未生成scriptの起動127でした。製品テストの失敗ではなく、抽出箇所を修正後の直接起動0と区別しています（`worker-direct-setup-attempt1.log`／`worker-direct-multiselect-attempt1.log`と各 `.exit`）。既存の汎用driverやfixtureへ変更を広げていません。上記#17の総GET数不一致も今回の対象外として記録し、CONTRIBUTINGの旧記述は変更していません。
+
+今回のcorrectionは**test-only＋実測追記**です。新たな実端末／実IME／実Backlog操作は行わず、以前の製品受入を新たに実行したとはしません。依存不変のため監査は再実行していません。リモート再CIは未実行・未確認、変更後の独立レビューとCode Review gateはRootの別工程です。stage／commit／push／merge／PR変更・実Backlog接続／書込みは行っていません。過去の履歴・受入結果は保持しています。
+
+Rootも修正後のexact（1成功）、`search_dialog_`（20成功）、fmt、全対象test（338成功／0失敗／既存manual2 ignored）、Clippy、release build、diff-checkを独立実行し、すべてexit0でした（同directoryの `root-*.log`／`.exit`）。全対象の初回失敗・再試行、Rust warningはありません。release bl hashは再度 `8e5312fa548567724777eb70940055d5ee2ae21380b08c04b10ad4fb9db2f91d` と一致しました。
+
+別工程のRoot直接検証 `python3 /tmp/issue21-ci.oUz8G0/root-direct.py` もexit0です。同じrelease bl・同じ15 step・適用count/listだけ各250ms遅延で、旧waitは先行操作によるdriver exit1／timeoutを再現、新waitは適用済みsummary・Applying modalなし、4件の同条件count/list query・巨大ID・余計検索なし、15 GETのみ・fake-secret非表示・終了0／termios差分なしを確認しました。再現用の変更は/tmp内の応答とstepsだけで、repoに遅延・retry・timeout変更を残していません。CI元ログのassert失敗と、制御遅延時の後続focus待機timeoutは、同じ早期進行が異なるタイミングで現れたものとして区別します。
+
+この限定差分についてfresh Correctness Review（`b5a398ae-61ee-409d-9c88-3b49f61844c2`）とfresh Ponytail Review（`bba9afc5-e061-4459-a781-6c6319406a6a`）を別々に実行し、両方とも修正要求なしでした。Rootは、旧focus markerとApplying背面の関係、新summaryが適用済み条件からのみ描画されること、期待query／既存assertの維持、Rootの実行ログと直接HTTP記録への根拠を照合して受け入れました。採用／不採用に分ける具体的指摘はありません。Reviewer自身のテスト再実行やリモートCI成功とはしていません。最終Code Review gateはこの記録後にRootが呼び、現在差分への明示Approveまたはskippedを確認するまで完了とはしません。
