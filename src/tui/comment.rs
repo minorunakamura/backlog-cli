@@ -109,6 +109,15 @@ impl Comment {
         }
         (author, created, Some(text))
     }
+    pub(super) fn selected_id(&self) -> Option<String> {
+        self.items.get(self.selected).map(|item| item.id.clone())
+    }
+    pub(super) fn update(&mut self, id: &str, preview: crate::comment::Preview) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
+            item.preview = preview;
+            self.show();
+        }
+    }
     pub(super) fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

@@ -1207,7 +1207,7 @@ impl Values {
     }
 }
 // Wrap before slicing so the complete confirmation is accessible beyond Paragraph's u16 scroll limit.
-fn wrapped_lines(content: &str, width: u16, secrets: &[&str]) -> Vec<String> {
+pub(super) fn wrapped_lines(content: &str, width: u16, secrets: &[&str]) -> Vec<String> {
     let text = crate::tui_text::display(Text::from(safety::text(content, secrets)), secrets);
     let mut result = Vec::new();
     for line in text.lines {

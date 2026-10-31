@@ -1,0 +1,50 @@
+[
+  {
+    "wait": "Newest stays on page",
+    "keys": "Lln"
+  },
+  {
+    "wait": "Displayed old body",
+    "keys": "e"
+  },
+  {
+    "wait": "EDITOR READY",
+    "keys": "\n"
+  },
+  {
+    "wait": "Edit comment body",
+    "keys": "\r"
+  },
+  {
+    "wait": "Confirm comment update",
+    "keys": "\r"
+  },
+  {
+    "wait": "Confirm comment update",
+    "keys": "s"
+  },
+  {
+    "wait": "Sending comment update",
+    "keys": "es\r\u001b"
+  },
+  {
+    "wait": "updated: comment updated",
+    "keys": "\r"
+  },
+  {
+    "wait": "Raw #23",
+    "keys": "p"
+  },
+  {
+    "wait": "Newest stays on page",
+    "keys": "n"
+  },
+  {
+    "wait": "Raw #23",
+    "keys": "jjjjjj"
+  },
+  {
+    "wait": "Open -> Closed",
+    "keys": "q"
+  }
+]

@@ -21,7 +21,7 @@ Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語�
 `bl` のプロジェクト選択・通常/横断検索ダイアログ・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・コメント閲覧・ブラウザ起動・focus・layout・端末復元も実装しています。
 共有単行入力部品を製品のkeyword欄へ組み込み、開発専用の実端末確認経路も維持しています。
 設定editor連携と共有libraryの本文編集、TUI課題作成・更新フォームを実装しています。
-#20の実端末／実Backlog受入結果と#21の未実施事項は手動受入記録を参照してください。コメント追加フォームのローカル検証と実環境の未実施事項は末尾の#22節を参照してください。既存コメント本文編集は後続Work Itemの範囲です。
+#20の実端末／実Backlog受入結果と#21の未実施事項は手動受入記録を参照してください。コメント追加フォームのローカル検証と実環境の未実施事項は#22節を参照してください。既存コメント本文のTUI編集 (#23) は実装済みで、必須実端末・実Backlog受入はpendingです。詳細は同記録の#23節を参照してください。
 
 ## 品質確認
 
@@ -1063,3 +1063,90 @@ shasum -a 256 target/aarch64-apple-darwin/release/bl target/aarch64-apple-darwin
 実端末のIME／字幅／目視／editor復帰と実Backlogでの追加・状態変更・初期状態への復元は別の必須受入です。
 接続先・対象・内容の明示許可の下でRoot／利用者が実施し、[手動受入記録](docs/testing/manual-acceptance.md)へ記録します。
 未実施を成功やIssue完了と扱いません。
+
+### TUIコメント本文更新 (#23): releaseの直接ローカル検証
+
+本文専用modalは既存の複合Createフォームとは分離し、所有者・履歴・本文検証とcontentだけのPATCHは共通Service、
+editor／復元は既存guardを使います。編集開始で最新コメント・myselfと記法を取得し、確認後に再取得はしません。
+正常な同IDの応答を既存ページの同じEntryへ反映し、他コメント・選択・Issue Listを保持します。
+
+```sh
+cargo test --locked --test tui_process bl_comment_edit_ -- --nocapture
+cargo test --locked --lib tui::comment_edit::tests::shell_comment_edit_requires_a_changed_nonempty_body_and_guards_discard_and_tiny_confirmation -- --exact --nocapture
+cargo test --locked --test comment_update --test service --test editor --test tui_shell
+cargo test --locked --lib tui::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff -- --exact --nocapture
+```
+
+新規PTY試験は5関数（8起動）です。固有のe入口→最新原文editor→確認／単一PATCH→非最新ID・ページ保持、
+所有者／履歴のeditor前拒否と代表nonzero、403拒否／別IDの200、確度3段階のCtrl+C／SIGINT、取消load＋旧Comment readを扱います。
+空／同値・破棄・極小・安全な対象表示はShell→TestBackend、全失敗matrix・UTF-8・所有者IDは既存共通service／CLI／editor試験を再利用します。
+全field×PTYやeditor全失敗×本文更新画面の交差保証は追加していません。
+0.15秒は送信／headers marker後にclientが確度を観測する窓、1.3秒は遅延旧応答後も結果／選択／busyが汚染されない有限観測窓です。
+HTTP受信だけをeditor復帰・画面描画の証拠にせず、EDITOR READY・復帰画面・結果・termiosを別々に照合します。
+
+以下はcargo testとは別にrelease製品をlocalhost HTTPS＋既存PTYで実行します。実API・実credentialsは不要です。
+固定fixtureは**13 GET＋1 PATCH**で、総数は編集開始の最新取得・記法準備まで含めた増減を、対象method/pathは単一content更新を保証します。
+PATCH後のGETゼロ、確認Enter前後のHTTP数不変、非最新ID・ページ移動・旧List保持と端末復元も独立にassertします。
+
+```sh
+cargo build --locked --release --target aarch64-apple-darwin --bins
+python3 - <<'PY'
+import json, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path.cwd()
+binary = repo / 'target/aarch64-apple-darwin/release/bl'
+with tempfile.TemporaryDirectory(prefix='bl-comment-edit-local-') as directory:
+    root = pathlib.Path(directory)
+    (root / 'response.json').write_bytes((repo / 'tests/fixtures/tui_comment_edit.json').read_bytes())
+    (root / 'steps.json').write_bytes((repo / 'tests/fixtures/tui_comment_edit_steps.json').read_bytes())
+    (root / 'backlog').mkdir()
+    (root / '.backlog').mkdir()
+    body = ' Raw #23 日本語\n test-secret\x1b]52;c;unsafe\x07\n'
+    (root / 'editor-body').write_text(body)
+    server = subprocess.Popen([sys.executable, str(repo / 'tests/fixtures/https_server.py'), directory],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        origin = 'https://localhost:' + server.stdout.readline().strip()
+        (root / 'backlog/config.json').write_text(json.dumps({'editor': [sys.executable,
+            str(repo / 'tests/fixtures/editor.py'), str(root / 'editor-record'), 'body-file'],
+            'profiles': {'default': {'spaceUrl': origin, 'apiKeyEnv': 'TEST_KEY'}}}))
+        (root / '.backlog/settings.json').write_text(json.dumps({'project': 'B'}))
+        env = dict(HOME=directory, XDG_CONFIG_HOME=directory, TEST_KEY='test-secret', NO_COLOR='1',
+                   PATH='/usr/bin:/bin', SSL_CERT_FILE=str(root / 'tls/localhost-cert.pem'),
+                   SHELL_STEPS_FILE=str(root / 'steps.json'), SHELL_REQUESTS_FILE=str(root / 'requests'))
+        run = subprocess.run([sys.executable, str(repo / 'tests/fixtures/tty_shell.py'), 'scripted', str(binary)],
+                             cwd=root, env=env, capture_output=True, text=True, timeout=15)
+        assert run.returncode == 0, run.stderr
+        result = json.loads(run.stdout)
+        assert (result['code'], result['restored'], result['termios_diff'], result['stderr']) == (0, True, [], ''), result
+        assert result['request_counts'][4] == result['request_counts'][5], 'confirmation Enter sent HTTP'
+        for text in ['Profile: default', 'Origin: ' + origin, 'Issue: B-1', 'Comment ID: 1', 'Issue fields: unchanged']:
+            assert text in result['snapshots'][4], (text, result)
+        assert 'Raw #23' in result['snapshots'][8] and 'Old list title' in result['snapshots'][8], result
+        assert 'Newest stays on page' in result['snapshots'][9], result
+        assert 'Raw #23' in result['snapshots'][10] and 'STATUS: Open -> Closed' in result['snapshots'][11], result
+        requests = [json.loads(line) for line in (root / 'requests').read_text().splitlines()]
+        writes = [r for r in requests if r['method'] != 'GET']
+        assert len(requests) == 14 and len(writes) == 1, requests
+        write = writes[0]
+        assert (write['method'], write['path'], write['form']) == ('PATCH', '/api/v2/issues/B-1/comments/1', {'content': [body]}), write
+        assert requests[-1] == write, 'automatic followup/retry'
+        for prefix in ['/api/v2/issues/count?', '/api/v2/issues?', '/api/v2/issues/B-1/comments?']:
+            assert sum(r['path'].startswith(prefix) for r in requests) == 1, requests
+        assert 'test-secret' not in result['stdout'] and '\x1b]52;' not in result['stdout'], result
+        record = json.loads((root / 'editor-record').read_text())
+        assert record['original'] == 'Latest raw body\n' and record['mode'] == 0o600 and record['cooked'], record
+        assert not pathlib.Path(record['path']).exists(), record
+        pathlib.Path('/tmp/issue23-direct-result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        pathlib.Path('/tmp/issue23-direct-requests.json').write_text(json.dumps(requests, ensure_ascii=False, indent=2))
+        print('PASS: release bl; latest raw editor; confirm Enter=0 PATCH; explicit s=1 content PATCH; same ID/page/history/old List; 13 GET+1 PATCH; no followup; exit=0; termios restored')
+    finally:
+        server.terminate()
+        _, errors = server.communicate(timeout=3)
+        assert not errors, errors
+PY
+shasum -a 256 target/aarch64-apple-darwin/release/bl target/aarch64-apple-darwin/release/bl-cli
+```
+
+期待結果は`PASS:`とbinaryのSHA-256です。raw観測とfake-key HTTP記録は`/tmp/issue23-direct-{result,requests}.json`に保存します。
+実端末の字幅／IME／目視と、実Backlogでの所有者・対象ID確認→本文更新→同ID表示→元本文復元はRoot／利用者の別工程です。
+必須受入がpendingならIssue完了とは扱いません。
