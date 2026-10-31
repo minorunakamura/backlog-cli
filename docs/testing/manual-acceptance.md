@@ -3186,3 +3186,74 @@ Workerの確認はsource／実差分の静的確認、`cargo fmt --all`、`git d
 この記録時点で今回差分のfreshな独立2 ReviewとCode Review gateはこれからです。過去のeditor／cutoff／startup内部原因は未確定のままで、今回の成功は根因解明やflake不存在・実時間短縮の証明ではありません。削った交差保証・実CI／実端末／IME／実Backlog／別途release実操作の未実施は上記のとおりです。
 
 **今回差分のfresh独立2 Review完了:** Correctness `6cf607c7-97c5-413d-9fe1-fc869da1c12f` とPonytail `3da30f9f-6115-420a-908b-146e9b0e6dea` は、それぞれ別のfresh contextで改訂要件・実差分・現行source・上記4ログ／終了コードを確認し、いずれも修正要求なし、`Merge verdict: OK with notes` でした。read-only reviewerにはgit実行toolがないため、Rootが取得した5ファイルの最新diff・HEAD source・最新Issue／追補のread可能なartifactも渡しています。Rootは両報告を直接読み、残す保証・削減範囲・実行証拠と照合して採用しました。accepted findings／不採用のcode findingsはいずれも0件で、追加のコード修正はありません。notesは承認済みの交差保証削減、歴史的原因未確定、#57・実環境検証の未実施を指し、#56の未解決修正要求ではありません。この追記後の差分でCode Review gateを取得し、結果はRootの最終報告で示します。#57を含む全体完了やmerge許可としては扱いません。
+
+#### #57 将来のテスト作成・Review基準（文書変更・静的確認、Root最終検証前）
+
+正式Issue [#57](https://github.com/minorunakamura/backlog-cli/issues/57) の[優先追補](https://github.com/minorunakamura/backlog-cli/issues/57#issuecomment-6545857516)を取得して読み、正式Plan `docs/plans/test-infrastructure-performance.md` の全文と「#57相当: 将来の作成基準と最終検証」「動作確認方法」「制約」を確認しました。PlanのSHA-256は `a6f2a2ac73a2156f9b25d1fb85db00ca3e3d2276585eca0ff331993669450491` と一致しています。開始HEADは `1fc87581dccfe7eb830cc989fdd2a731148b9af6`、開始treeはclean、AGENTS.mdは存在しませんでした。#56の成果はこのHEADと直前のRoot独立検証記録にあり、過去の成功を今回の最終差分の実行証拠へ流用しません。
+
+今回の編集は次の3点だけです。
+
+- `CONTRIBUTING.md` の「テスト設計とReviewの基準」へ、ユーザー保証→既存assert→公開境界、共通matrixと機能固有代表、削る交差保証、受信／headers／描画／editor復帰／resizeの区別、有限否定観測窓、総HTTP件数の契約、新たな待機・起動の説明、focusedと正式チェックの区別を集約しました。旧group wall40秒以下の性能判定だけを改訂方針に整合し、各CLIの既存時間assertは変更していません。新しい振る舞いの失敗テストと、削減だけの変更に不要なREDを区別しています。
+- 新規の短い `AGENTS.md` はCONTRIBUTINGの基準・品質確認へのリンクだけで、規則を二重管理しません。自動強制frameworkは追加していません。
+- 本項を末尾に追記しました。既存のrelease再現手順・fixtures、旧失敗・旧判断、他Issueの受入条件は変更していません。
+
+**Workerの確認は文書とsourceの静的確認だけです。テスト／build／正式チェックは実行していません。** 指定6関数を直接読み、`tests/common/mod.rs` の実CLI／HTTPS harnessも確認しました。
+
+| 種類 | 実在source・境界の根拠 |
+|---|---|
+| 純粋な変換・表示 | `tests/body.rs::markdown_headings_and_nested_emphasis_keep_lines_and_unicode` の公開body変換と原文assert、`tests/tui_shell.rs::shell_shows_all_five_panels_only_at_the_full_layout_boundary` のShell→TestBackendとlayout assert |
+| 実CLI・HTTPS | `tests/cli_help_version.rs::bl_cli_help_needs_neither_configuration_nor_a_terminal` の空設定・非TTY子processとstdout／stderr／exit、`tests/issue_view.rs::json_view_preserves_original_fields_and_builds_url_without_project_get` の実CLI／証明書検証付きHTTPS・JSON原文／URL・認証header・対象GETだけのassert |
+| PTY固有 | `src/tui.rs::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff` の実editor入力専有・原文／他欄／cleanup・中断／復元失敗と、同moduleの `shell_restores_when_sigint_arrives_during_entry_before_the_first_frame` の実early SIGINT・130／復元assert。Cargoの完全一致filterは両方 `tui::tests::` 付き |
+
+静的確認コマンドは `git status --short`、`git rev-parse HEAD`、`shasum -a 256 docs/plans/test-infrastructure-performance.md`、`gh api repos/minorunakamura/backlog-cli/issues/comments/6545857516 --jq .body`、source／workflowのread・grepと、一時的な `python3 - <<'PY'` のassert照合です。Python照合はexit0で、以下を確認しました（Cargoは起動していません）。
+
+- 追加した6 focusedコマンドのtarget・完全一致filter・実在する非ignoredのtest定義の対応。文書に想定各1試験と選択0件を成功にしないことを明記しています。実際の選択件数・成功は未確認です。
+- 追加した相対リンクの実在ファイル・見出しと優先追補URL。
+- 既存CONTRIBUTINGは、新節の追加と既存2文の整合以外はHEADから不変。品質確認コマンド・CI説明・既存release再現手順を保持しています。
+- `.github/workflows/quality.yml` の既存4チェック、macos-15、cargo-audit 0.22.2と文書の整合。release buildをCIで実行すると説明していません。workflow自体は不変で、実CIの成功を確認したものではありません。
+- 正式Planのhash一致とstagedファイルなし。
+
+**Rootの最終検証・freshなReview／Code Review gateはこの追記時点で未実施です。** Rootが文書整合を含む最終差分を固定し、Plan指定のfmt／all-targets／Clippy／audit版確認・通常DB監査／release build／diff checkを各1回実行して結果を追記します。監査前後のlockfile hash、環境・終了コード・警告・成功／失敗／既存manual用2 ignored、同じ全体試験1回のwall／suite時間もその結果で記録します。今回のWorkerは重複実行せず、未実行を成功としていません。
+
+実CI・別途release直接操作・実端末／IME・実Backlogは今回未実施です。固定3回・10反復・性能閾値・別release POST／PATCH直接再演を新たに要求せず、正式release buildや既存の実timeout保証・他Issueの必須受入を省略するものではありません。過去のeditor／cutoff・startup内部原因等は未確定のままで、完全同等保証・flake根因解消・任意負荷での安定性を主張しません。src／test／fixture／依存／lockfile／CI／Planは変更せず、stage／commit／stash／push／Issue変更／merge／release／deployは行っていません。
+
+
+#### #56/#57 最終差分のRoot正式検証（2026-10-31 UTC）
+
+正式Plan `docs/plans/test-infrastructure-performance.md` と[#57優先追補](https://github.com/minorunakamura/backlog-cli/issues/57#issuecomment-6545857516)に従う、**Root自身の正式コマンド各1回と直接文書確認の結果**です。出典は `/tmp/backlog-57-root.OBBMv5/verification-summary.md` と同directoryの実ログ・終了コード。本追記のWorkerはそれらとsourceを読むだけで、テスト／build／計測／正式チェックを新実行していません。
+
+対象HEADは `1fc87581dccfe7eb830cc989fdd2a731148b9af6`（#56反映済み）。#57開始treeはcleanで、検証対象はその後のCONTRIBUTINGの基準追加・2文整合、新規AGENTS、直前の受入記録追記というdocs-only差分です（`validation.diff`、保存した `AGENTS.md`、`validation-tree-before.log`）。src／test／fixture／依存／lockfile／CI／Planは不変。本項も末尾追記だけで既存変更・旧記録を保持しています。
+
+環境（`environment.log`）: macOS 26.7.1（25G241）／Darwin arm64、logical CPU 10・memory 32 GiB、rustc／cargo 1.99.1。親Python 3.14.9／OpenSSL 3.6.3、PTY editor用 `/usr/bin/python3` 3.9.6／LibreSSL 2.8.3、openssl CLI 4.0.3。`RUST_TEST_THREADS` は未設定です。
+
+| Rootの正式コマンド（各1回） | exit・結果 | 実ログ／終了コード |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0、出力なし | `fmt.log`／`fmt.exit` |
+| `/usr/bin/time -l cargo test --locked --all-targets` | 0、24 targets、**347成功・0失敗・既存manual用2 ignored**。新規skip／ignoreなし | `all-targets.log`／`all-targets.exit` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし、dev build 2.36秒 | `clippy.log`／`clippy.exit` |
+| `cargo audit --version` | 0、literal `cargo-audit-audit 0.22.2`、版は0.22.2 | `audit-version.log`／`audit-version.exit` |
+| `cargo audit --file Cargo.lock` | 0、通常のRustSec DB fetch・crates.io index更新、1395 advisories／230 dependencies、警告・脆弱性報告なし | `audit.log`／`audit.exit` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0、release build 7.42秒、警告なし | `release-build.log`／`release-build.exit` |
+| `git diff --check` | 0（本結果追記前の検証差分） | `diff-check.log`／`diff-check.exit` |
+
+all-targetsの同じ1回から、Cargo build **9.63秒**、wall **161.69秒**、報告されたsuite時間合計 **116.62秒**、request_timeout suite **30.16秒**を記録します。tui_processは114成功／54.73秒、libは28成功・2 ignored／6.48秒。timeoutの実6ケース・各CLIの29秒以上40秒未満という既存assertを含みます。これらは参考値で、異なる旧workloadとの厳密な性能比較・中央値・flake不存在の証明ではありません。改訂で撤廃した150秒／group40秒の性能閾値、full3回・focused10反復を未達条件にはしません。
+
+**Root wrapperの停止も記録:** 独自shell guardが `cargo audit --version` のliteralを `cargo-audit 0.22.2` と仮定し、実出力 `cargo-audit-audit 0.22.2` を想定外としてaudit／build前にwrapper exit2で停止しました。正式version command自体はexit0・版0.22.2であり、原因はRoot guardの文字列仮定で、製品や正式チェックの失敗ではありません。確認後に未実行のaudit／buildへ進み、正式コマンドの重複・無変更test retry・source／config修正はありません。追加のCI形式 `cargo-audit --version` はexact `cargo-audit 0.22.2`、exit0（`ci-audit-version.log`／`.exit`）で、既存CIのexact版guardとも整合しました。
+
+監査前後のCargo.lock SHA-256はともに `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16`（`lock-before-audit.sha256`／`lock-after-audit.sha256`）。PlanのSHA-256も `a6f2a2ac73a2156f9b25d1fb85db00ca3e3d2276585eca0ff331993669450491` で不変です。Rust／Cargo警告なし。all-targetsにはTLS trust拒否経路の既存Python server例外見出しが**5件**あり、うち1件は `ssl.SSLError: TLSV1_ALERT_UNKNOWN_CA` を含みます。#55／#56にも記録された診断で、対応試験は全て成功し、抑制・fixture変更はしていません。
+
+**Rootの直接文書確認（正式チェックとは別工程）:** CONTRIBUTINGの6コマンドはtargetと `--exact` を保ち、`--nocapture` を `--list` に替えて各exit0・選択1件を確認し、その同名試験の `... ok` を今回のall-targetsに照合しました（`direct-filter-1..6.log`、`direct-documentation.log`／`.exit`、exit0）。試験本体の追加実行ではありません。
+
+| 境界 | 各1件選択し、今回all-targetsでも成功したfilter |
+|---|---|
+| 純粋な変換・表示 | `markdown_headings_and_nested_emphasis_keep_lines_and_unicode`、`shell_shows_all_five_panels_only_at_the_full_layout_boundary` |
+| CLI引数・JSON／HTTPS | `bl_cli_help_needs_neither_configuration_nor_a_terminal`、`json_view_preserves_original_fields_and_builds_url_without_project_get` |
+| PTY editor・signal復元 | `tui::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff`、`tui::tests::shell_restores_when_sigint_arrives_during_entry_before_the_first_frame` |
+
+RootはA〜Fと共有editor／端末／timeoutも直接読み、A/D/Eのnonzero代表、Bの旧成功・ordinal2／3受信gate・対象GET4回・project3 rule＋4候補／project2候補なし・固定単一PATCH、Cの旧200／500・対象GET受信gateと各1回、Fの疎object／summary=false／milestone.name=nullとUpdated・Do not resend・旧Detail・単一PATCH・後続GETなしを改訂Planへ照合しました。遅延・deadlineと維持対象のassertは不変です。
+
+#56 focusedの源泉は `/tmp/backlog-56-resume-root.czOzeP/` の `focused`／`fixture`／`editor`／`shared-terminal` 各 `.log`／`.exit`（全exit0、6成功／8.82秒・3成功／1.31秒・5成功／0.14秒・1成功［内部13経路］／6.38秒）。`focused-source-correspondence.log` はそのfocused／Review対象の3 test／fixture差分と現HEADの一致、#57での無変更を確認しています。これは変更していないsourceへの#56実行証拠の対応確認で、#57で新実行したfocusedとは記しません。今回のall-targets成功は別の新しい実行証拠です。
+
+Rootの直接assertはAGENTSから単一のCONTRIBUTING基準への導線、相対リンク／anchor、旧受入記録prefix、対象外source・Plan／lock不変も確認しました。既存 `.github/workflows/quality.yml` のmacos-15、fmt／all-targets／Clippy／通常auditとcargo-audit 0.22.2は文書と整合し、workflow不変。release buildはローカル確認で、CI stepとは説明していません。
+
+**残件・限界:** 今回差分のfreshな独立2 ReviewとCode Review gateは本追記時点でこれからであり、通過・Issue完了・merge可能とは記しません。実CI・別途release直接操作・実端末／IME・実Backlogは今回未実施。代表化による交差検出範囲の縮小は残り、完全同等保証・flake根因解消とはしません。過去のeditor／cutoff／startup内部原因は未確定、旧失敗・旧Issue #22の履歴／状態・他機能の受入条件は不変です。stage／commit／stash／push／Issue更新／merge／release／deployは行っていません。
