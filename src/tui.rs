@@ -264,6 +264,23 @@ impl Shell {
             }
             return None;
         }
+        if self.focus == Focus::Comment
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.is_empty()
+            && key.kind == KeyEventKind::Press
+        {
+            if let Some(key) = self.browse.update_target() {
+                self.create_generation += 1;
+                self.create_progress = crate::CreateProgress::default();
+                self.create = Some(create::Create::new_comment(
+                    key,
+                    &self.profile,
+                    &self.origin,
+                    self.browse.space.as_deref().unwrap_or(""),
+                ));
+            }
+            return None;
+        }
         self.browse.key(key.code, self.focus, rows);
         match key.code {
             KeyCode::Char('h' | 'l') | KeyCode::Tab | KeyCode::BackTab => {
@@ -286,9 +303,16 @@ impl Shell {
         match self.create.as_mut().unwrap().event(event, area) {
             create::Action::None => {}
             create::Action::Close => {
-                let update = self.create.as_ref().unwrap().update_key.is_some();
+                let form = self.create.as_ref().unwrap();
+                let focus = if form.comment {
+                    Focus::Comment
+                } else if form.update_key.is_some() {
+                    Focus::Detail
+                } else {
+                    Focus::Issue
+                };
                 self.create = None;
-                self.set_focus(if update { Focus::Detail } else { Focus::Issue });
+                self.set_focus(focus);
             }
             create::Action::Editor => self.editor_request = Some(EditorRequest::CreateBody),
         }
@@ -366,10 +390,7 @@ impl Shell {
                 "h/l Tab/S-Tab:Comment",
                 "j/k PgUp/Dn g/G e:edit R Esc:Issue",
             ),
-            Focus::Comment => (
-                "h/l Tab/S-Tab:Detail",
-                "j/k n:older p:newer g/G R Esc:Issue",
-            ),
+            Focus::Comment => ("h/l Tab/S-Tab:Detail", "j/k n/p:page g/G c:add R Esc:Issue"),
         };
         let regions = "H:Left L:Right";
         let exits = if compact {
@@ -681,9 +702,7 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
     let mut create_load: Option<(u64, tokio::task::JoinHandle<Result<create::Loaded, Error>>)> =
         None;
     let mut create_write: Option<tokio::task::JoinHandle<Result<serde_json::Value, Error>>> = None;
-    let mut update_prepare: Option<
-        tokio::task::JoinHandle<Result<crate::service::PreparedIssueUpdate, Error>>,
-    > = None;
+    let mut update_prepare: Option<tokio::task::JoinHandle<Result<create::Prepared, Error>>> = None;
     shell.origin = config.origin.to_string();
     let result = catch_unwind(AssertUnwindSafe(|| runtime.block_on(async {
         // Register eagerly: raw-mode entry must never precede the SIGINT handler.
@@ -734,21 +753,28 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                     }
                     if update_prepare.as_ref().is_some_and(|task| task.is_finished()) {
                         let result = update_prepare.take().unwrap().await.map_err(|_| Error::new("terminal", "Update preparation task failed"))?;
-                        shell.create.as_mut().unwrap().prepared(result);
+                        let form = shell.create.as_mut().unwrap();
+                        form.prepared(result);
+                        if form.comment { shell.create_progress.record(form.send_outcome(), None); }
                     }
                     if create_write.as_ref().is_some_and(|task| task.is_finished()) {
                         let result = create_write.take().unwrap().await.map_err(|_| Error::new("terminal", "Create task failed"))?;
                         let mut updated_key = None;
                         let result = result.and_then(|value| {
                             let form = shell.create.as_ref().unwrap();
-                            if form.update_key.is_some() {
-                                let text = form.update_display(&value, &config)?;
+                            if form.update_key.is_some() && (!form.comment || value["resource"] == "issue") {
+                                let issue = if form.comment { &value["data"] } else { &value };
+                                let text = form.update_display(issue, &config).map_err(|mut error| {
+                                    if form.comment { error.write = None; error = error.with_write_outcome("comment.add", crate::WriteOutcome::Updated); }
+                                    error
+                                })?;
                                 if form.update_key == shell.browse.detail.key {
                                     shell.browse.invalidate_detail();
                                     shell.browse.detail.replace(text.into());
                                     updated_key = form.update_key.clone();
                                 }
                             }
+                            if form.comment { updated_key = form.update_key.clone(); }
                             Ok(value)
                         });
                         if shell.create.as_mut().unwrap().finished(result) { shell.browse.refresh_after_create(); }
@@ -824,14 +850,19 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             update_prepare = Some(tokio::spawn(preparation.run(service)));
                         }
                         if create.loading() && create_load.is_none() {
-                            let config = Arc::clone(&config); let project = create.project.id.clone(); let key = create.update_key.clone();
+                            let config = Arc::clone(&config); let project = create.project.id.clone(); let key = create.update_key.clone(); let comment = create.comment;
                             create_load = Some((shell.create_generation, tokio::spawn(async move {
-                                match key { Some(key) => create::load_update(&config, &key).await, None => create::load(&config, &project).await }
+                                match key { Some(key) => create::load_update(&config, &key, comment).await, None => create::load(&config, &project).await }
                             })));
                         }
                         if create.sending() && create_write.is_none() {
+                            if create.comment {
+                                shell.create_progress.record(create.send_outcome(), None);
+                            }
                             let submission = create.submission();
-                            let service = if create.update_key.is_some() {
+                            let service = if create.comment {
+                                crate::service::Service::with_comment_progress(&config, shell.create_progress.clone())?
+                            } else if create.update_key.is_some() {
                                 crate::service::Service::with_update_progress(&config, shell.create_progress.clone())?
                             } else { crate::service::Service::with_create_progress(&config, shell.create_progress.clone())? };
                             create_write = Some(tokio::spawn(submission.run(service)));
@@ -879,6 +910,7 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         result.map_err(|mut error| {
             let (outcome, status) = shell.create_progress.snapshot();
             error.http_status = status;
+            let comment = shell.create.as_ref().unwrap().comment;
             let update = shell.create.as_ref().unwrap().update_key.is_some();
             let label = match outcome {
                 crate::WriteOutcome::Updated => "updated: issue updated; do not resend",
@@ -890,8 +922,17 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                 crate::WriteOutcome::Unknown => "unknown: creation result unknown; do not resend",
                 _ => "not_created: issue not created",
             };
+            let label = if comment && matches!(outcome, crate::WriteOutcome::Unknown) {
+                "unknown: comment.add result unknown; do not resend".into()
+            } else if comment {
+                label.replace("issue", "comment.add")
+            } else {
+                label.into()
+            };
             error.message.push_str(&format!("; {label}"));
-            if update {
+            if comment {
+                error.with_write_outcome("comment.add", outcome)
+            } else if update {
                 error.with_update_outcome(outcome)
             } else {
                 error.with_create_outcome(outcome)

@@ -105,6 +105,7 @@ pub enum CommentOrder {
 }
 
 /// A validated update, kept opaque so confirmation and transmission use the same changes.
+#[derive(Clone)]
 pub(crate) struct PreparedIssueUpdate {
     issue: String,
     form: Vec<(&'static str, String)>,
@@ -112,6 +113,26 @@ pub(crate) struct PreparedIssueUpdate {
 impl PreparedIssueUpdate {
     pub(crate) fn changes(&self) -> &[(&'static str, String)] {
         &self.form
+    }
+}
+
+/// A comment registration whose method and form are fixed before confirmation.
+#[derive(Clone)]
+pub(crate) struct PreparedCommentAdd {
+    issue: String,
+    form: Vec<(&'static str, String)>,
+    patch: bool,
+}
+impl PreparedCommentAdd {
+    pub(crate) fn changes(&self) -> &[(&'static str, String)] {
+        &self.form
+    }
+    pub(crate) fn outcome(&self) -> WriteOutcome {
+        if self.patch {
+            WriteOutcome::NotUpdated
+        } else {
+            WriteOutcome::NotCreated
+        }
     }
 }
 
@@ -139,6 +160,14 @@ impl Service {
     ) -> Result<Self, Error> {
         Ok(Self {
             api: Api::with_update_progress(config, progress)?,
+        })
+    }
+    pub(crate) fn with_comment_progress(
+        config: &Config,
+        progress: crate::CreateProgress,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            api: Api::with_comment_progress(config, progress)?,
         })
     }
     pub async fn comment_update(
@@ -188,11 +217,25 @@ impl Service {
         Ok(value)
     }
     pub async fn comment_add(&self, issue: &str, add: CommentAdd<'_>) -> Result<Value, Error> {
-        self.add_comment_inner(issue, add)
+        let prepared = self.prepare_comment_add(issue, add, None).await?;
+        self.send_comment_add(prepared).await
+    }
+    pub(crate) async fn prepare_comment_add(
+        &self,
+        issue: &str,
+        add: CommentAdd<'_>,
+        latest: Option<&Value>,
+    ) -> Result<PreparedCommentAdd, Error> {
+        self.comment_add_form(issue, add, latest)
             .await
             .map_err(|error| error.with_write_outcome("comment.add", WriteOutcome::NotCreated))
     }
-    async fn add_comment_inner(&self, issue: &str, add: CommentAdd<'_>) -> Result<Value, Error> {
+    async fn comment_add_form(
+        &self,
+        issue: &str,
+        add: CommentAdd<'_>,
+        latest: Option<&Value>,
+    ) -> Result<PreparedCommentAdd, Error> {
         validate_issue_identifier(issue)?;
         let mut form = if add.status.is_some()
             || add.assignee.is_some()
@@ -210,15 +253,33 @@ impl Service {
                     clear_resolution: add.clear_resolution,
                     ..Default::default()
                 },
-                None,
+                latest,
             )
             .await?
         } else {
             Vec::new()
         };
         let body = add.body.filter(|body| !body.is_empty());
+        let patch = !form.is_empty();
+        if let Some(body) = body {
+            form.push((if patch { "comment" } else { "content" }, body.into()));
+        }
         if form.is_empty() {
-            let body = body.ok_or_else(|| Error::new("input", "No body or fields have changed"))?;
+            return Err(Error::new("input", "No body or fields have changed"));
+        }
+        Ok(PreparedCommentAdd {
+            issue: issue.into(),
+            form,
+            patch,
+        })
+    }
+    pub(crate) async fn send_comment_add(
+        &self,
+        prepared: PreparedCommentAdd,
+    ) -> Result<Value, Error> {
+        let issue = &prepared.issue;
+        if !prepared.patch {
+            let body = &prepared.form[0].1;
             let value = self.api.add_comment(issue, body).await?;
             if !value
                 .get("id")
@@ -231,10 +292,10 @@ impl Service {
             }
             Ok(serde_json::json!({"resource":"comment","data":value}))
         } else {
-            if let Some(body) = body {
-                form.push(("comment", body.into()));
-            }
-            let value = self.api.update_issue_for_comment(issue, &form).await?;
+            let value = self
+                .api
+                .update_issue_for_comment(issue, &prepared.form)
+                .await?;
             if !valid_written_issue(&value) {
                 return Err(
                     invalid_response("Updated issue response has invalid required fields")

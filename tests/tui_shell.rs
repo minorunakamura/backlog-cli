@@ -214,6 +214,7 @@ fn shell_region_guidance_fits_full_and_minimum_sizes() {
                 assert!(text.contains(help), "{w}x{h} missing {help}: {text}");
             }
         }
+        assert!(screen(&shell, w, h).contains("c:add"));
     }
 }
 

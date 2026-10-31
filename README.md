@@ -4,7 +4,7 @@ Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
 `bl` はプロジェクト選択、通常/横断検索ダイアログ、課題一覧のページ巡回、選択追従プレビュー/詳細・コメント閲覧と再取得、ブラウザ起動、端末復元を利用できます。
-設定editor連携と課題作成・更新フォームを利用できます。コメント書込みのTUIフォームは未実装です。
+設定editor連携と課題作成・更新、コメント追加フォームを利用できます。既存コメント本文のTUI編集は未実装です。
 課題作成 (#20) の実端末・実Backlog受入結果は[手動受入記録](docs/testing/manual-acceptance.md#issue-20-tui課題作成)を参照してください。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -185,7 +185,32 @@ TUIでは種別・ID・BODY／CHANGES見出し・末尾metadataを付けませ�
 ちょうど10,000は比較対象です。これはTUI独自の表示基準で、Backlog WebやAPIの文字数制限・超過フラグとは同一ではありません。
 通常コメント・他の履歴・CLI／JSON・APIデータには適用しません。50ms目安の近似比較でも対象全文は保持し、秘匿を装飾より優先します。
 本文なし履歴だけのページでは記法確認のためのissue/project GETを追加しません。
-`c`／`e`による追加・編集は今回未実装です。最新buildでの#18受入結果と未確認事項は[手動受入記録](docs/testing/manual-acceptance.md)を参照してください。
+`c`による追加は次節、`e`による既存コメント本文編集は未実装です。最新buildでの#18受入結果と未確認事項は[手動受入記録](docs/testing/manual-acceptance.md)を参照してください。
+
+### TUIコメント追加 (#22)
+
+- Commentにfocusして修飾なし **c** で選択課題を固定した追加フォームを開きます。
+  開いた時の最新課題の状態・担当者・完了理由を初期表示し、create設定は流用しません。本文は空から始めます。
+- Tab／Shift+Tabで **本文→状態→担当者→完了理由→確認→取消** を循環します。
+  本文のEnter／Spaceで設定editorを開き、Deleteで本文をクリアします。Ctrl+Bは本文へfocus、Ctrl+Aは担当者へfocusだけです。
+  候補はEnter／Spaceで開き、上下／j/kで移動、Enter／Spaceで選択、Escで候補だけ閉じます。
+  担当者・完了理由は解除候補またはDeleteで明示解除でき、完了理由ID **0** は解除とは別です。状態変更で完了理由を自動設定・解除しません。
+- 本文も実変更もなければ確認へ進めません。同値候補は変更に数えません。非空本文だけならPOST comments、
+  課題項目の実変更があれば本文と共に1 PATCH issueです。空本文はcommentへ含めず、descriptionは変更しません。
+- 確認ではprofile／origin／space／対象課題・本文原文・変更と解除を安全表示します。
+  **確認Enterでは送らず、独立したsだけで1回送信**します。Escで編集へ戻り、入力差がある取消では破棄確認を出します。
+  resize・editor失敗・確認往復で入力を保持し、送信／表示更新中の編集・再送・破棄を無効にします。
+- 正常な登録後はPOST／PATCHどちらも最新Commentページを一度取得します（20件・ID降順・境界なし）。
+  必要な記法GETと全表示準備も成功した後だけ最新1件・本文先頭へ交換します。空ページも正常な空表示です。
+  正常な対象課題objectがあるPATCHはDetailにも反映します。**Issue Listの行・タイトル・条件・total・履歴・選択・scrollは一切変更しません**。
+- 再取得失敗はCreated／Updatedと旧Commentの内容・選択・scrollを保ち、「登録済み・コメント表示更新失敗／旧表示保持／再送不要」を通知します。
+  結果をEnter／Escで閉じてCommentの **R** で表示を更新できます。再取得は登録の成功判定やコメントID探索には使いません。
+  登録応答のbody／JSON／必要field検証が失敗しても観測済みCreated／Updatedを下げず、自動再取得・再送しません。
+- 送信／再取得中のCtrl+C／SIGINTは130で中断し、task回収後のcomment.add確度を通知して端末を復元します。
+  成否不明はUnknownとして再送へ誘導しません。retry・権限エラー時の別方式fallbackはありません。
+
+ローカル製品検証の手順は[CONTRIBUTING](CONTRIBUTING.md#tuiコメント追加-22-releaseの直接ローカル検証)、
+実端末・実Backlogの必須受入と未実施事項は[手動受入記録](docs/testing/manual-acceptance.md#issue-22-tuiコメント追加)を参照してください。
 
 ### TUI検索ダイアログ (#17)
 

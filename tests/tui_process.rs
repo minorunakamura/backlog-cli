@@ -7,6 +7,15 @@ fn shell(h: &Harness, mode: &str, args: &[&str]) -> Value {
     shell_waiting(h, mode, args, "")
 }
 fn shell_waiting(h: &Harness, mode: &str, args: &[&str], marker: &str) -> Value {
+    shell_waiting_with_deadline(h, mode, args, marker, 8)
+}
+fn shell_waiting_with_deadline(
+    h: &Harness,
+    mode: &str,
+    args: &[&str],
+    marker: &str,
+    deadline_seconds: u64,
+) -> Value {
     let configured = h.command(&[]);
     let output = Command::new("python3")
         .arg(concat!(
@@ -22,6 +31,7 @@ fn shell_waiting(h: &Harness, mode: &str, args: &[&str], marker: &str) -> Value 
             "PATH",
             format!("{}:/usr/bin:/bin", h.root.join("bin").display()),
         )
+        .env("SHELL_DEADLINE_SECONDS", deadline_seconds.to_string())
         .env("SHELL_STEPS_FILE", h.root.join("shell-steps.json"))
         .env("SHELL_REQUESTS_FILE", h.root.join("requests"))
         .env(
@@ -287,8 +297,11 @@ fn bl_help_with_profile_bypasses_config_and_missing_profiles_do_not_fallback() {
 }
 
 fn scripted(h: &Harness, steps: Value) -> Value {
+    scripted_with_deadline(h, steps, 8)
+}
+fn scripted_with_deadline(h: &Harness, steps: Value, deadline_seconds: u64) -> Value {
     std::fs::write(h.root.join("shell-steps.json"), steps.to_string()).unwrap();
-    let result = shell(h, "scripted", &[]);
+    let result = shell_waiting_with_deadline(h, "scripted", &[], "", deadline_seconds);
     assert_eq!(result["code"], 0, "{result}");
     assert_eq!(result["restored"], true, "{result}");
     assert_eq!(result["stderr"], "", "{result}");
@@ -5460,5 +5473,565 @@ fn bl_update_comment_refresh_failure_retains_empty_or_unfetched_state_instead_of
             3,
             "one PATCH plus automatic and manual Latest only: {requests:?}"
         );
+    }
+}
+
+#[test]
+fn bl_comment_add_body_only_confirms_then_posts_once_and_refreshes_without_touching_list() {
+    let mut routes = update_routes();
+    routes["routes"]["POST /api/v2/issues/B-1/comments"] =
+        json!({"status":201,"body":"{\"id\":99}"});
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),"body-file"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    let body = " Raw comment 日本語\n test-secret\u{1b}]52;c;unsafe\u{7}\n";
+    std::fs::write(h.root.join("editor-body"), body).unwrap();
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Llc"},
+            {"wait":"Add comment","keys":"\r"},
+            {"wait":"EDITOR READY","keys":"\n"},
+            {"wait":"Body editor finished","keys":"\t\r\r\t\t\t\r"},
+            {"wait":"Confirm comment","keys":"\r"},
+            {"wait":"Confirm comment","keys":"s"},
+            {"wait":"Comment display refreshed","keys":"\r"},
+            {"wait":"> Comment","keys":"q"}
+        ]),
+    );
+    let counts = result["request_counts"].as_array().unwrap();
+    assert_eq!(counts[4], counts[5], "Enter sent: {result}");
+    let requests = h.requests();
+    let writes: Vec<_> = requests.iter().filter(|r| r["method"] != "GET").collect();
+    assert_eq!(writes.len(), 1, "{requests:?}");
+    assert_eq!(writes[0]["method"], "POST");
+    assert_eq!(writes[0]["path"], "/api/v2/issues/B-1/comments");
+    assert_eq!(writes[0]["form"], json!({"content":[body]}));
+    let sent = requests.iter().position(|r| r["method"] == "POST").unwrap();
+    assert!(
+        requests[sent + 1..]
+            .iter()
+            .all(|r| r["path"] != "/api/v2/issues" && r["path"] != "/api/v2/issues/count")
+    );
+    assert!(!result["stdout"].as_str().unwrap().contains("test-secret"));
+    assert!(!result["stdout"].as_str().unwrap().contains("\u{1b}]52;"));
+}
+
+#[test]
+fn bl_comment_add_patch_confirmation_interrupt_keeps_comment_operation_and_not_updated() {
+    let h = Harness::new(update_routes());
+    settings(&h, "B");
+    std::fs::write(
+        h.root.join("shell-steps.json"),
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Llc"},
+            {"wait":"Add comment","keys":"\t\rj\r\t\t\t\r"},
+            {"wait":"Confirm comment","keys":"\u{3}"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let result = shell(&h, "scripted", &[]);
+    assert_eq!(result["code"], 130, "{result}");
+    assert_eq!(result["restored"], true);
+    let stderr = result["stderr"].as_str().unwrap();
+    assert!(stderr.contains("not_updated: comment.add"), "{result}");
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+}
+
+fn comment_add_routes() -> Value {
+    let mut routes = update_routes();
+    let mut latest = update_issue();
+    latest["assignee"] = json!({"id":4,"name":"Latest owner"});
+    latest["resolution"] = json!({"id":8,"name":"Latest resolution"});
+    routes["routes"]["GET /api/v2/issues/B-1"]["sequence"][1]["body"] = json!(latest.to_string());
+    routes["routes"]["POST /api/v2/issues/B-1/comments"] =
+        json!({"status":201,"body":"{\"id\":99}"});
+    routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"sequence":[
+        {"body":json!([comment_item(1,json!(null),json!([{"field":"old","originalValue":null,"newValue":"OLD COMMENT"}]))]).to_string()},
+        {"header_delay":0.3,"body":json!([comment_item(99,json!(null),json!([{"field":"new","originalValue":null,"newValue":"LATEST REGISTERED"}]))]).to_string()}
+    ]});
+    routes
+}
+
+#[test]
+fn bl_comment_add_latest_fields_no_defaults_independent_changes_clears_and_resolution_zero() {
+    for (keys, expected, body) in [
+        ("\t\rj\r\t\t\t\r", json!({"statusId":["2"]}), false),
+        (
+            "\t\rj\r\t\t\t\r",
+            json!({"statusId":["2"],"comment":[" Raw comment\n\n"]}),
+            true,
+        ),
+        (
+            "\t\t\u{1b}[3~\t\u{1b}[3~\t\r",
+            json!({"assigneeId":[""],"resolutionId":[""]}),
+            false,
+        ),
+        ("\t\t\t\rj\r\t\r", json!({"resolutionId":["0"]}), false),
+    ] {
+        let h = Harness::new(comment_add_routes());
+        settings(&h, "B");
+        std::fs::write(h.root.join(".backlog/settings.json"), json!({"project":"B","issue":{"create":{"issueType":"DO NOT USE","priority":"DO NOT USE","assignee":"DO NOT USE"}}}).to_string()).unwrap();
+        let mut steps = vec![json!({"wait":"OLD COMMENT","keys":"Llc"})];
+        if body {
+            h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),"body-file"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+            std::fs::write(h.root.join("editor-body"), " Raw comment\n\n").unwrap();
+            steps.extend([
+                json!({"wait":"Add comment","keys":"\r"}),
+                json!({"wait":"EDITOR READY","keys":"\n"}),
+            ]);
+        }
+        steps.extend([
+            json!({"wait":"Latest owner (4)","keys":keys}),
+            json!({"wait":"Confirm comment","keys":"\r"}),
+            json!({"wait":"Confirm comment","keys":"s"}),
+            json!({"wait":"Sending","keys":"ss\r\u{1b}\u{2}"}),
+            json!({"wait":"Comment display refreshed","keys":"\r"}),
+            json!({"wait":"LATEST REGISTERED","keys":"l"}),
+            json!({"wait":"Changed title","keys":"H"}),
+            json!({"wait":"Selected project issue","keys":"q"}),
+        ]);
+        let result = scripted(&h, json!(steps));
+        let requests = h.requests();
+        let writes: Vec<_> = requests.iter().filter(|r| r["method"] != "GET").collect();
+        assert_eq!(writes.len(), 1, "{requests:?}");
+        assert_eq!(writes[0]["method"], "PATCH");
+        assert_eq!(writes[0]["form"], expected, "{requests:?}");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["path"] == "/api/v2/issues/B-1" && r["method"] == "GET")
+                .count(),
+            2,
+            "no confirmation GET: {requests:?}"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("/api/v2/issues/B-1/comments?"))
+                .count(),
+            2
+        );
+        assert!(
+            requests.iter().all(|r| ![
+                "/api/v2/priorities",
+                "/api/v2/projects/2/issueTypes",
+                "/api/v2/projects/2/versions"
+            ]
+            .contains(&r["path"].as_str().unwrap())),
+            "{requests:?}"
+        );
+        assert!(
+            result["snapshots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s.as_str().unwrap().contains("Updated: B-1")),
+            "{result}"
+        );
+        if body {
+            let record: Value =
+                serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap())
+                    .unwrap();
+            assert_eq!(record["original"], "", "Comment must not copy description");
+        }
+    }
+}
+
+#[test]
+fn bl_comment_add_empty_and_same_values_reject_without_write_or_discard_and_never_copy_description()
+{
+    let h = Harness::new(comment_add_routes());
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"OLD COMMENT","keys":"Llc"},
+            {"wait":"Add comment","keys":"\t\t\t\t\r"},
+            {"wait":"No body or fields have changed","keys":"\u{1b}"},
+            {"wait":"> Comment","keys":"c"},
+            {"wait":"Add comment","keys":"\t\r\r\t\rj\r\t\rjj\r\t\r"},
+            {"wait":"No body or fields have changed","keys":"\u{1b}"},
+            {"wait":"> Comment","keys":"q"}
+        ]),
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("Discard changes?")
+    );
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+}
+
+#[test]
+fn bl_comment_add_write_failures_preserve_method_certainty_and_never_refresh_or_retry() {
+    for patch in [false, true] {
+        for (response, outcome) in [
+            (
+                json!({"status":403,"body":"{\"errors\":[{\"code\":5,\"message\":\"Denied test-secret\"}]}"}),
+                if patch { "NotUpdated" } else { "NotCreated" },
+            ),
+            (json!({"status":500,"body":"{}"}), "Unknown"),
+            (
+                json!({"body":"not json"}),
+                if patch {
+                    "Updated; response processing failed"
+                } else {
+                    "Created; response processing failed"
+                },
+            ),
+            (
+                json!({"body":"{}"}),
+                if patch {
+                    "Updated; response processing failed"
+                } else {
+                    "Created; response processing failed"
+                },
+            ),
+            (
+                json!({"body":"{\"id\":99}","truncate":true}),
+                if patch {
+                    "Updated; response processing failed"
+                } else {
+                    "Created; response processing failed"
+                },
+            ),
+        ] {
+            let mut routes = comment_add_routes();
+            let mut response = response;
+            if response.get("status").is_none() {
+                response["status"] = json!(if patch { 200 } else { 201 });
+            }
+            routes["routes"][if patch {
+                "PATCH /api/v2/issues/B-1"
+            } else {
+                "POST /api/v2/issues/B-1/comments"
+            }] = response;
+            let h = Harness::new(routes);
+            settings(&h, "B");
+            h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),"body"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+            let result = scripted(
+                &h,
+                json!([
+                    {"wait":"OLD COMMENT","keys":"Llc"},
+                    {"wait":"Add comment","keys":"\r"},
+                    {"wait":"EDITOR READY","keys":"\n"},
+                    {"wait":"Body editor finished","keys":if patch {"\t\rj\r\t\t\t\r"} else {"\t\t\t\t\r"}},
+                    {"wait":"Confirm comment","keys":"s"},
+                    {"wait":outcome,"keys":"s\u{2}bad"},
+                    {"wait":outcome,"keys":"\r"},
+                    {"wait":"OLD COMMENT","keys":"q"}
+                ]),
+            );
+            let requests = h.requests();
+            let sent = requests.iter().position(|r| r["method"] != "GET").unwrap();
+            assert_eq!(
+                sent,
+                requests.len() - 1,
+                "No followup success GET or retries: {requests:?}"
+            );
+            assert!(!result["stdout"].as_str().unwrap().contains("test-secret"));
+        }
+    }
+}
+
+#[test]
+fn bl_comment_add_post_and_patch_interrupt_abort_join_before_headers_after_headers_and_refresh() {
+    for patch in [false, true] {
+        for phase in ["sent", "headers", "refresh"] {
+            for signal in [false, true] {
+                let mut routes = comment_add_routes();
+                let method = if patch {
+                    "PATCH /api/v2/issues/B-1"
+                } else {
+                    "POST /api/v2/issues/B-1/comments"
+                };
+                if phase == "refresh" {
+                    routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"][1]["header_delay"] =
+                        json!(20);
+                } else {
+                    routes["routes"][method][if phase == "sent" {
+                        "header_delay"
+                    } else {
+                        "delay"
+                    }] = json!(20);
+                }
+                let h = Harness::new(routes);
+                settings(&h, "B");
+                h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),"body"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+                let marker = format!(
+                    "{}-{}",
+                    if patch { "patch" } else { "post" },
+                    if phase == "headers" {
+                        "headers-sent"
+                    } else {
+                        "received"
+                    }
+                );
+                let mut last = json!({"wait":if phase == "refresh" {"refreshing comments"} else {"Sending"},"wait_file":marker,"pause":0.15});
+                if signal {
+                    last["signal"] = json!("SIGINT");
+                } else {
+                    last["keys"] = json!("\u{3}");
+                }
+                std::fs::write(h.root.join("shell-steps.json"),json!([
+                    {"wait":"OLD COMMENT","keys":"Llc"},
+                    {"wait":"Add comment","keys":"\r"},
+                    {"wait":"EDITOR READY","keys":"\n"},
+                    {"wait":"Body editor finished","keys":if patch {"\t\rj\r\t\t\t\r"} else {"\t\t\t\t\r"}},
+                    {"wait":"Confirm comment","keys":"s"},last
+                ]).to_string()).unwrap();
+                let result = shell(&h, "scripted", &[]);
+                assert_eq!(result["code"], 130, "{patch}/{phase}/{signal}: {result}");
+                assert_eq!(result["restored"], true, "{result}");
+                assert!(result["elapsed"].as_f64().unwrap() < 5.0, "{result}");
+                let stderr = result["stderr"].as_str().unwrap();
+                assert!(
+                    stderr.contains(if phase == "sent" {
+                        "unknown:"
+                    } else if patch {
+                        "updated:"
+                    } else {
+                        "created:"
+                    }),
+                    "{result}"
+                );
+                assert!(
+                    stderr.contains("comment.add") && stderr.contains("do not resend"),
+                    "{result}"
+                );
+                assert_eq!(
+                    h.requests().iter().filter(|r| r["method"] != "GET").count(),
+                    1
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn bl_comment_add_refresh_is_atomic_preserves_old_selection_scroll_and_certainty_on_failure() {
+    for patch in [false, true] {
+        for failure in ["http", "preview", "formatting", "empty", "body"] {
+            let mut routes = comment_add_routes();
+            let lines = (1..=40)
+                .map(|n| format!("OLD LINE {n:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let old = json!([
+                comment_item(
+                    2,
+                    Value::Null,
+                    json!([{"field":"other","originalValue":null,"newValue":"OTHER ENTRY"}])
+                ),
+                comment_item(
+                    1,
+                    Value::Null,
+                    json!([{"field":"old","originalValue":null,"newValue":lines}])
+                )
+            ]);
+            routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"][0] =
+                json!({"body":old.to_string()});
+            let fresh = match failure {
+                "http" => json!({"status":500}),
+                "preview" => {
+                    json!({"body":json!([{"id":99,"content":"INVALID PREVIEW"}]).to_string()})
+                }
+                "empty" => json!({"body":"[]"}),
+                _ => {
+                    json!({"body":json!([comment_item(99,json!("FRESH BODY"),json!([]))]).to_string()})
+                }
+            };
+            routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"][1] = fresh;
+            if failure == "formatting" {
+                routes["routes"]["GET /api/v2/issues/B-1"]["sequence"][0]["header_delay"] =
+                    json!(0.7);
+                routes["routes"]["/api/v2/projects/2"] = json!({"sequence":[{"body":"{\"textFormattingRule\":\"markdown\"}"},{"body":"{\"textFormattingRule\":\"markdown\"}"},{"body":"{}"}]});
+            }
+            let h = Harness::new(routes);
+            settings(&h, "B");
+            h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),"body"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+            let success = matches!(failure, "empty" | "body");
+            let result = scripted(
+                &h,
+                json!([
+                    // Comment can load first; finish Detail so c cannot cancel its formatting GET.
+                    {"wait":"TITLE: Detail B-1"},
+                    {"wait":"OTHER ENTRY","keys":"Lln"},
+                    {"wait":"OLD LINE 01","keys":"jjjjjc"},
+                    {"wait":"Add comment","keys":"\r"},
+                    {"wait":"EDITOR READY","keys":"\n"},
+                    {"wait":"Body editor finished","keys":if patch {"\t\rj\r\t\t\t\r"} else {"\t\t\t\t\r"}},
+                    {"wait":"Confirm comment","keys":"s"},
+                    {"wait":if success {"Comment display refreshed"} else {"Comment R: refresh display"},"keys":"\r"},
+                    {"wait":if failure == "empty" {"No comments"} else if success {"FRESH BODY"} else {"OLD LINE 06"},"keys":"q"}
+                ]),
+            );
+            let result_screen = result["snapshots"][7].as_str().unwrap();
+            assert!(
+                result_screen.contains(if patch {
+                    "Updated: B-1"
+                } else {
+                    "Created: B-1"
+                }),
+                "{failure}: {result}"
+            );
+            if !success {
+                assert!(
+                    result_screen.contains("Old display retained")
+                        && result_screen.contains("Do not resend"),
+                    "{result}"
+                );
+            }
+            let requests = h.requests();
+            let sent = requests.iter().position(|r| r["method"] != "GET").unwrap();
+            if failure == "formatting" {
+                let formatting_reads = |reads: &[Value]| {
+                    reads
+                        .iter()
+                        .filter(|r| r["path"] == "/api/v2/projects/2")
+                        .count()
+                };
+                assert_eq!(formatting_reads(&requests[..sent]), 2, "{requests:?}");
+                assert_eq!(formatting_reads(&requests[sent + 1..]), 1, "{requests:?}");
+            }
+            assert_eq!(
+                requests[sent + 1..]
+                    .iter()
+                    .filter(|r| r["path"] == "/api/v2/issues/B-1/comments?count=20&order=desc")
+                    .count(),
+                1,
+                "{requests:?}"
+            );
+            assert!(requests[sent + 1..].iter().all(|r| {
+                r["method"] == "GET"
+                    && !r["path"].as_str().unwrap().starts_with("/api/v2/issues?")
+                    && !r["path"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("/api/v2/issues/count")
+            }));
+        }
+    }
+}
+
+#[test]
+fn bl_comment_add_editor_failures_resize_tiny_and_discard_keep_body_and_field_draft() {
+    for (mode, notice) in [
+        ("nonzero", "Editor did not exit successfully"),
+        ("utf8", "Cannot read editor file"),
+        ("unlink", "Cannot read editor file"),
+    ] {
+        let h = Harness::new(comment_add_routes());
+        settings(&h, "B");
+        h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),mode],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"OLD COMMENT","keys":"Llc"},
+                {"wait":"Add comment","keys":"\t\rj\r\u{2}\r"},
+                {"wait":"EDITOR READY","keys":"\n","resize":[12,40]},
+                {"wait":notice,"resize":[11,39]},
+                {"wait":"Terminal too small","keys":"s\r\u{1b}\u{2}"},
+                {"wait":"Terminal too small","resize":[24,100]},
+                {"wait":"Closed (2)","keys":"\t\t\t\t\r"},
+                {"wait":"Confirm comment","keys":"\u{1b}"},
+                {"wait":"Closed (2)","keys":"\u{1b}"},
+                {"wait":"Discard changes?","keys":"\u{1b}"},
+                {"wait":"Closed (2)","keys":"\u{1b}"},
+                {"wait":"Discard changes?","keys":"\r"},
+                {"wait":"> Comment","keys":"q"}
+            ]),
+        );
+        let record: Value =
+            serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap()).unwrap();
+        assert_eq!(record["original"], "");
+        assert!(
+            result["snapshots"][7]
+                .as_str()
+                .unwrap()
+                .contains("Status: Closed (2)"),
+            "{result}"
+        );
+        assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+        assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+    }
+}
+
+#[test]
+fn bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_replace_new_draft_or_registration()
+ {
+    for comment_read in [false, true] {
+        for failing in [false, true] {
+            let mut routes = comment_add_routes();
+            let delayed = if failing {
+                json!({"header_delay":1.3,"status":403})
+            } else {
+                json!({"header_delay":1.3,"body":update_issue().to_string()})
+            };
+            let mut latest = update_issue();
+            latest["assignee"] = json!({"id":9,"name":"New generation owner"});
+            routes["routes"]["GET /api/v2/issues/B-1"]["sequence"] = if comment_read {
+                json!([{"body":update_issue().to_string()},delayed.clone(),{"body":latest.to_string()}])
+            } else {
+                json!([{"body":update_issue().to_string()},delayed.clone(),delayed,{"body":latest.to_string()}])
+            };
+            if comment_read {
+                let old = routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"][0].clone();
+                let fresh = routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"][1].clone();
+                routes["routes"]["/api/v2/issues/B-1/comments"]["sequence"] = json!([old,{"header_delay":1.3,"status":if failing {500} else {200},"body":"[]"},fresh]);
+            }
+            let h = Harness::new(routes);
+            settings(&h, "B");
+            let result = scripted_with_deadline(
+                &h,
+                json!([
+                    // Finish both initial reads before reusing the generic GET marker.
+                    {"wait":"TITLE: Detail B-1"},
+                    {"wait":"OLD COMMENT","keys":if comment_read {"LlR"} else {"LR"},"remove":h.root.join("get-received")},
+                    // A busy screen precedes HTTP arrival; wait for each request before cancelling.
+                    {"wait":"Loading... Esc: cancel","wait_file":"get-received","keys":if comment_read {"c"} else {"lc"},"pause":0.2,"remove":h.root.join("get-received")},
+                    {"wait":"Loading issue / candidates","wait_file":"get-received","keys":"\u{1b}","pause":0.2},
+                    {"wait":"> Comment","keys":"c"},
+                    {"wait":"New generation owner","keys":"\t\rj\r\t\t\t\r","pause":1.4},
+                    {"wait":"Confirm comment","keys":"s"},
+                    {"wait":"Comment display refreshed","keys":"\r"},
+                    {"wait":"LATEST REGISTERED","keys":"q"}
+                ]),
+                // Whole multi-generation scenario budget, not an interrupt/response SLA.
+                15,
+            );
+            let requests = h.requests();
+            let writes: Vec<_> = requests.iter().filter(|r| r["method"] != "GET").collect();
+            assert_eq!(writes.len(), 1, "{requests:?}");
+            assert_eq!(writes[0]["method"], "PATCH");
+            assert_eq!(writes[0]["path"], "/api/v2/issues/B-1");
+            assert_eq!(writes[0]["form"], json!({"statusId":["2"]}));
+            for (path, count) in [
+                ("/api/v2/issues/B-1", if comment_read { 3 } else { 4 }),
+                (
+                    "/api/v2/issues/B-1/comments?count=20&order=desc",
+                    if comment_read { 3 } else { 2 },
+                ),
+            ] {
+                assert_eq!(
+                    requests
+                        .iter()
+                        .filter(|r| r["method"] == "GET" && r["path"] == path)
+                        .count(),
+                    count,
+                    "all old requests consumed before the new generation: {requests:?}"
+                );
+            }
+            assert!(
+                !result["snapshots"][5].as_str().unwrap().contains("ERROR"),
+                "{result}"
+            );
+        }
     }
 }
