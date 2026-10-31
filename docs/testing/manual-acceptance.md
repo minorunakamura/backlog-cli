@@ -2999,3 +2999,190 @@ commit／stage／stash／push／merge／release公開／deployは行っておら
 
 別々のfresh built-in reviewerでCorrectness（`e9bb1f3c-cffa-4cb7-90b3-1fa0d8fd730a`）とPonytail（`a60bff18-722e-4ff0-b876-eded6313d52d`）Reviewを実施し、両方とも修正要求なしでした。Rootも要求・実差分・根拠を確認し、採用して直す指摘・不採用の修正提案はありません。両Reviewerはread-onlyで、検証の再実行ではなくRootのログとコードを確認しました。
 この追記は検証結果の記録だけで、実装・期待値は変更していません。最終Code Review gateはこの追記時点で未実施です。full性能3回・release一式は最終Work Itemへ留保し、実CI・実端末／IME・実Backlogは未確認のままです。
+
+### #56 証拠のあるPTY取消前HTTP受信同期の限定修正（2026-10-31 UTC）
+
+Issue: https://github.com/minorunakamura/backlog-cli/issues/56 。正式Plan `docs/plans/test-infrastructure-performance.md` の実装方針3／TDDと公開seamに沿う記録です。
+開始HEAD `028cbdc4031072a78ce9c9aa382b69826fa49e96`、開始時clean、#54のTLS改善・失敗診断は実装済みでした。今回のコード編集は `tests/fixtures/tty_shell.py`、`tests/tty_shell_fixture.rs`、`tests/tui_process.rs` の当該取消試験だけです。
+製品src／API／公開契約、依存／lock、Plan、config／CI、既存assert／timeout、editor試験のstepは変更していません。
+
+#### Rootの実process制御と原因根拠（Worker実行とは別）
+
+以下はRootが今回の開始treeから作った診断であり、Planning Scoutのprobeや過去の成功を流用したものではありません。
+出典: `/tmp/backlog-56-root/probe-before-worker.py`（当初scriptのコピー）、`cancel-control.log`、`cancel-matrix.log`、`editor-matrix.log`（Workerは内容を読み取り、再実行はしていません）。`probe.py` は後に変更後driverの検証用へ編集されたため、初期実験の出典とは区別します。
+
+- 取消試験は対象 `GET /api/v2/issues/B-1` のsequenceを初期／旧Detail refresh／取消load／新loadの4回で消費する前提ですが、元の取消前条件はLoading画面と0.2秒だけでした。
+- 一時serverの `Handler.setup` で、次の1接続のTLS handshakeだけを0.65秒遅らせました。step0の`LR`で始まる接続だけ、またはstep1の`e`で始まる接続だけを個別に制御すると、元条件では取消直前の対象GET ordinal2または3が未受信でした。新loadがsequenceの旧応答を消費し、GET3／PATCH0のまま約8.01秒でdeadlineになりました。
+- Rootの一時driverだけに対象GET ordinal2／3待ちを加えた同じ制御は、旧成功／旧403ともGET4／PATCH1で約4.21〜4.23秒で完走しました。旧header_delay1.4秒、新draft後1.6秒の観測窓は維持しています。この実験は具体的な受信同期不足の根拠であり、過去のSending cutoffと同一原因である証明ではありません。
+- editorはnonzero／utf8／unlinkそれぞれで、現行pause0.08、notice直後pause0、notice後resizeだけ送って`Review /`描画を待ってからTab3＋Enter、の計9条件を実行し、全てexit0／対象GET2／PATCH1でした。notice時にBody focusを観測しています。12×40は編集を許可するサイズであり、resize原因の証拠はありません。editor操作や製品は修正せず、editorの過去cutoffの原因は未確定のままです。
+
+#### 限定変更とWorkerの公開境界RED→GREEN
+
+stepに任意の `wait_request:{"method":"GET","path":"/api/v2/issues/B-1","ordinal":2}` を追加しました。queryを除いたpathとmethodに一致する受信件数がordinal以上になるまで入力を送りません。
+当該取消試験の2 stepだけにordinal2／3を指定しました。画面／既存marker／pauseは併用し、既存pauseの意味は変えていません。
+HTTP記録を各判定で一度だけ読み、同じsnapshotの解析済みrecordsを条件と `request_counts`／`browse_request_counts` に使います。書込み途中の不完全なJSON行は既存失敗診断と同様に読み飛ばし、次の判定で再読します。browseの既存path判定は変更していません。
+HTTP受信はclient側の成功headers観測・描画完了・editor復帰・resize適用を証明しません。
+
+新回帰 `tty_shell_waits_for_the_matching_request_ordinal_before_sending_input` はprivate importではなく、実driverへstepを渡し、実PTY子processの入力を観測します。
+空の記録、method不一致、path不一致、ordinal不足、不完全な末尾の各0.15秒の否定観測窓で入力が来ないこと、一致時に1文字が届くこと、同snapshotの全件数6／browse件数3、送信後の追加記録を含む最終7件、子終了とtermios復元を確認します。
+この0.15秒は未成立時の有限の否定観測窓であり、製品同期の固定sleep置換ではありません。
+
+Workerログ: `/tmp/backlog-56-worker/`。環境はDarwin arm64／macOS 26.7.1、logical CPU10、rustc／cargo1.99.1、親Python3.14.9＋OpenSSL3.6.3、通常PTYのPATH内Pythonは `/usr/bin/python3` 3.9.6＋LibreSSL2.8.3、OpenSSL CLI4.0.3、RUST_TEST_THREADS未指定です（`environment.log`）。新回帰の制御用子process／driverは親Python、既存の実bl試験は従来の隔離PATHのPythonを使います。
+
+| Workerコマンド／ログ | exit・結果 |
+|---|---|
+| `cargo test --locked --test tty_shell_fixture tty_shell_waits_for_the_matching_request_ordinal_before_sending_input -- --exact --nocapture`／`red.log` | 101、未実装のdriverが条件成立前に入力を送信し子assertでRED |
+| 同コマンド／`green.log` | 101、入力gateは通ったが新テストのbrowse期待値が誤り。query付きissue pathは既存browse判定で計数されるため、新テストの入力と期待値だけ訂正（既存計数仕様は不変） |
+| 同コマンド／`green-corrected.log` | 0、1成功、suite1.23秒 |
+| `cargo test --locked --test tty_shell_fixture -- --nocapture`／`fixture.log` | **101、2成功／1失敗**。新回帰と既存deadlineは成功。既存exceptionはfailure種別のassertで失敗。元assertは受信JSONを表示せず、この実行の種別・原因は未確定 |
+| `python3 /tmp/backlog-56-worker/diagnose-exception.py`／`diagnose-exception.log` | 外側0／診断子0。既存exception手順を一時root／実HTTPS／実blで別途診断し、安全なfailure JSONを観測: FileNotFoundError、step1、0.257秒、受信4件、子回収。初回並列suite失敗の成功への置換や解消証明にはしない |
+| `cargo test --locked --test tui_process -- bl_update_cancelled_loading_and_older_detail_responses_cannot_replace_a_new_form_or_success bl_update_editor_failure_keeps_latest_raw_body_other_fields_and_focus bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_replace_new_draft_or_registration --nocapture --test-threads=3`／`focused-three.log` | 0、初回3成功、suite16.11秒 |
+| 関連7 full-name focused、`--nocapture --test-threads=3`／`related.log` | 0、7成功、suite17.30秒。対象は下記 |
+| `cargo fmt --all -- --check`／`fmt.log`、`git diff --check` | 0／0 |
+
+関連7試験は `bl_update_validation_retains_draft_and_tiny_terminal_cannot_edit_confirm_or_send`、`bl_update_interrupt_aborts_joins_and_keeps_not_updated_unknown_or_updated`、`bl_update_comment_refresh_wait_blocks_closing_editing_focus_and_tiny_quit_but_allows_scroll_resize`、`bl_update_comment_refresh_interrupt_preserves_updated_certainty_and_restores_terminal`、`settings_editor_owns_cooked_input_and_immediately_redraws_after_resize_without_reloading_config`、`bl_comment_add_post_and_patch_interrupt_abort_join_before_headers_after_headers_and_refresh`、`bl_comment_add_editor_failures_resize_tiny_and_discard_keep_body_and_field_draft` です。
+Cargo／Rustの警告はありませんでした。fixtureの既存exception失敗は未解決として保持し、成功までのsuite再試行、assert緩和、期限延長は行っていません。
+既存の旧成功／旧失敗・取消の4GET消費、新draft／busy・固定対象の単一書込み・Latest／旧List・確度・復元assertと1.3／1.4／1.6秒等の遅延・否定観測窓は不変です。既定8秒、既存comment複合1試験の15秒、中断elapsed<5秒も維持しています。
+
+#### 未解決・未実施と判断の境界
+
+具体的な取消前受信同期不足だけを修正しました。過去2 cutoffの正確な原因、editorの失敗原因、今回fixture exception失敗の種別・原因はなお未確定であり、「解消」「完了」「READY」とは判断しません。
+根拠を得る追加の安全なfailure種別観測は今後の調査候補ですが、根拠なしのeditor／resize／製品変更はしていません。
+`CONTRIBUTING.md` と `.github/workflows/quality.yml` の正式定義を確認し、全対象・Clippy・監査・release等の正式チェックをfocusedで代替していません。全体関連チェック・別の直接起動検証・独立ReviewはRoot、固定10反復・full性能3回／release一式は#57へ留保します。
+実CI、実端末／IME、実Backlogは未実施です。stage／commit／stash／push／merge／release／deploy／Issue変更は行っていません。最終承認・完了判断はRootのみが行います。
+
+#### #56 failure種別assertの最小診断訂正（2026-10-31 UTC）
+
+既存 `driver_failure` のfailure種別assertに、安全なallowlist metadataの `report` をassert messageとして追加しました。raw stderr／screenの追加、期限1秒・期待種別・secret拒否・復元等のassert緩和、driverの挙動変更はありません。
+`cargo test --locked --test tty_shell_fixture -- --nocapture` を訂正後に1回だけ実行し、**exit101、2成功／1失敗、suite1.32秒**でした。ログ: `/tmp/backlog-56-worker/fixture-assert-report.log`、exit: `fixture-assert-report.exit`。
+既存exceptionの安全reportは `failure=deadline`、`step_index=1`、`elapsed=1.009617708`、`sent_at=[1793433720.824693]`、`request_counts=[4]`、`request_count=4`、`child_pid=82932`。受信は `POST /diagnostic-probe` ordinal1／2、`GET /api/v2/space` ordinal1、`GET /api/v2/projects` ordinal1でした。今回の直接根拠は、期待するFileNotFoundErrorではなくstep1で1秒deadlineに到達したことまでです。deadlineに至る根本原因と、reportがなかった初回失敗の種別・原因は未確定のままです。
+Rootへ新しい根拠を相談し、追加修正・再実行なしで文書とfmt／diff確認だけに留める了承を得ました。成功までの反復・期限延長はせず、解消とは扱いません。原因の追加制御観測と正式関連チェックはRootへ留保します。
+`cargo fmt --all -- --check` と `git diff --check` はともにexit0（`fmt-assert-report.log`／`diff-check-assert-report.log`）。stagedファイルなし。先行workerの4ファイル差分は保持し、今回の追記・訂正はこの文書と `tests/tty_shell_fixture.rs` のassert messageだけです。
+
+#### #56 Rootの独立検証・Reviewと最終判断（2026-10-31 UTC）
+
+以下はRootの独立実行結果の記録です。ログ・scriptは `/tmp/backlog-56-root/`。この追記では再実行せず、初期実験の出典訂正と本項の追加だけを行っています。
+
+- `direct-final-cancel.log`: 最終の実driverでTLS handshakeを0.65秒制御した3条件（取消対象成功／旧refresh成功／取消対象403）は全てexit0、GET4／PATCH1。変更後検証用の `probe.py` でraw form、固定target、新draft、候補project3、旧ERRORなし、secret非露出、8秒期限、termios／alternate screen／cursor復元をassertしました。
+- `direct-final-editor.log`: 変更していないeditorの3 modeは全てexit0、GET2／PATCH1。原文保持、mode600、cooked／echo、一時ファイル削除をassertしました。
+- `fixture-matrix.py`: 元HEAD driver／最終driver × 単独／3並列の有限比較では、例外FileNotFoundErrorを0.225〜0.257秒で観測しました。新gate回帰は元driverでRED、最終driverでGREENでした。この比較や後の成功を、既存fixture失敗の解消証明とはしません。
+
+Rootが最終差分で実行した正式チェックは次のとおりです。
+
+| コマンド／ログ | exit・結果 |
+|---|---|
+| `cargo fmt --all -- --check`／`fmt.log` | 0 |
+| `cargo test --locked --test tty_shell_fixture -- --nocapture`／`fixture.log` | 0、3成功 |
+| `/usr/bin/time -l cargo test --locked --all-targets`／`all-targets.log` | 0、347成功・0失敗・既存実端末用2 ignored、wall144.32秒 |
+| `cargo clippy --locked --all-targets -- -D warnings`／`clippy.log` | 0、警告なし |
+| `cargo audit --version` | 実出力 `cargo-audit-audit 0.22.2` |
+| `cargo audit --file Cargo.lock`／`audit.log` | 0、1395 advisories／230 dependencies |
+| `git diff --check` | 0 |
+
+Cargo.lockの前後SHA-256は `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で不変でした。fullは共通driverの回帰確認1回であり、性能3回の代替ではありません。TLS trust拒否経路には既存Python例外見出しが5件ありました（前#55にも存在）。製品／HTTPS fixtureは不変で、一括抑制していません。
+
+freshな独立2 ReviewはCorrectness（`d9f57c7d-f7b6-4c1d-abe3-f9aa780bd08d`）とPonytail（`685d9ad3-f11f-4a1e-8f23-349d741bf495`）。両者とも修正要求なし、notes付きで限定差分はOKとしました。Rootも根拠を確認し、code findingsの採用・不採用はありません。ただし両Reviewerとも#56の全ACは未確認で完了承認不可と明言しています。
+
+editor、歴史的2 cutoff、fixture deadlineの原因は未確定であり、後の成功で過去の失敗を取り消しません。Rootの最終判断も **#56未完了** です。Code Review gateはこの追記時点で未実施であり、通過しても未解決事項の解消証明とはしません。固定10反復／full性能3回／release一式は#57へ留保し、実CI・実端末／IME・実Backlogは未実施です。
+
+#### #56 fixture deadlineのstep時間切り分けと例外注入pauseの限定訂正（2026-10-31 UTC）
+
+今回の継続はfixtureの1秒deadlineだけを切り分けるもので、上記の失敗記録・未完了判断を成功へ書き換えません。開始HEADは同じ `028cbdc4031072a78ce9c9aa382b69826fa49e96`、開始時の4ファイル部分差分を保持しています。新しいrequest gate／取消stepのsourceは変更せず、今回の編集は `tests/tty_shell_fixture.rs` のexception注入stepと本追記だけです。
+
+**Rootの追加観測（Workerは既存ログを読むだけで、制御実験は再実行していません）:** 出典は `/tmp/backlog-56-timing/`。`no-run.log` が指定する現行Cargo binary `tty_shell_fixture-b813aee28f6e1ac5` を使用し、PATH shimでdriverだけを一時的な時刻計測コピーへ差し替えました。`prepare-phase1.py` は当初の `prepare.py` のコピーで、HEADの元driver＋既存2試験並列、最終driver＋既存2試験並列、最終driver＋全3試験並列を各1回固定実行しました。元driverはexit101（exceptionがdeadline）、最終driverの2／3並列は各exit0でした（`original-two.log`／`final-two.log`／`final-three.log`）。後二者の成功を解消証明にはしません。
+
+自然失敗の主証拠 `original/traces/20792.json` の時刻はdriver開始からの経過秒です。
+
+| 事象 | 経過秒 |
+|---|---:|
+| child spawn終了 | 0.00225 |
+| 最初のPTY出力 | 0.77515 |
+| step0の `No projects` 条件成立 | 0.83605 |
+| step0送信開始 | 0.93011 |
+| step1の空wait条件成立 | 0.94415 |
+| step1の既定pause0.08による実行予定 | 約1.02415 |
+| 1秒deadline判定 | 1.00805 |
+
+時間の大半はselect待機で、driverのCPU消費は約0.020秒でした。大きな画面parser／ログread遅延は観測していません。新request gateのない元driverでも同じ `failure=deadline`／step1／送信1件／受信4件を自然再現したため、新gateが原因との根拠はありません。初期PTY出力までのstartup遅延の内部内訳は未確定です。このtraceは過去Worker失敗時の欠落traceを回復したものではなく、それらの全内部理由を確定しません。
+
+**制御比較と採否:** `prepare-phase2.py` のproduct exec wrapperはsleep0.72秒にwrapper自体の起動約0.2〜0.4秒が加わり、元／最終driver×既定／pause0の全4条件がstep0送信以前にdeadlineになりました。失敗は `phase2/` に保持し、step1のpause比較には不適合として原因根拠に採用しません。
+`prepare-phase3.py` は相対sleepではなく「driver開始＋0.76秒で実blをexecする」絶対時刻制御です。最終driverでexception step1のpauseだけを比較し、それ以外のstep・assert・1秒deadlineは維持しました。
+
+- `phase3/final-default/result.log` はexit101。`traces/22769.json` は最初の出力0.77859秒、初画面条件0.82367秒、step0送信開始0.91658秒、step1条件0.93406秒＋pause0.08、deadline1.01292秒でした（RED）。
+- `phase3/final-immediate/result.log` はexit0。shimが一時test scriptのstep1にだけ `pause: 0` を指定し、`traces/22784.json` は最初の出力0.77359秒、初画面条件0.81837秒、step0送信開始0.91167秒、step1条件0.92807秒、remove試行0.92808秒、FileNotFoundError0.92811秒でした。安全診断・子回収を含む全既存assertが成功しました（GREEN）。
+
+これらはRootの一時script／driverによる診断で、製品・リポジトリのsourceは変更していません。Rootは `before.sha256` で既存4ファイルの不変を確認しています。公開seamは承認済みのdriver step入力→実PTY子process／例外診断とcleanupのままです。
+
+**採用した最小訂正:** `driver_failure` の `case == "exception"` だけ、step1の空wait／存在しないpathのremoveに `"pause": 0` を明示しました。このstepは画面や入力結果を待つ操作でなくFileNotFoundErrorの注入なので、既定0.08秒のpauseは不要です。新branch・重複テストは追加していません。first stepと2 step構成、step_index1／sent_at1件／受信4件、安全診断・全assert、**1秒deadlineと外側communicateの5秒上限を維持**しています。deadline caseの未成立wait、新gate回帰の0.15秒否定観測窓、driverの既定pause、製品／editor／他試験／Plan／依存／timeoutは変更していません。1秒以内の任意のstartup遅延まで保証できるという意味ではありません。
+
+変更後Workerは `cargo test --locked --test tty_shell_fixture -- --nocapture` を固定1回だけ実行し、**exit0、3成功／0失敗、build2.19秒／suite1.31秒、警告なし**でした。ログ: `/tmp/backlog-56-pause-worker/fixture.log`、終了コード: `fixture.exit`。追加の制御実験、成功までのretry、timeout延長はしていません。
+今回の訂正はfixtureの不要なpauseと1秒予算の競合に対する根拠の進展です。editor／歴史的cutoffは別扱いで原因未確定のまま、過去Worker失敗の全内部理由も未確定です。Rootの変更後独立検証・freshな2 Review・Code Review gateはこれからで、旧差分へのApproveは今回の再承認として流用せず、**#56全体の完了とはしません**。full性能3回／固定10反復／release、実CI・実端末／IME・実Backlogは今回未実施です。
+`cargo fmt --all -- --check` はexit0。今回の差分の `git diff --check` もexit0、stagedファイルなしを確認しました。stage／commit／stash／Issue更新／mergeは行っていません。
+
+**今回訂正後のRoot独立確認:** `/tmp/backlog-56-timing/after-fixture.log` は固定1回のfixture全3成功、`after-fmt.log` と `after-clippy.log`（`cargo clippy --locked --test tty_shell_fixture -- -D warnings`）はexit0、警告なし、diff checkもexit0でした。修正前にREDとなったphase3のdefault側shimを変更せず、訂正後のcompiled testを同じコマンドで実行した `phase3/final-default/result-after-change.log` もexit0です。`traces/26032.json` は初画面条件0.82458秒、step0送信0.91818秒、step1条件0.935667秒、remove0.935675秒、FileNotFoundError0.935695秒を記録しています。期待する例外・安全診断・子回収のassertと1秒deadlineを維持したまま、観測した予算競合に対する訂正を確認しました。
+
+freshなCorrectness（`10c77e25-af5f-4c99-9fa5-31ba121a14bb`）とPonytail（`87230e8d-18d8-4c65-bbe8-f5fa4cadbc92`）の2 Reviewも追加修正要求なし、今回の局所訂正はnotes付きで採用可でした。Rootもこの判断を採用し、コード指摘の採否による追加修正はありません。この追記はRootが実ログとReviewを確認した結果の記録だけです。今回fullを再実行しておらず、前の347成功をこのliteral訂正後のfull結果には流用しません。Code Review gateはこの追記後の差分で取り直します。editor／歴史的cutoffとstartup内部の原因は未確定であり、#56全体の完了判断は引き続き保留します。
+
+#### #56 editor追加診断の記録（2026-10-31 UTC、docs-only）
+
+[Issue #56](https://github.com/minorunakamura/backlog-cli/issues/56) と正式Plan `docs/plans/test-infrastructure-performance.md` 方針3／制約を再確認しました。以下はRootの既存診断 `/tmp/backlog-56-editor/` のscript・実ログ・代表traceを直接読んだ記録で、Workerはテスト／build／実験／計測を新実行していません。開始時の4ファイル部分差分を保持し、今回の編集は本末尾追記だけです。
+
+- `prepare.py` のPATH shimは既存shell helperの固定PATHに遮られ、最初の `baseline.log`／`queued.log`／`suite.log` はtrace未取得（0件）、queued制御も未適用でした。制御診断の根拠には採用しません。
+- ただし `no-run.log` 指定の現行Cargo binaryによる `suite.log` は実試験結果です。**exit101、113成功／1失敗、59.68秒**。失敗は `selection_change_hides_other_body_immediately_and_late_preview_cannot_clear_new_busy_or_failure`、`tests/tui_process.rs:1043` の `h.requests().len()` が実10／期待11でした。editor対象は成功。新差分起因とは断定せず、修正／成功retryをしていません。
+- `direct.py` は既存 `probe.routes`・実bl・証明書検証付きHTTPS fixture・実 `/usr/bin/python3`（3.9）driverを直接起動し、trace取得をassertしました。`direct-baseline.log` と `{utf8,nonzero,unlink}-baseline.json` は現行7stepの3 mode全てexit0、各1.534〜1.539秒でした。
+- 代表 `baseline/traces/87456.json` の送信直前状態（driver開始からの秒）: step2 EDITOR READY **0.637、cooked=true／echo=true／input_saved=false**、step3 UTF-8 notice **0.730、cooked=false／echo=false／input_saved=true／Body focus／12x40**、次のConfirm **0.861、24x100**。条件成立と送信直前を混同せず、editor復帰後の状態を確認しました。
+- `direct-queued.log`／`utf8-queued.json`／`queued/traces/87490.json` はUTF-8 notice後にSIGSTOP→waitpid停止確認→resize＋Tab3回＋Enterをキュー→SIGCONTという実制御で、exit0、1.536秒でした。
+- `direct-split.log`／`utf8-split.json`／`baseline/traces/87508.json` はresize後のlayout待ち→Tab個別送信の比較です。送信直前はBody **0.861**→Status **0.972**→Resolution **1.085**→Review **1.213**→Confirm **1.341**、exit0、2.015秒。診断上の分割で本体stepは不変、成功だけでresize原因や解消とはしません。
+- 上記direct各実行は固定B-1への単一PATCH／form `summary=Latest title!` のみ、原文 `Original body`、mode600、cooked／echo、一時body削除、8秒、termios／alternate screen／cursor復元、secret非露出をassertしました。
+- 固定PATH回避の `prepare-observed-test.py` は `/tmp` のtest sourceコピーのcommon module参照pathとdriver launcher pathだけを変更し、`rustc` でbuildしました。rlibはCargo artifact JSON `artifacts.jsonl` の現行serde_json／reqwestから指定し、glob推測していません。初buildはreqwestの `--extern` 不足で失敗（`observed-test-build-first-failed.log`）、訂正後build成功。製品・依存・リポジトリsourceは不変です。
+- `observed-suite-valid.log` はこの**診断用testコピー**で114成功／0失敗、58.24秒。`loaded-traces/{89031,89119,89213}.json` に3 mode各約1.535〜1.539秒と条件・キー時刻を取得しました。正式Cargo full／all-targets結果ではなく、先のsuite失敗の解消・成功への置換には使いません。
+- 現source `src/tui.rs:785-845`／`src/tui/create.rs` と利用中crossterm／ratatui（`crossterm-features.log`）では、各event後にbackendの実sizeを照会し、editor後はraw再入→resize→drawします。raw再入は非flushのTCSANOWで、Resizeによるキーqueue削除を確認していません。元stepsに未完入力prefix混入の証拠もなく、同時resizeだけを原因にしません。
+
+今回editorの失敗・時間損失・入力欠落は観測できず、修正根拠なしとしてeditor／driver／製品を変更していません。現行8秒・既存assert・遅延は不変です。startup内部／歴史的8秒cutoffの根因と新suiteの1失敗は未解決のまま、**#56未完了**を維持します。timeout延長・成功retry・根拠のない本体resize分割はしていません。
+今回の確認はdocs diff checkと非docs差分hash前後一致のみです。stage／commit／stash／Issue変更／mergeは行わず、旧Approveを本追記後の承認へ流用しません。追記後差分のfreshなReview／Code Review gateは別途必要です。
+
+#### #56 改訂追補に基づくテスト代表化（実装・静的確認、Root検証前）
+
+正式Issue [#56](https://github.com/minorunakamura/backlog-cli/issues/56) の[優先追補](https://github.com/minorunakamura/backlog-cli/issues/56#issuecomment-6545857169) と、Approved Plan `docs/plans/test-infrastructure-performance.md`（SHA-256 `a6f2a2ac73a2156f9b25d1fb85db00ca3e3d2276585eca0ff331993669450491`）のA〜Fに限定して代表化しました。開始HEADは `028cbdc4031072a78ce9c9aa382b69826fa49e96`。開始時の5ファイル未コミット差分を入力として保持し、今回の編集は `tests/tui_process.rs` の6関数と本末尾追記だけです。過去の失敗・旧判断の訂正や、旧Issueの安定化全根因解消を目的にしていません。
+
+| 候補 | ケース数 | 今回残す保証・変更 |
+|---|---|---|
+| A update editor失敗 | 3→1 | nonzeroと対応noticeをliteral化。既存7step、`Original body`、0600・cooked・echo・一時file削除、失敗後focusからConfirm、summary=`Latest title!`だけの単一PATCHを維持 |
+| B update取消・旧Detail | 2→1 | 旧成功だけ。4応答sequence、header_delay1.4秒、pause0.2／1.6／0.3秒、既存8stepと対象GET ordinal2／3受信gateを維持。最新title表示・新draftにERRORなし・対象GET4回・固定B-1へのPATCH1回を確認。project3のrule＋4候補のGETとproject2の同4候補GETなしを明示（初期表示用project2 ruleは禁止しない） |
+| C selection変更・遅い旧Detail | 2→2 | 旧200／500、全画面assert、header_delay0.45／0.85秒とpause0.19／0.6秒を維持。B-2から動かすキー前とB-3 busy観測前にそれぞれ対象GET ordinal1を既存gateで待つ。総要求数11のassertだけを両対象method/pathのGET各1回へ変更 |
+| D create editor失敗 | 3→1 | nonzeroだけ。既存全step、空本文・他入力・cooked・一時file削除・GETのみのassertを維持 |
+| E comment editor失敗 | 3→1 | nonzeroと対応noticeだけ。tiny時の非操作・discard取消／破棄・status保持・空本文・一時file削除・GETのみの全step/assertを維持 |
+| F update不完全／型不正成功 | 28→3 | 疎object `{id:1,issueKey:B-1}`、`update_issue()` のsummary=false、milestone=`[{id:5,name:null}]`だけ。各caseの全step、Updated・Do not resend・旧Detail・PATCH1回・後続GETなしを維持 |
+
+A〜Fの通常成功経路の静的見積りは **41→9ケース（HTTPS Harness／bl／PTY起動を32組、editor起動を6回削減）** です。実秒の短縮値・速度合否・flake解消の証拠ではありません。共通の `scripted` → `scripted_with_deadline(..., 8)` とexit0／restored=true／stderr空のassertは不変です。deadline／pauseを延長せず、新規skip／ignore・成功retry・抽象化・基盤・製品変更はありません。
+
+削った交差保証は、utf8／unlinkとupdate・create・comment各フォームの組合せ、update固有の旧403と取消／新フォームの組合せ、全field個別不正とPATCH成功後表示／確度の組合せです。またCではcomments等の付随要求の総数増減を監視しなくなります。完全同等の保証とはしません。残る `tests/editor.rs` の3失敗原文保持、`src/tui.rs` の共有端末引渡し13ケース、`tests/issue_view.rs` の全必須field検証、別の旧成功／旧失敗代表は変更していません。fixtureの同snapshotによるrequest gate・実PTY gate回帰・deadline／exception診断と例外注入pause0も保持しています。
+
+Workerの確認はsource／実差分の静的確認、`cargo fmt --all`、`git diff --check`、開始時snapshotとの比較（A〜F以外のsource不変、Plan／両fixtureのhash不変、本追記前の文書prefix不変）、stagedファイルなしの確認です。いずれも成功し、テスト／build／性能計測は実行していません。新規REDは製品・driver動作を変えないため追加していません。
+
+**この追記時点でRootの変更後検証は未実施です。** Plan指定の4 focused（A〜Fを6試験として選択するtui_process、tty_shell_fixture、editor、共有端末引渡し）各1回とfreshなReview／Code Review gateはRootに留保し、Workerは重複実行していません。最終正式チェックと文書整備は別Issue #57の範囲であり、自動開始していません。過去の成功は今回の差分の実行証拠へ流用しません。過去のeditor／cutoff・startup内部原因等は未確定のままです。実CI・実端末／IME・実Backlog・別途release実操作も未実施です。stage／commit／stash／push／Issue変更／merge／release／deployは行っていません。
+
+#### #56 改訂後のRoot独立検証（2026-10-31 UTC）
+
+本項は上記代表化後の差分に対する新しい実行記録です。過去のチェック・Review・Approveは流用していません。RootがIssue本文・優先追補とPlan全文を再取得し、PlanのSHA-256一致を確認しました。依存#54はstate_reason=completedに加え、現行HTTPS fixtureのhandshake遅延化、安全診断と本書の実装・検証記録を確認しました。
+
+環境: Darwin arm64、rustc 1.99.1 (`58cf8f9c3`)、cargo 1.99.1 (`5f94df478`)、親Python 3.14.9 / OpenSSL 3.6.3、PTY用 `/usr/bin/python3` 3.9.6 / LibreSSL 2.8.3、openssl CLI 4.0.3。`RUST_TEST_THREADS` は未設定、A〜Fだけ明示3並列です。開始HEADは上記と同じです。
+
+ログ・終了コード: `/tmp/backlog-56-resume-root.czOzeP/` の各 `.log` / `.exit`。Plan「focusedコマンド」の4コマンドを順に各1回だけ実行し、全てexit0、Rust/Cargo警告なしでした。
+
+| コマンド | 結果／suite時間 | ログ |
+|---|---|---|
+| `cargo test --locked --test tui_process --` にPlan記載のA〜Fの6 full-nameと `--nocapture --test-threads=3` | 6成功、0失敗・0 ignored、108 filtered out／8.82秒 | `focused.log` |
+| `cargo test --locked --test tty_shell_fixture -- --nocapture` | 3成功、0失敗・0 ignored／1.31秒 | `fixture.log` |
+| `cargo test --locked --test editor -- --nocapture` | 5成功、0失敗・0 ignored／0.14秒 | `editor.log` |
+| `cargo test --locked --lib body_editor_roundtrip_and_failures_use_shared_terminal_handoff -- --nocapture` | 1成功、0失敗・0 ignored、29 filtered out／6.38秒。内部13経路は維持 | `shared-terminal.log` |
+
+別工程の完了条件確認では、Rootが実差分と呼出し先を読み、残すケースの入力・画面条件・HTTP／原文／復元assertを要求と照合しました。さらに一時的なsource比較でHEADと現行のA〜Fのscripted入力を比較し、step数7／8／4／9／13／5、keys・resize・pause・画面waitが承認済みのnotice literal化とrequest gate以外は一致することをassertしました。A〜Fのケース構造は1／1／2／1／1／3です。比較用の初稿はBのfixture用jsonをstepsと誤認してJSONDecodeErrorで終了しましたが、抽出位置を `let result = scripted` 以降へ訂正して比較が完了しました。製品・テストsource変更やテストretryではありません。
+
+実動作は上記focused内の既存入口（実debug `bl`・証明書検証付きHTTPS・実PTY／editor）で観測しています。Bはordinal2／3受信後の取消、最新title・project3 rule＋4候補、project2候補なし、B-1 GET4回／固定PATCH1回まで、CはB-2／B-3各GET受信・各1回と旧200／500のbusy／失敗表示まで、A/D/E/Fは残す入力・通知・送信／非書込み・cleanupと復元まで、対応assertが成立しました。fixture自己試験では誤method／誤path／ordinal不足／途中行で入力せず、一致時だけ進む実PTY観測と失敗診断・子回収も成功しました。これはテスト整理の直接確認であり、別途のrelease製品実操作・実IME／実Backlogの受入を行ったという意味ではありません。
+
+`cargo fmt --all -- --check` と `git diff --check` はRootでもexit0でした。Plan・両fixtureとCargo.lockのSHA-256は開始時から不変で、製品src／依存／CI／既存JSON fixture／実timeout6ケースは変更していません。全体試験・Clippy・audit・release buildとCONTRIBUTING／AGENTS整備は#57へ留保し、自動開始していません。これらを今回実行済みとは扱いません。
+
+この記録時点で今回差分のfreshな独立2 ReviewとCode Review gateはこれからです。過去のeditor／cutoff／startup内部原因は未確定のままで、今回の成功は根因解明やflake不存在・実時間短縮の証明ではありません。削った交差保証・実CI／実端末／IME／実Backlog／別途release実操作の未実施は上記のとおりです。
+
+**今回差分のfresh独立2 Review完了:** Correctness `6cf607c7-97c5-413d-9fe1-fc869da1c12f` とPonytail `3da30f9f-6115-420a-908b-146e9b0e6dea` は、それぞれ別のfresh contextで改訂要件・実差分・現行source・上記4ログ／終了コードを確認し、いずれも修正要求なし、`Merge verdict: OK with notes` でした。read-only reviewerにはgit実行toolがないため、Rootが取得した5ファイルの最新diff・HEAD source・最新Issue／追補のread可能なartifactも渡しています。Rootは両報告を直接読み、残す保証・削減範囲・実行証拠と照合して採用しました。accepted findings／不採用のcode findingsはいずれも0件で、追加のコード修正はありません。notesは承認済みの交差保証削減、歴史的原因未確定、#57・実環境検証の未実施を指し、#56の未解決修正要求ではありません。この追記後の差分でCode Review gateを取得し、結果はRootの最終報告で示します。#57を含む全体完了やmerge許可としては扱いません。

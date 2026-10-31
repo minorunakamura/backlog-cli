@@ -113,14 +113,27 @@ try:
             screen = screen_text(output.decode("utf-8", "replace"))
             marker = step.get("wait_file")
             marker_ready = not marker or os.path.exists(os.path.join(os.path.dirname(os.environ["SHELL_REQUESTS_FILE"]), marker))
-            if step.get("wait", "") in screen and marker_ready:
+            requests_path = os.environ.get("SHELL_REQUESTS_FILE")
+            records = []
+            if requests_path and os.path.exists(requests_path):
+                with open(requests_path) as source:
+                    request_snapshot = source.read()
+                for line in request_snapshot.splitlines():
+                    try:
+                        records.append(json.loads(line))
+                    except ValueError:
+                        # A concurrent request may still be writing its final line.
+                        continue
+            requested = step.get("wait_request")
+            request_ready = not requested or sum(
+                record["method"] == requested["method"] and record["path"].split("?", 1)[0] == requested["path"]
+                for record in records) >= requested["ordinal"]
+            if step.get("wait", "") in screen and marker_ready and request_ready:
                 if step_ready_at is None:
                     step_ready_at = time.monotonic() + step.get("pause", 0.08)
                 if time.monotonic() >= step_ready_at:
                     snapshots.append(screen)
-                    requests_path = os.environ.get("SHELL_REQUESTS_FILE")
-                    request_counts.append(len(open(requests_path).readlines()) if requests_path and os.path.exists(requests_path) else 0)
-                    records = [json.loads(line) for line in open(requests_path)] if requests_path and os.path.exists(requests_path) else []
+                    request_counts.append(len(records))
                     browse_request_counts.append(sum(not re.fullmatch(r"/api/v2/(issues/[^/?]+(?:/comments\?.*)?|projects/[^/?]+)", record["path"]) for record in records))
                     sent_at.append(time.time())
                     if "resize" in step:
