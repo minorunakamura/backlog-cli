@@ -3393,3 +3393,65 @@ built-in reviewerのfresh follow-up（`50360d13-05f1-4f53-8f79-4f86975cb841`）�
 これは利用者の認証済み実端末での操作・目視報告であり、Root／Worker／Reviewer自身による実API・IMEの観測とは区別します。単一PATCHの通信回数、確認Enter非送信、履歴・課題項目非変更、所有者／履歴拒否、空／同値／取消／editor失敗、応答逆転・中断確度は既存の一次コード・公開境界試験・Rootのlocalhost HTTPS／PTY実測を根拠にします。実サービスへ障害や負荷を与えていません。
 
 Rootは最新Issue本文／受入改訂コメントを再取得し、4つの元完了条件と追加実Backlog受入条件を照合しました。採用したP1／P2は解決済みで、今回追加した受入記録以外のtracked差分とuntrackedのsource／fixtures3点が限定Review対象から不変であることを確認しています。最終Code Review gateはこの記録・readback後に呼び、skippedまたは現在差分への明示Approveを確認するまでREADY_FOR_MERGEとは判定しません。実CI・stage／commit／stash／push／Issue状態変更／merge／release公開／deployは行っていません。
+
+### #23 PR #62 CI失敗のテスト同期限定補正（2026-10-31 UTC）
+
+開始HEAD `e7b35e0fe391ce19ac4e0dfbaee283868cada8ec`、branch `feat/tui-comment-update`、clean。Root取得済みのIssue本文／コメント、承認済みPlan／基本設計に変更はありません。CI run `41237380074`／job `124643885658`（同HEAD）のquality Testはexit101、`tui_process`は116成功・3失敗でした。一次ログは `/tmp/backlog-pr62-ci.gIJ1NoSs/failed.log`。以下はWorkerによるテストの操作可能状態への同期補正であり、製品の入力契約を変更するものではありません。
+
+| 既存試験（以下の略号） | 実CIの失敗 | Rootの制御RED → Workerの同条件GREEN／通常focused |
+|---|---|---|
+| A: `bl_comment_add_editor_failures_resize_tiny_and_discard_keep_body_and_field_draft` | 8秒deadline、step_index2、12 GETまで、editor未到達 | exit101 → exit0（1成功、3.55秒）／exit0（1成功、2.83秒） |
+| B: `bl_comment_add_refresh_is_atomic_preserves_old_selection_scroll_and_certainty_on_failure` | 8秒deadline、step_index4、12 GETまで、editor未到達 | exit101 → exit0（1成功、27.83秒）／exit0（1成功、20.56秒）。試験全体はPOST/PATCH×5種であり、個々のPTY deadlineは8秒のまま |
+| C: `search_dialog_edits_keyword_without_searching_and_clear_stays_clear_on_reopen_and_reload` | 8秒deadline、step_index5、count/list各2回まで | exit101 → exit0（1成功、2.77秒）／exit0（1成功、2.02秒） |
+
+**原因と最小差分:** A/Bは`Add comment` titleだけを待って入力していましたが、このtitleはLoading／LoadFailed／Form共通で、Loading中はEnter／Tab等を意図どおり無視します。Formにだけ描画される`Body edit:`を待つよう各1箇所を変更しました。Cは検索適用後の`> Issue List`がApplying中の背面にも残るため、適用完了を示す`K:qhljk S:1 A:0 G:0`とクリア適用済みの`K:Any S:0 A:0 G:0`へ各1箇所を変更しました。描画・HTTP到着・適用完了を区別し、HTTP件数だけの待機にはしていません。原文／所有者／課題項目／確度／scroll／選択／refresh／通信回数の既存assertは全て維持し、timeout延長・retry・skip／ignore・期待値緩和はありません。
+
+**公開境界とRED:** 既存の実`bl`＋証明書検証付きlocalhost HTTPS＋PTYの3試験をそのまま使いました。Rootがrepo外の一時`python3` wrapper（`/tmp/backlog-pr62-ci.gIJ1NoSs/python3`、Python 3.14.9）から既存HTTPS server起動時の一時`response.json`だけを変更し、A/Bは`/api/v2/resolutions`のheadersを0.7秒、Cは`/api/v2/issues/count`の2回目だけ0.7秒遅延させています。製品TLS／通信・repoのfixture／harnessは不変です。RootのREDログ／exitは同directoryの`repro-comment-load-{AまたはBの完全名}.{log,exit}`と`repro-search-apply-{Cの完全名}.{log,exit}`。Workerが原ログとexit101・選択各1件を確認しました。A/BのREDはCIと同じstep_index2／4・12 GETでした。Cの制御REDは`assert_search_fields_blank`で`open`が残る失敗（Applying／旧qhljk表示）であり、CIと具体的な失敗位置は異なります。同じ早期入力の危険を確認したもので、CIの全タイミングを再現したとは扱いません。
+
+**GREEN・通常focused手順:** リポジトリ直下で以下を実行しました。各exactは選択1件・成功1件、選択0件を成功扱いしていません。wrapperは調査用一時ファイルであり、repoへ追加していません。
+
+```sh
+/usr/bin/caffeinate -is env PATH="/tmp/backlog-pr62-ci.gIJ1NoSs:$PATH" CI_REPRO_MODE=comment-load cargo test --locked --test tui_process bl_comment_add_editor_failures_resize_tiny_and_discard_keep_body_and_field_draft -- --exact --nocapture
+/usr/bin/caffeinate -is env PATH="/tmp/backlog-pr62-ci.gIJ1NoSs:$PATH" CI_REPRO_MODE=comment-load cargo test --locked --test tui_process bl_comment_add_refresh_is_atomic_preserves_old_selection_scroll_and_certainty_on_failure -- --exact --nocapture
+/usr/bin/caffeinate -is env PATH="/tmp/backlog-pr62-ci.gIJ1NoSs:$PATH" CI_REPRO_MODE=search-apply cargo test --locked --test tui_process search_dialog_edits_keyword_without_searching_and_clear_stays_clear_on_reopen_and_reload -- --exact --nocapture
+/usr/bin/caffeinate -is cargo test --locked --test tui_process bl_comment_add_editor_failures_resize_tiny_and_discard_keep_body_and_field_draft -- --exact --nocapture
+/usr/bin/caffeinate -is cargo test --locked --test tui_process bl_comment_add_refresh_is_atomic_preserves_old_selection_scroll_and_certainty_on_failure -- --exact --nocapture
+/usr/bin/caffeinate -is cargo test --locked --test tui_process search_dialog_edits_keyword_without_searching_and_clear_stays_clear_on_reopen_and_reload -- --exact --nocapture
+/usr/bin/caffeinate -is cargo test --locked --test tui_process bl_comment_add_ -- --nocapture
+/usr/bin/caffeinate -is cargo test --locked --test tui_process search_dialog_ -- --nocapture
+/usr/bin/caffeinate -is cargo test --locked --test tui_process bl_comment_edit_ -- --nocapture
+```
+
+Worker環境はmacOS 26.7.1／arm64／rustc 1.99.1。関連focusedは順に9／20／5成功、全てexit0・失敗／ignoredなし（suite時間20.82／23.92／4.74秒）。各コマンド実行中だけ`caffeinate -is`でSleepを抑止し、tool実行枠300秒を維持しました。Workerのprivateログdirectoryは `/tmp/backlog-pr62-worker.L1pnCyZ6/`、制御GREENは`green-{mode}-{完全試験名}.{log,exit}`、通常は`normal-{完全試験名}.{log,exit}`、関連は`related-{filter}.{log,exit}`です。
+
+文書追記後の`/usr/bin/caffeinate -is cargo fmt --all -- --check`、`/usr/bin/caffeinate -is cargo clippy --locked --all-targets -- -D warnings`、`git diff --check`も全てexit0（`fmt`／`clippy`／`diff`の各`.log`／`.exit`、Clippy警告なし）。`git diff --cached --name-only`は空で、stageされたファイルはありません。
+
+**限界・残gate:** 製品source／依存／fixture／CI／Plan／設計は不変です。今回の実測はローカルのテスト同期補正のみで、修正後のGitHub CIは未実行。全対象／audit／release build／release直接検証と独立Review・最終判断はRootの別工程です。上記の実Backlog受入は同`bl` SHA-256 `30c2b4f5bc93c9ef7c684650096768247a59e97d7f5d7365993a571d155e53a0`に対する既存利用者報告であり、本補正で新たに製品／実APIを実行した記録ではありません。テストと文書だけの差分で製品build入力が変わらない根拠と区別します。Workerはcredentials探索・実API操作・stage／commit／stash／push／Issue更新／mergeを行っていません。
+
+### #23 / PR #62 同期補正後のRoot独立検証（2026-10-31 UTC）
+
+Rootは実際の差分が3試験のwait文字列4箇所と受入記録だけであり、既存assert・操作キー・8秒deadline・製品build入力が不変であることを確認しました。以下はWorkerの成功申告ではなく、Rootの別実行です。実行中だけ`caffeinate -is`を使用し、同じtool枠300秒を維持しました。ログ／exitは `/tmp/backlog-pr62-ci.gIJ1NoSs/root-results/`。
+
+| Rootの確認 | exit・実測 |
+|---|---|
+| Root制御REDと同じwrapper／mode／exactでAを再現 | 0、1成功、3.75秒。`controlled-{A完全名}.log`／`.exit` |
+| 同条件でBを再現 | 0、1成功、27.84秒（10 scenario全体、個々の8秒deadline不変） |
+| 同条件でCを再現 | 0、1成功、2.76秒 |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0、24 suite、354成功・0失敗・既存実端末用2 ignored。通常条件のA/B/Cとコメント本文更新5関数を含む |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、Rust警告なし |
+| `cargo audit --version`／`cargo audit --file Cargo.lock` | 両0、0.22.2、1395 advisory／230依存、通常DB更新・脆弱性／警告報告なし |
+| 監査前後lock hash比較 | 0、両方`1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0、両binaryのhashは下記の受入済みbuildと不変 |
+| `python3 /tmp/backlog-issue23-resume/direct.py` | 0、今回もrelease製品をlocalhost HTTPS／PTYで直接操作。13 GET＋1 content-only PATCH、Enter非送信・独立s、同ID／ページ／履歴／旧List保持、PATCH後GETゼロ、原文保持／safe描画・tempfile削除・exit0・termios差分なし |
+| `git diff --check` | 0 |
+
+全対象ログの既存TLS拒否等によるserver例外見出し5件は保持し、該当試験成功・Rust警告なしと区別しました。今回buildのblは`30c2b4f5bc93c9ef7c684650096768247a59e97d7f5d7365993a571d155e53a0`、bl-cliは`be2b535b6f282923c467fd960b59d7bfc7714b057fcb9bf16aa3af54bd471e5d`。既存の利用者受入と同一binaryですが、実Backlog更新・復元を今回新しく実施したとは記しません。
+
+CI原ログの3件のdeadlineを製品回帰と断定せず、証拠のある早期入力の競合を制御再現して同期を補正しました。検索の制御REDはCIと具体的な失敗位置が異なる限界を維持します。修正後の実GitHub Actions成功や全負荷でのflake不存在はまだ確認していません。この記録時点で独立fresh 2 Reviewと最終Code Review gate、追加commit／pushは未実施です。
+
+### #23 / PR #62 同期補正の独立2 Review完了
+
+別々のfresh built-in reviewerでCorrectness Review（`6388cec5-a73f-4e55-b98e-4cc62a8b2b33`）とPonytail Review（`aae11d2e-e2b2-4c24-be97-d5d2a2d581ff`、ponytail-review Skill）を完了しました。両者ともRoot保存の実CIログ・補正差分・正式要求・製品の入力／描画経路・Root制御RED／GREENと全チェックの一次artifactを確認し、具体的P0／P1／P2指摘なし、限定補正の技術判定は`OK with notes`です。
+
+Rootも、Body edit:が入力可能なFormだけで表示されること、2つの検索summaryが直前の状態と異なり適用成功後だけ成立すること、既存assert／操作キー／8秒deadline／製品build入力が不変であることを照合しました。採用・不採用に分ける追加指摘はなく、修正は不要と判断しました。記録以外の差分がReview対象から不変であることを確認してから最終Code Review gateを呼びます。Reviewer自身による再実行・実CI成功の報告ではありません。修正後実CIは未確認、追加commit／push・mergeは未実施です。
