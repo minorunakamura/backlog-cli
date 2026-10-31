@@ -62,7 +62,7 @@ GitHub上で未実行ならその旨を記録し、確認のためだけのpush�
 内部private関数の名前や実装詳細はテストに固定しません。
 
 `tests/project_list.rs` は実CLIとローカルHTTPS送受信境界で、設定の厳密検証・認証header・
-固定表示/JSON・redirect/retry禁止・body込み30秒timeout・Ctrl+C・出力失敗を確認します。
+固定表示/JSON・redirect/retry禁止・Ctrl+C・出力失敗を確認します。
 PTYでも入力を与えず完了し、NO_COLORと端末制御/secret保護を確認します。
 `tests/candidate_list.rs` は3一覧のflag適用先、project既定値/明示優先、固定表示/JSON、
 空一覧と不正応答、global/profile、不要GETなし、secret保護を実CLIで確認します。
@@ -85,7 +85,7 @@ API失敗の伝播を確認します。
 実在日付・milestoneの重複除去、literal/file/明示stdinのUTF-8・空本文・原文form・排他/単一flag反復を確認します。
 実際のcreate commandだけに引数・設定エラーのwriteを付け、readの値tokenを誤認しないことも検証します。
 単一POST・redirect/retry/確認GETなし、信頼できる4xx拒否と不正拒否/5xx/切断、201後のbody切断/decode/必須field/
-出力失敗・redaction key衝突での確度保持、送信前/送信開始後/201 headers後のCtrl+Cとbody込み30秒timeoutを確認します。
+出力失敗・redaction key衝突での確度保持、送信前/送信開始後/201 headers後のCtrl+Cを確認します。
 stdin待ち中断・stdin非明示時の非読取・global/profile・TTY非対話も実processで試験します。
 `tests/service.rs` の公開 `Service::issue_create` 試験は、送信本文と返却object/巨大整数の原文保持・URL追加、
 既定値/直接ID・解除・入力検証前のPOSTなし、201後と名前解決時のエラー確度を確認します。
@@ -93,7 +93,7 @@ stdin待ち中断・stdin非明示時の非読取・global/profile・TTY非対�
 名前/直接ID/self・resolution 0と解除、日付のcalendar比較、milestone集合の置換/重複除去/順序不問と空配列解除を確認します。
 全項目同値/未指定/null・空本文のno-op、title/日付/flag/UTF-8検証、literal/file/明示stdin・空入力/本文省略、
 非明示stdinの非読取、global/profile/help・TTY非対話、未知field/巨大整数/原文と構築URL・安全表示を検証します。
-事前エラーはPATCHなし、具体的4xx拒否・切断/5xx/redirect・200後のbody/decode/必須field/出力エラー・key衝突・timeout、
+事前エラーはPATCHなし、具体的4xx拒否・切断/5xx/redirect・200後のbody/decode/必須field/出力エラー・key衝突、
 stdin/事前GET/送信後/200 headers後のCtrl+Cでも確度を保持し、retry/redirect/確認GETがないことを確認します。
 200後の中断は `patch-headers-sent` markerを待ち、事前GETの200 markerとは区別します。
 `tests/service.rs` の公開 `Service::issue_update` 試験でも原文/巨大ID・URL、比較に使うIDの検証と未使用field非要求、
@@ -102,7 +102,7 @@ stdin/事前GET/送信後/200 headers後のCtrl+Cでも確度を保持し、retr
 UTF-8原文のliteral/file/明示stdin・空/未指定本文、名前/ID/解除の排他と単一指定、resolution ID 0、対象projectでの名前解決とself、
 create既定値非流用・状態に伴う完了理由の自動変更なし、同値/変更なしの非書込み、raw data/未知field/巨大整数とurl非追加を確認します。
 引数/config/本文/事前GET/名前解決失敗時はcomment.add/not_created、実方式選択後はPOST/PATCHそれぞれの確度語彙を確認します。
-4xx拒否・切断/5xx/redirect・201/200後のbody/decode/必須field/出力失敗・key衝突・30秒timeoutと、stdin待ち/GET/送信後/成功headers後の
+4xx拒否・切断/5xx/redirect・201/200後のbody/decode/必須field/出力失敗・key衝突と、stdin待ち/GET/送信後/成功headers後の
 Ctrl+Cでも確度を保持し、retry/権限fallback/二重書込み/コメントID補完GETがないことをmethod/path/formと件数で照合します。
 `tests/service.rs` の公開 `Service::comment_add` 試験でも原文/secret・巨大整数、未使用field非要求、ID0の解除、
 入力検証時の通信なしと確度、返却dataのurl非追加を確認します。
@@ -110,7 +110,7 @@ Ctrl+Cでも確度を保持し、retry/権限fallback/二重書込み/コメン�
 他者コメント/content:null履歴/同値の非書込み、必須かつ排他的な本文入力、課題項目flag拒否を確認します。
 literal/file/明示stdinのUTF-8・空入力拒否・空白改行原文保持、非明示stdinの非読取、設定非流用、global/profile/help・TTY非対話、
 contentだけの単一PATCH、元object/未知field/巨大整数と安全表示、引数/config/事前GET/権限拒否時の確度を検証します。
-200後のbody切断/decode/必要field/出力失敗・key衝突・30秒timeout、stdin/事前GET/送信後/200 headers後のCtrl+Cでも確度を保持し、
+200後のbody切断/decode/必要field/出力失敗・key衝突、stdin/事前GET/送信後/200 headers後のCtrl+Cでも確度を保持し、
 retry/redirect/fallback/余分なGETがないことを照合します。既存のwrite確度処理とfixtureをそのまま使います。
 `tests/service.rs` の公開 `Service::comment_update` 試験でも入力検証時の通信なし、巨大対象ID、原文/secret・未知field/巨大整数保持、
 返却objectのurl非変更・追加の事後所有者field非要求を確認します。
@@ -314,9 +314,21 @@ cargo test --locked --test comment_add
 cargo test --locked --test comment_update
 cargo test --locked --test body
 cargo test --locked --test https_fixture
-# 30秒のbody timeoutだけを再確認
-cargo test --locked --test project_list body_reading_is_inside_the_thirty_second_request_timeout -- --exact
+# 実30秒のbody timeout全6ケースだけを再確認
+cargo test --locked --test request_timeout -- --nocapture
+# libtest並列数に依存せずgroup内で6並列となることの確認
+cargo test --locked --test request_timeout -- --nocapture --test-threads=1
 ```
+
+各CLI suiteのfocused確認から、実30秒のbody timeoutだけを `tests/request_timeout.rs` へ移設しています。
+単一テスト内でproject list、issue.create、issue.update、comment.update、comment.addのPOST／PATCHの
+6ケースを最大6並列で開始し、panicしたケースがあっても全てjoinしてケース名で結果を報告します。
+各ケースは独立Harness／HTTPS server／実CLI／子process限定trustを使い、delay32、各CLIの29秒以上40秒未満、
+statusとwrite確度、method／path／form／認証と要求件数を確認します。readではwriteなしも確認します。
+最大6並列は資源数の上限でありhard deadlineではなく、既存Harnessのport読取やCommand待機のhang限界は残ります。
+開発途中は変更対象のfocused確認を使い、timeout保証自体の確認には上記groupを実行してください。
+正式な `cargo test --locked --all-targets` は毎回この全6ケースも含み、focused確認で代替しません。
+group wall40秒以下という性能判定は、各CLIの29秒以上40秒未満のassertとは別に計測します。
 
 harnessは `tests/fixtures/https_server.py` をloopbackの動的portへ起動します。
 serverごとに一度、OpenSSLでlocalhostのSANと1日の有効期限を持つ自己署名証明書と

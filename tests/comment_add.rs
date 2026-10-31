@@ -829,31 +829,6 @@ fn explicit_stdin_interrupt_never_fetches_or_writes() {
 }
 
 #[test]
-fn body_timeouts_keep_success_certainty_without_retry_for_post_and_patch() {
-    for patch in [false, true] {
-        let status = if patch { 200 } else { 201 };
-        let response = json!({"status":status,"body":"{}","delay":32});
-        let h = Harness::new(fixture(response.clone(), response));
-        let mut argv = args();
-        argv.extend(["-b", "body"]);
-        if patch {
-            argv.extend(["--status-id", "8"]);
-        }
-        let start = std::time::Instant::now();
-        failure(
-            &h.run(&argv),
-            1,
-            "network",
-            if patch { "updated" } else { "created" },
-            Some(status),
-        );
-        assert!(start.elapsed() >= std::time::Duration::from_secs(29));
-        assert!(start.elapsed() < std::time::Duration::from_secs(40));
-        assert_eq!(h.requests().len(), if patch { 2 } else { 1 });
-    }
-}
-
-#[test]
 fn global_profile_flags_and_tty_remain_noninteractive() {
     let h = Harness::new(fixture(
         json!({"status":201,"body":"{\"id\":9}"}),

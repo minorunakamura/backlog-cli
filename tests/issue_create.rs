@@ -555,16 +555,6 @@ fn create_interrupts_before_send_after_send_and_after_201_keep_observed_certaint
 }
 
 #[test]
-fn create_body_timeout_retains_created_without_retry() {
-    let h = Harness::new(json!({"status":201,"body":"{}","delay":32}));
-    let start = std::time::Instant::now();
-    failure(&h.run(&args()), 1, "network", "created", Some(201));
-    assert!(start.elapsed() >= std::time::Duration::from_secs(29));
-    assert!(start.elapsed() < std::time::Duration::from_secs(40));
-    assert_eq!(h.requests().len(), 1);
-}
-
-#[test]
 fn required_fields_repeated_single_flags_and_name_resolution_fail_without_post() {
     let h = Harness::new(json!({"body":"[]"}));
     for field in [
