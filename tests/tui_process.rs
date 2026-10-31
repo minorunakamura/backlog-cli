@@ -1017,8 +1017,10 @@ fn selection_change_hides_other_body_immediately_and_late_preview_cannot_clear_n
             &h,
             json!([
                 {"wait":"TITLE: Detail B-1","keys":"lj"},
-                {"wait":"B-2","pause":0.19,"keys":"j"},
-                {"wait":"B-3","pause":0.6,"keys":""},
+                {"wait":"B-2","pause":0.19,"keys":"j",
+                 "wait_request":{"method":"GET","path":"/api/v2/issues/B-2","ordinal":1}},
+                {"wait":"B-3","pause":0.6,"keys":"",
+                 "wait_request":{"method":"GET","path":"/api/v2/issues/B-3","ordinal":1}},
                 {"wait":"Preview failed","keys":"q"}
             ]),
         );
@@ -1040,7 +1042,17 @@ fn selection_change_hides_other_body_immediately_and_late_preview_cannot_clear_n
             result["snapshots"][3].as_str().unwrap().contains("B-3"),
             "{result}"
         );
-        assert_eq!(h.requests().len(), 11, "{result}");
+        let requests = h.requests();
+        for path in ["/api/v2/issues/B-2", "/api/v2/issues/B-3"] {
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|r| r["method"] == "GET" && r["path"] == path)
+                    .count(),
+                1,
+                "{requests:?}"
+            );
+        }
     }
 }
 
@@ -4098,32 +4110,30 @@ fn bl_create_requires_explicit_choices_and_compares_current_values_not_a_dirty_f
 
 #[test]
 fn bl_create_editor_failures_keep_other_inputs_and_do_not_change_the_empty_body() {
-    for mode in ["nonzero", "utf8", "unlink"] {
-        let h = Harness::new(create_routes());
-        h.config(json!({"editor":["/usr/bin/python3", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editor.py"), h.root.join("editor-record"), mode],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
-        let result = scripted(
-            &h,
-            json!([
-                {"wait":"Alpha", "keys":"\r"},
-                {"wait":"total 0", "keys":"lc"},
-                {"wait":"Create issue", "pause":0.3, "keys":"retained title\t\u{0002}\r"},
-                {"wait":"EDITOR READY", "resize":[12,40], "keys":"qjk\n"},
-                {"wait":"Create issue", "keys":"\u{0014}"},
-                {"wait":"retained title", "keys":"\t\u{0002}"},
-                {"wait":"Body edit: 0 chars", "keys":"\u{001b}"},
-                {"wait":"Discard changes?", "keys":"\r"},
-                {"wait":"Issue List", "keys":"q"}
-            ]),
-        );
-        let record: Value =
-            serde_json::from_str(&std::fs::read_to_string(h.root.join("editor-record")).unwrap())
-                .unwrap();
-        assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
-        assert_eq!(record["cooked"], true);
-        assert_eq!(record["original"], "");
-        assert!(result["snapshots"][4].as_str().unwrap().contains("0 chars"));
-        assert!(h.requests().iter().all(|r| r["method"] == "GET"));
-    }
+    let h = Harness::new(create_routes());
+    h.config(json!({"editor":["/usr/bin/python3", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editor.py"), h.root.join("editor-record"), "nonzero"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Alpha", "keys":"\r"},
+            {"wait":"total 0", "keys":"lc"},
+            {"wait":"Create issue", "pause":0.3, "keys":"retained title\t\u{0002}\r"},
+            {"wait":"EDITOR READY", "resize":[12,40], "keys":"qjk\n"},
+            {"wait":"Create issue", "keys":"\u{0014}"},
+            {"wait":"retained title", "keys":"\t\u{0002}"},
+            {"wait":"Body edit: 0 chars", "keys":"\u{001b}"},
+            {"wait":"Discard changes?", "keys":"\r"},
+            {"wait":"Issue List", "keys":"q"}
+        ]),
+    );
+    let record: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.root.join("editor-record")).unwrap())
+            .unwrap();
+    assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+    assert_eq!(record["cooked"], true);
+    assert_eq!(record["original"], "");
+    assert!(result["snapshots"][4].as_str().unwrap().contains("0 chars"));
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
 }
 
 #[test]
@@ -4616,64 +4626,77 @@ fn bl_update_failures_preserve_certainty_never_retry_or_refresh_and_cannot_edit_
 
 #[test]
 fn bl_update_cancelled_loading_and_older_detail_responses_cannot_replace_a_new_form_or_success() {
-    for failing in [false, true] {
-        let mut routes = update_routes();
-        let mut latest = update_issue();
-        latest["summary"] = json!("New generation title");
-        latest["projectId"] = json!(3);
-        let delayed = if failing {
-            json!({"header_delay":1.4,"status":403})
-        } else {
-            json!({"header_delay":1.4,"body":update_issue().to_string()})
-        };
-        routes["routes"]["GET /api/v2/issues/B-1"]["sequence"] = json!([
-            {"body":update_issue().to_string()}, delayed.clone(), delayed,
-            {"body":latest.to_string()}
-        ]);
-        for suffix in ["", "/issueTypes", "/users", "/versions", "/statuses"] {
-            routes["routes"][format!("/api/v2/projects/3{suffix}")] =
-                routes["routes"][format!("/api/v2/projects/2{suffix}")].clone();
-        }
-        let h = Harness::new(routes);
-        settings(&h, "B");
-        let result = scripted(
-            &h,
-            json!([
-                {"wait":"TITLE: Detail B-1","keys":"LR"},
-                {"wait":"Loading... Esc: cancel","keys":"e", "pause":0.2},
-                {"wait":"Loading issue / candidates","keys":"\u{1b}","pause":0.2},
-                {"wait":"> Issue Detail","keys":"e"},
-                {"wait":"New generation title","keys":"!\t\u{2}\t\t\t\r", "pause":1.6},
-                {"wait":"Confirm update","keys":"s"},
-                {"wait":"Comment display refreshed","keys":"\r"},
-                {"wait":"Changed title","keys":"q", "pause":0.3}
-            ]),
-        );
-        let requests = h.requests();
-        assert_eq!(
-            requests.iter().filter(|r| r["method"] == "PATCH").count(),
-            1,
-            "{requests:?}"
-        );
-        assert!(
-            !result["snapshots"][4].as_str().unwrap().contains("ERROR"),
-            "{result}"
-        );
+    let mut routes = update_routes();
+    let mut latest = update_issue();
+    latest["summary"] = json!("New generation title");
+    latest["projectId"] = json!(3);
+    let delayed = json!({"header_delay":1.4,"body":update_issue().to_string()});
+    routes["routes"]["GET /api/v2/issues/B-1"]["sequence"] = json!([
+        {"body":update_issue().to_string()}, delayed.clone(), delayed,
+        {"body":latest.to_string()}
+    ]);
+    for suffix in ["", "/issueTypes", "/users", "/versions", "/statuses"] {
+        routes["routes"][format!("/api/v2/projects/3{suffix}")] =
+            routes["routes"][format!("/api/v2/projects/2{suffix}")].clone();
+    }
+    let h = Harness::new(routes);
+    settings(&h, "B");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"LR"},
+            {"wait":"Loading... Esc: cancel","keys":"e", "pause":0.2,
+             "wait_request":{"method":"GET","path":"/api/v2/issues/B-1","ordinal":2}},
+            {"wait":"Loading issue / candidates","keys":"\u{1b}","pause":0.2,
+             "wait_request":{"method":"GET","path":"/api/v2/issues/B-1","ordinal":3}},
+            {"wait":"> Issue Detail","keys":"e"},
+            {"wait":"New generation title","keys":"!\t\u{2}\t\t\t\r", "pause":1.6},
+            {"wait":"Confirm update","keys":"s"},
+            {"wait":"Comment display refreshed","keys":"\r"},
+            {"wait":"Changed title","keys":"q", "pause":0.3}
+        ]),
+    );
+    let requests = h.requests();
+    let patches: Vec<_> = requests.iter().filter(|r| r["method"] == "PATCH").collect();
+    assert_eq!(patches.len(), 1, "{requests:?}");
+    assert_eq!(patches[0]["path"], "/api/v2/issues/B-1", "{requests:?}");
+    assert!(
+        result["snapshots"][4]
+            .as_str()
+            .unwrap()
+            .contains("New generation title"),
+        "{result}"
+    );
+    assert!(
+        !result["snapshots"][4].as_str().unwrap().contains("ERROR"),
+        "{result}"
+    );
+    for suffix in ["", "/issueTypes", "/users", "/versions", "/statuses"] {
+        let path = format!("/api/v2/projects/3{suffix}");
         assert!(
             requests
                 .iter()
-                .any(|r| r["path"] == "/api/v2/projects/3/statuses"),
-            "latest project must drive candidates: {requests:?}"
-        );
-        assert_eq!(
-            requests
-                .iter()
-                .filter(|r| r["method"] == "GET" && r["path"] == "/api/v2/issues/B-1")
-                .count(),
-            4,
-            "{requests:?}"
+                .any(|r| r["method"] == "GET" && r["path"] == path),
+            "latest project must drive rules and candidates: {requests:?}"
         );
     }
+    for suffix in ["/issueTypes", "/users", "/versions", "/statuses"] {
+        let path = format!("/api/v2/projects/2{suffix}");
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r["method"] == "GET" && r["path"] == path),
+            "old project candidates must not be used: {requests:?}"
+        );
+    }
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["method"] == "GET" && r["path"] == "/api/v2/issues/B-1")
+            .count(),
+        4,
+        "{requests:?}"
+    );
 }
 
 #[test]
@@ -4748,41 +4771,35 @@ fn bl_update_safe_display_keeps_raw_title_and_zero_width_candidate_without_recon
 
 #[test]
 fn bl_update_editor_failure_keeps_latest_raw_body_other_fields_and_focus() {
-    for (mode, notice) in [
-        ("nonzero", "Editor did not exit successfully"),
-        ("utf8", "UTF-8"),
-        ("unlink", "Cannot read editor file"),
-    ] {
-        let h = Harness::new(update_routes());
-        settings(&h, "B");
-        h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record").display().to_string(),mode],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
-        let result = scripted(
-            &h,
-            json!([
-                {"wait":"TITLE: Detail B-1","keys":"Le"},
-                {"wait":"Latest title","keys":"!\t\u{2}\r"},
-                {"wait":"EDITOR READY","keys":"\n","resize":[12,40]},
-                {"wait":notice,"keys":"\t\t\t\r","resize":[24,100]},
-                {"wait":"Confirm update","keys":"s"},
-                {"wait":"Comment display refreshed","keys":"\r"},
-                {"wait":"> Issue Detail","keys":"q"}
-            ]),
-        );
-        let record: Value =
-            serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap()).unwrap();
-        assert_eq!(record["original"], "Original body");
-        assert_eq!(record["mode"], json!(0o600));
-        assert_eq!(record["cooked"], true);
-        assert_eq!(record["echo"], true);
-        assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
-        let patches: Vec<_> = h
-            .requests()
-            .into_iter()
-            .filter(|r| r["method"] == "PATCH")
-            .collect();
-        assert_eq!(patches.len(), 1, "{result}");
-        assert_eq!(patches[0]["form"], json!({"summary":["Latest title!"]}));
-    }
+    let h = Harness::new(update_routes());
+    settings(&h, "B");
+    h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record").display().to_string(),"nonzero"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"TITLE: Detail B-1","keys":"Le"},
+            {"wait":"Latest title","keys":"!\t\u{2}\r"},
+            {"wait":"EDITOR READY","keys":"\n","resize":[12,40]},
+            {"wait":"Editor did not exit successfully","keys":"\t\t\t\r","resize":[24,100]},
+            {"wait":"Confirm update","keys":"s"},
+            {"wait":"Comment display refreshed","keys":"\r"},
+            {"wait":"> Issue Detail","keys":"q"}
+        ]),
+    );
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap()).unwrap();
+    assert_eq!(record["original"], "Original body");
+    assert_eq!(record["mode"], json!(0o600));
+    assert_eq!(record["cooked"], true);
+    assert_eq!(record["echo"], true);
+    assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+    let patches: Vec<_> = h
+        .requests()
+        .into_iter()
+        .filter(|r| r["method"] == "PATCH")
+        .collect();
+    assert_eq!(patches.len(), 1, "{result}");
+    assert_eq!(patches[0]["form"], json!({"summary":["Latest title!"]}));
 }
 
 #[test]
@@ -4992,33 +5009,15 @@ fn bl_update_invalidates_pending_list_and_comment_requests_and_keeps_the_fixed_d
 
 #[test]
 fn bl_update_incomplete_or_mistyped_success_preserves_detail_and_reports_updated_without_retry() {
-    let mut responses = vec![json!({"id":1,"issueKey":"B-1"})];
-    for field in [
-        "projectId",
-        "summary",
-        "description",
-        "issueType",
-        "priority",
-        "assignee",
-        "status",
-        "resolution",
-        "startDate",
-        "dueDate",
-        "milestone",
-        "created",
-        "updated",
-    ] {
-        let mut missing = update_issue();
-        missing.as_object_mut().unwrap().remove(field);
-        responses.push(missing);
-        let mut mistyped = update_issue();
-        mistyped[field] = json!(false);
-        responses.push(mistyped);
-    }
+    let mut mistyped_summary = update_issue();
+    mistyped_summary["summary"] = json!(false);
     let mut invalid_milestone = update_issue();
     invalid_milestone["milestone"] = json!([{"id":5,"name":null}]);
-    responses.push(invalid_milestone);
-    for response in responses {
+    for response in [
+        json!({"id":1,"issueKey":"B-1"}),
+        mistyped_summary,
+        invalid_milestone,
+    ] {
         let mut routes = update_routes();
         routes["routes"]["PATCH /api/v2/issues/B-1"] = json!({"body":response.to_string()});
         let h = Harness::new(routes);
@@ -5922,45 +5921,39 @@ fn bl_comment_add_refresh_is_atomic_preserves_old_selection_scroll_and_certainty
 
 #[test]
 fn bl_comment_add_editor_failures_resize_tiny_and_discard_keep_body_and_field_draft() {
-    for (mode, notice) in [
-        ("nonzero", "Editor did not exit successfully"),
-        ("utf8", "Cannot read editor file"),
-        ("unlink", "Cannot read editor file"),
-    ] {
-        let h = Harness::new(comment_add_routes());
-        settings(&h, "B");
-        h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),mode],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
-        let result = scripted(
-            &h,
-            json!([
-                {"wait":"OLD COMMENT","keys":"Llc"},
-                {"wait":"Add comment","keys":"\t\rj\r\u{2}\r"},
-                {"wait":"EDITOR READY","keys":"\n","resize":[12,40]},
-                {"wait":notice,"resize":[11,39]},
-                {"wait":"Terminal too small","keys":"s\r\u{1b}\u{2}"},
-                {"wait":"Terminal too small","resize":[24,100]},
-                {"wait":"Closed (2)","keys":"\t\t\t\t\r"},
-                {"wait":"Confirm comment","keys":"\u{1b}"},
-                {"wait":"Closed (2)","keys":"\u{1b}"},
-                {"wait":"Discard changes?","keys":"\u{1b}"},
-                {"wait":"Closed (2)","keys":"\u{1b}"},
-                {"wait":"Discard changes?","keys":"\r"},
-                {"wait":"> Comment","keys":"q"}
-            ]),
-        );
-        let record: Value =
-            serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap()).unwrap();
-        assert_eq!(record["original"], "");
-        assert!(
-            result["snapshots"][7]
-                .as_str()
-                .unwrap()
-                .contains("Status: Closed (2)"),
-            "{result}"
-        );
-        assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
-        assert!(h.requests().iter().all(|r| r["method"] == "GET"));
-    }
+    let h = Harness::new(comment_add_routes());
+    settings(&h, "B");
+    h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),"nonzero"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"OLD COMMENT","keys":"Llc"},
+            {"wait":"Add comment","keys":"\t\rj\r\u{2}\r"},
+            {"wait":"EDITOR READY","keys":"\n","resize":[12,40]},
+            {"wait":"Editor did not exit successfully","resize":[11,39]},
+            {"wait":"Terminal too small","keys":"s\r\u{1b}\u{2}"},
+            {"wait":"Terminal too small","resize":[24,100]},
+            {"wait":"Closed (2)","keys":"\t\t\t\t\r"},
+            {"wait":"Confirm comment","keys":"\u{1b}"},
+            {"wait":"Closed (2)","keys":"\u{1b}"},
+            {"wait":"Discard changes?","keys":"\u{1b}"},
+            {"wait":"Closed (2)","keys":"\u{1b}"},
+            {"wait":"Discard changes?","keys":"\r"},
+            {"wait":"> Comment","keys":"q"}
+        ]),
+    );
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap()).unwrap();
+    assert_eq!(record["original"], "");
+    assert!(
+        result["snapshots"][7]
+            .as_str()
+            .unwrap()
+            .contains("Status: Closed (2)"),
+        "{result}"
+    );
+    assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
 }
 
 #[test]

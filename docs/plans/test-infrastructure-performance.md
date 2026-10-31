@@ -1,234 +1,223 @@
-# テスト基盤の計測に基づく高速化・安定化
+# テスト保証の選別と重複・高費用テストの削減（#56／#57 再計画）
 
 ## 目的
 
-必要な検証能力を維持し、ローカル開発・CIのテスト待機と起動コスト、不安定性を減らす。実装と検証の反復がWorkerの30分枠を使い切る問題に対し、実時間待機の重複と全対象検証の重複を減らし、1セッションで扱える作業へ分ける。
+テストを安定化し続けることから、必要な保証を選び直し、重複・過剰な実process／PTY起動を削除・統合・縮小することへ目的を変更する。削除本数や速度ノルマの達成自体は目的にしない。
 
-製品・テスト基盤のImplementationは別の新しいセッションで行う。本Planningは、本Planの明示Approve・正式保存と、新規Work Itemsの分割・本文・保存先の個別承認／保存・公開までで終了する。
+`tests/` と `src/` 内のテスト全体を候補とし、実行費用・不安定性・重複の大きい箇所から選別する。固有の重要な保証は代表ケースで残し、共通処理の失敗種別・fieldごとの反復を中心に減らす。製品の機能・公開契約・安全要件は変えない。
 
-## 要件・決定事項
+本Planningは改訂Planの明示Approve・正式保存と、整合するWork Itemsの個別承認・保存公開までで終了する。実装と以下の検証は、別の新しいImplementationセッションで行う。
 
-- 最小のテスト／fixture改善を採用する。公開API・製品コード・製品の設定や実行方式は変更しない。
-- 実CLI・証明書検証付きHTTPS・製品の30秒timeoutを残したまま、5関数に分散した6つのtimeoutケースを最大6並列へ集約する。CPU数によって並列数が減らないよう、単一集約テスト内で6ケースを開始し全てjoinする。
-- HTTPS fixtureのTLS handshakeによるhead-of-line blockingを改善する。PTYの既存失敗は、失敗経路の診断を先に整え、証拠で確認できた試験同期の不足だけを修正する。
-- library／Service／HTTP／CLI／PTYの既存の保証を削除・一括置換しない。新依存、汎用framework、共有証明書、常駐server、永続状態、CI infrastructureは追加しない。
-- ユーザーの最新判断に従い、**CIは設定確認まで**とする。改善後の実CI成功を完了条件にせず、未実行なら未確認と明記する。PlanningでCI起動・commit／push／PR作成は行わない。
-- 性能値の妥当性は技術側が実測で判断する。以下の150秒は計測根拠に基づく技術目標であり、製品SLA・CIでの達成保証ではない。
-- **今後追加するテストにも適用する恒久的な作成基準**をCONTRIBUTING.mdへ記載し、短いAGENTS.mdから案内する。検証する保証・適切な境界・実時間待機の必要性・focused確認を、新規テストの設計とReviewで確認する。文書とReviewによる運用であり、自動強制の仕組みを導入するものではない。
-- 開発途中はfocused確認を使用する。各Work Itemでfullの性能計測3回・release確認一式を繰り返さず、最終差分固定後の全対象3回を性能測定と全体回帰に兼用する。時間枠不足は変更と証拠を保持して引き継ぎ、Workerのtimeout延長を解決策にしない。
+## 正式入力・確認済みの現状
 
-## 正式入力・現状の保護
+- 対象cwd: `/Users/minoru/Documents/mywork/cli-dev/backlog-cli`
+- 再計画対象: https://github.com/minorunakamura/backlog-cli/issues/56
+- 関連する最終検証・作成基準: https://github.com/minorunakamura/backlog-cli/issues/57
+- 正式保存先: `docs/plans/test-infrastructure-performance.md`（本改訂全文で置き換える）。
+- 調査時HEAD: `028cbdc4031072a78ce9c9aa382b69826fa49e96`。
+- #54（HTTPS fixtureのTLS blocking改善・安全なPTY失敗診断）と#55（実30秒timeoutの6ケース集約）はCLOSEDで、現在のコードにも存在する。本改訂で再実装・再公開・完了認定のやり直しはしない。
 
-対象cwd: `/Users/minoru/Documents/mywork/cli-dev/backlog-cli`
+要求・判断の一次資料:
 
-一次資料:
+1. 本Plan改訂前の `docs/plans/test-infrastructure-performance.md`。Gitの上記HEADにも存在する。旧目的・実測と本改訂の差を確認する履歴資料であり、#56/#57の将来の完了条件は本改訂を優先する。
+2. #56/#57の現在のIssue本文。Planning時は両IssueがOPEN、コメントは空。旧本文の同期安定化・保証全維持・固定反復条件は本改訂に合わせてWork Itemsで明示的に更新する。
+3. `docs/designs/backlog-cli.md`「JSON・通信・書込み結果」「品質・配布」、`docs/plans/backlog-cli-initial.md`「動作確認方法／TDDと公開境界／自動試験／正式チェック」。製品契約を変更する入力ではない。
+4. `CONTRIBUTING.md`「品質確認」「テストと今回の範囲」「editor連携 (#19)」「TUI課題更新 (#21)」「TUIコメント追加 (#22)」、`.github/workflows/quality.yml`、`Cargo.toml`、`rust-toolchain.toml`。
+5. `docs/testing/manual-acceptance.md` の「#54」「#55」および「#56」以降の記録。特に「fixture deadlineのstep時間切り分けと例外注入pauseの限定訂正」「editor追加診断の記録」を、未解決事項と部分実装の根拠として参照する。過去の失敗や訂正を成功へ書き換えない。
 
-- `docs/plans/backlog-cli-initial.md`「動作確認方法／TDDと公開境界」「自動試験」「正式チェック」。既存各機能の仕様・受入を変更しない。
-- `docs/designs/backlog-cli.md`「全体構成と技術」「JSON・通信・書込み結果」「品質・配布」。HTTPS、header認証、body込み30秒、redirect／retry禁止、単一書込み、確度・中断・安全表示を維持する。
-- `CONTRIBUTING.md`「品質確認」「テストと今回の範囲」「ローカルHTTPS harness」。個別のService子processは、TLS trust／環境変数の競合を防ぐために存在する。
-- `.github/workflows/quality.yml`、`Cargo.toml`、`rust-toolchain.toml`。
-- `docs/testing/manual-acceptance.md` のIssue #22に関する失敗・同期訂正・限定15秒化の記録。特に「取消前HTTP到着同期と未解消の8秒cutoff」「複合シナリオだけ有限15秒」を、過去の観測と試験方法の根拠として参照する。
-- `tests/common/mod.rs`、`tests/fixtures/https_server.py`、`tests/fixtures/tty_shell.py`、`tests/https_fixture.rs`、`tests/service.rs`、各CLI suite、`tests/tui_process.rs`。
+### 未コミット変更の保護
 
-背景Issue: https://github.com/minorunakamura/backlog-cli/issues/22
+Planning開始時の変更は次の4ファイル。調査終了時にも内容不変をhashで確認した。Planningでは編集・commit・stash・破棄していない。
 
-依頼文には未コミット変更・受入未完了の記述があったが、開始時の直接確認ではHEADは `a8b4cdcae02e1b3afd8beeb9db18bd452116238c`、git statusはclean、受入文書にも後の追記があった。本Planningはcommit等をしていない。計測前後の追跡／通常untrackedファイルのhashは不変だった。この差をIssue #22の完了認定に使わず、今回の作業を同Issueへ混ぜない。
+| ファイル | Planning時SHA-256 |
+| --- | --- |
+| `tests/fixtures/tty_shell.py` | `5f9270a11f269c673585bcd5db3d934dfd1410ceb15ba203092d8ae864eb36b3` |
+| `tests/tty_shell_fixture.rs` | `c5c8be0103bf02f3ca637ef8d6768c6ffed6ac84b3fea4fec750edd69b2f7b5d` |
+| `tests/tui_process.rs` | `f358832d6c0142cb65a6278a1bd25c63ca07b2287a932fc2344fc17118872494` |
+| `docs/testing/manual-acceptance.md` | `4d12ab6b0cd3427c88eda8b9454acee98578a4fdc0062b0f73b4edb6be1cd5a9` |
 
-Implementation開始時にHEAD・全差分・untracked・現在のチェックを再確認し、他者の変更を保持する。commit／stash／破棄を独断で行わない。対象コードが変われば現在の数値をそのまま新baselineとせず、影響する計測を取り直して区別する。過去の成功・Reviewを変更後の証拠に流用しない。
+Implementation開始時にHEAD・全差分・untrackedを読み直し、現在の部分実装を正式入力に含める。hashは保護確認の参考であり、将来の開始条件として一致を要求しない。他者の変更があれば保持して影響を確認する。
 
-## 計測結果と原因の評価
+## 旧Planからの変更・ユーザー決定
 
-### 条件・方法
+ユーザー確認済みの方針は次の2点である。
 
-2026-10-31 JST、Darwin arm64／macOS 26.7.1、10 logical CPU、32 GiB、rustc／cargo 1.99.1。親PATHのPythonは3.14.9、OpenSSL CLI 4.0.3。PTY driverは既存の隔離PATHにより `/usr/bin/python3` 3.9.6を使用する。両経路のPython／SSL差を比較時に記録する。
+1. updateだけでなくテスト全体を候補にし、固有の重要な保証は代表ケースで残して、重複する反復を減らす。
+2. 次のImplementationで差分ができた時点に、変更箇所のfocused確認と全体試験を各1回行い、所定のチェックを維持する。旧Planの全体固定3回・重点固定10反復・速度ノルマは外す。
 
-他のテスト・build計測を重ねず、`cargo test --locked --all-targets --no-run` の後、`/usr/bin/time -l cargo test --locked --all-targets` を事前に決めた最大3回、同じtree・既存のデフォルト並列で実行した。RUST_TEST_THREADSは未指定。build／wall／Cargo各suiteのfinished timeを分け、失敗を置き換えない。3回目の失敗で反復を終了した。
+これを次の具体策へ落とす。
 
-| 実行 | wall秒 | suite合計秒 | 結果 |
-| --- | ---: | ---: | --- |
-| no-run build | 8.90 | ― | 成功。既存targetを使ったincremental準備で、cold build値ではない |
-| full-1 | 301.51 | 255.57 | 347成功・0失敗・実端末用2 ignored |
-| full-2 | 256.10 | 255.71 | 347成功・0失敗・実端末用2 ignored |
-| full-3 | 256.11 | 255.66 | exit101。tui_process 113成功／1失敗、後続tui_shell未実行 |
+- 旧「既存シナリオ・assert・全組合せの維持」は、下記6候補の代表化へ変更する。保証が完全に同等とは説明しない。
+- 削減対象となる過去cutoffの根因をすべて解明することは完了条件にしない。残す試験の失敗を放置して合格にする変更ではない。
+- warm wall中央値150秒以下、timeout group全体40秒以下という性能合否、および指定3試験の10反復を撤廃する。`tests/request_timeout.rs` の各CLIケース29秒以上40秒未満という既存assertは変更しない。
+- 正式fmt／all-targets／Clippy／audit／release buildを残す。別途のrelease製品でのPOST／PATCH直接再演は、今回の必須検証から外す。既存の再現手順・fixturesそのものは削除しない。
+- これらは#56/#57の検証方針の変更であり、初期Plan・基本設計にある製品契約や、他の機能Issueの受入条件を変更しない。別の設計文書・ADR・保証台帳は追加しない。
 
-full-1のwallとsuite合計の差約46秒は初回固有の未特定コストであり、証明書生成や特定OS処理と断定しない。成功したwarm比較値はfull-2の256.10秒。失敗を含む3回を「成功したbaselineの中央値」とは扱わない。
+## 調査範囲と終了条件
 
-### suite別の実測（秒）
+Planningで答える問いは、(a) 高費用な反復がどこにあるか、(b) どの既存assert・共通処理と重なるか、(c) 固有に残す／削る保証は何か、(d) 部分実装と検証をどこまで再利用するか、の4つとした。
 
-CIは同HEADの既存Quality実行 https://github.com/minorunakamura/backlog-cli/actions/runs/41167569007 のログを読み取った値。macos-15-arm64 image `20261028.0489.1`、実行成功。ローカル値と混ぜて集計しない。
+`tests/` の全21 Rust suite、commonとfixture一覧、`src/` 全Rustファイルのtest属性・待機・process起動箇所を粗く確認した。内蔵testsは `src/tui.rs` と `src/tui/create.rs` にあり、`src/tui.rs` のPTY試験を高速unitと一括分類していない。全assertを同じ深さで監査していない。
 
-| suite | local-1 | local-2 | local-3 | CI |
-| --- | ---: | ---: | ---: | ---: |
-| lib | 6.38 | 6.50 | 6.46 | 9.30 |
-| bl／bl-cli unit targets | 0.00 | 0.00 | 0.00 | 0.00 |
-| body | 0.00 | 0.00 | 0.00 | 0.00 |
-| candidate_list | 1.23 | 0.91 | 1.22 | 0.89 |
-| cli_help_version | 0.81 | 0.70 | 0.86 | 0.03 |
-| comment_add | 60.34 | 60.23 | 60.25 | 60.36 |
-| comment_preview | 0.14 | 0.14 | 0.14 | 0.15 |
-| comment_update | 30.29 | 30.27 | 30.26 | 32.34 |
-| editor | 0.13 | 0.11 | 0.14 | 0.21 |
-| https_fixture | 0.15 | 0.18 | 0.17 | 0.22 |
-| issue_comment | 0.86 | 0.79 | 0.90 | 1.42 |
-| issue_create | 30.17 | 30.14 | 30.14 | 30.17 |
-| issue_search | 1.89 | 1.91 | 1.85 | 1.96 |
-| issue_update | 30.16 | 30.14 | 30.18 | 30.11 |
-| issue_view | 0.73 | 0.94 | 0.82 | 1.13 |
-| project_list | 30.13 | 30.14 | 30.17 | 30.10 |
-| safety | 0.00 | 0.00 | 0.00 | 0.00 |
-| service | 4.00 | 3.88 | 4.11 | 4.49 |
-| tui_input | 0.56 | 0.57 | 0.56 | 0.59 |
-| tui_process | 57.26 | 57.81 | 57.43（失敗） | 175.25 |
-| tui_shell | 0.34 | 0.35 | 未到達 | 0.35 |
+優先3本に加え、editorの機能別反復、28ケースの不正応答、pending read matrix、comment逆順matrix、JSON再現fixture、共通端末所有権試験を深掘りした。採用する6候補について、Rootが判断に使うコード・assert・共通処理を直接確認した。6候補で十分な実起動削減が得られ、さらに広げると固有保証の削減割合が増すため、今回の深掘りを終了した。
 
-同HEADのCI Test stepは431秒、うちコンパイル51.67秒、suite合計379.07秒。Clippyは約16秒、audit binaryはcache hitで導入skip、監査は約3秒。CIのCPU数／起動条件差を固定せず、ローカル150秒をそのままCI目標にしない。CI全体やcold buildの短縮を達成済みとはしない。
+Planning中のfull／focused test・失敗待ちの反復・Probeは行っていない。採否に必要な事実は静的に解決できたため、実行時間順位・flake率・原因再現は問いに追加しない。実行確認は下記のImplementation用手順で行う。
 
-### Probeの結論
+## 削減候補ごとの技術判断
 
-全て一時ディレクトリ・fake key・loopbackのみで実施し、製品・テストの追跡ファイルは変更していない。
+以下の略称はこの節内だけの参照用であり、コードの新しい識別子や管理対象を作るものではない。A〜Fはいずれも `tests/tui_process.rs` の既存関数。
 
-1. **主な確定ボトルネックは実timeout待機の配置。** 5関数に計6回の30秒待機があり、Cargoが別suiteを順に実行することで合計約180秒を占める。6ケースを独立server／実CLIで同時に開始すると、group wall **30.16秒**、各ケース30.012〜30.019秒で、networkエラー、status、created／updated、要求数が全て期待どおりだった。delay32の中断試験はsignal後に終了するため、全てが32秒待つわけではない。
-2. **残りの診断値は達成値ではない。** 上記5関数だけを意図して除いた診断はwall89.67秒だったが、PTYが1件失敗し後続suite未到達。正式合格・恒久skip案ではない。この値＋6ケース30.16秒の約120秒は目標設定の参考に限る。
-3. **起動は現状の主因ではない。** 単独10回の中央値はserver ready99.9ms、別に同条件で計った証明書生成38.9ms、CLI help10.0ms、CLI＋HTTPS16.3ms、Python検証HTTPS3.7ms。証明書値は別生成の標本で、server readyとの差を厳密な内訳にしない。独立20ケースのfixture＋CLIを並列1／4／10で実行したwallは2.512／0.662／0.349秒。常駐化・証明書共有は利益と管理コストが釣り合わず見送る。
-4. **TLS fixtureのhead-of-line blockingを制御確認。** silent TCP peerを0.8秒保持すると、別の検証HTTPSも0.811〜0.824秒待った（3回）。一時wrapperで `do_handshake_on_connect=False` としhandler側のI/Oへ握手を遅延すると、別要求は3.9〜5.4msで進行した（3回）。既存のlistening SSLSocketはaccept時にhandshakeすることをローカルstdlibの一次実装で確認した。TLS検証の無効化ではない。
-5. **PTY全面改修は先行しない。** 既存comment PATCHシナリオ3回はwall2.485〜2.514秒。別のcProfile標本2.398秒のうち、screen_textは154回・0.460秒、select待ちは1.892秒。全履歴再構成のコストはあるが、cache／VT emulator全面改修は今回見送る。4つの現行PTY試験を同一binaryで並列1／4／10にすると38.868／16.734／16.788秒、全て成功。これは部分workloadの比較で、全suiteやCIの最適並列数の証明ではない。
+### A. updateのeditor失敗
 
-Probe途中には、comment-update入力fixtureの必須field不足と、globで古いtest binaryを選んだ診断ミスがあった。該当値は採用せず、正しいfixture／Cargoログが指定する現行binaryでの標本だけを上記に記載した。失敗標本の成功への置換や製品testの無条件retryとは区別する。Implementationでもbinaryをglob先頭から推測しない。
+対象: `bl_update_editor_failure_keeps_latest_raw_body_other_fields_and_focus`
 
-### 観測した不安定性と未確定事項
+- **現在の保証・費用:** nonzero／utf8／unlinkの3回、実HTTPS・bl・PTY・editorを起動。更新前本文、0600、cooked／echo、一時file削除、変更タイトル保持、失敗後focusから確認・送信まで、およびPATCHがsummaryだけであることを確認する。
+- **重複先:** `tests/editor.rs::body_failures_keep_original_and_delete_temporary_data` が同3失敗の原文保持・一時file削除を確認。`src/tui.rs::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff` が実PTYで失敗・入力専有・端末復元・他欄保持を確認する。create／commentも `src/tui.rs` の `EditorRequest::CreateBody` → `editor::edit_body` を共有する。
+- **推奨: 統合・縮小（3→1）。** nonzeroだけを残し、現在のstep・本文／他欄／focus・record・summary-onlyの単一PATCH assertをすべて保持する。関数の全削除や成功試験への追加assert移動は不要。
+- **固有に失う保証・影響:** 不正UTF-8／unlinkとupdateフォームとの組合せによる結合確認を減らす。共通editorの原文保持は残るが、その2失敗だけでupdate画面のfocusやdraftに異常が出る回帰の直接検出は減る。非空本文のupdate失敗後保持そのものはnonzero代表で残す。
 
-- full-3: `bl_update_cancelled_loading_and_older_detail_responses_cannot_replace_a_new_form_or_success` が8秒cutoff。画面はSending、残りはComment refreshと終了。HTTP原記録は通常cleanupで失われており、原因は未確定。
-- timeout除外診断: `bl_update_editor_failure_keeps_latest_raw_body_other_fields_and_focus` のUTF-8ケースが8秒cutoff。画面はeditorエラーを示すBody edit、残りはConfirm update以降。回収した要求は15 GET・書込みなし。該当stepはresizeとキーを同時に送るが、それだけで原因確定とはしない。
-- 過去の初期Detail到着約5秒差、今回の2失敗、制御確認したTLS blockingを同じ原因と断定しない。実Backlogの遅延とも混同しない。
+### B. updateの取消・旧Detail応答
 
-## 検証を置く層と維持する保証
+対象: `bl_update_cancelled_loading_and_older_detail_responses_cannot_replace_a_new_form_or_success`
 
-| 境界 | 維持する検証 | 今回の扱い |
-| --- | --- | --- |
-| 共通library／Shell→TestBackend | 本文・原文保持、安全表示、Unicode、入力・layout・focus | 既存suiteを維持。純粋な表示は既存の軽い確認をfocusedに使う |
-| Service公開入口＋HTTPS | 名前／ID、既定値、差分・no-op、API入出力・確度 | 子process／TLS trust隔離を維持。共有processでset_varする方式に変えない |
-| HTTP送受信 | HTTPS・認証header・method/path/form・単一送信・redirect/retry禁止・timeout | 実通信を維持。共通fixtureのみ改善 |
-| 実CLI | argv/stdin/stdout/stderr/exit、非対話、出力失敗・確度、中断 | CLIごとの経路を維持し、長いtimeoutケースの配置だけ集約 |
-| 実TUI／PTY | 実キー・signal・resize・editor端末所有、復元、実HTTPと状態の結合 | 既存シナリオとassertを維持。証拠に基づく同期を限定修正 |
-| 実端末／実Backlog | IME・字幅・実API権限／データとの結合 | 今回実施しない。fixture成功をこれらの保証に読み替えない |
+- **現在の保証・費用:** 旧成功／旧403の2回。旧Detail再取得・取消load・新loadを結合し、新title、旧ERRORなし、project3候補、対象GET4回、PATCH1回を確認。旧応答1.4秒、新draft後1.6秒などの待機がある。
+- **重複先:** `tests/tui_process.rs::bl_create_cancelled_candidate_load_cannot_fill_a_new_confirmed_target` と `bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_replace_new_draft_or_registration`。`src/tui.rs` の `create_generation` とload taskのabort＋joinを共有する。browse側は `src/tui/browse.rs::Browse::complete` のtarget／generation照合が成功・失敗の分岐より前にある。ただしupdateの全候補loadと書込み経路は完全同一ではない。
+- **推奨: 統合・縮小（2→1）。** 旧成功応答の1ケースを残す。取消前の対象GET ordinal2／3の受信待ち、GET4回、新draftの旧ERRORなし、PATCH1回、既存の画面到達・終了／復元・遅延と観測窓を維持する。旧403用の重複loop／fixture分岐だけを除く。
+- **最新projectの固有保証を明確化:** 新loadのprojectId=3から、ruleの `GET /api/v2/projects/3` と、project別4候補 `.../issueTypes`・`.../users`・`.../versions`・`.../statuses` を取得することを確認する。project2の同4候補を使わないことも確認する。初期Detail表示に必要な `GET /api/v2/projects/2` は禁止しない。最新GET由来のtitleが表示されたことと、固定 `PATCH /api/v2/issues/B-1` 1回を残す。候補取得だけの新しい別試験は増やさない。
+- **固有に失う保証・影響:** update固有の旧403と取消／新フォームの交差ケースを減らす。旧失敗だけが新しい表示やbusyを汚す回帰のupdate専用検出は減る。旧成功と取消後のupdate保護、共通の旧成功／旧失敗代表は残す。全取消保証をproject取得だけで代替済みとはしない。
 
-Serviceのraw保持とCLIのsafe表示、TestBackendとPTYは責務が異なり、同じ入力があっても直ちに重複検証とはしない。現公開Shell APIだけでは任意の取得結果をinjectできないため、PTYの大規模移設には別設計が必要。今回は新しいtest専用公開APIやprivate構造固定テストを作らない。
+### C. selection変更と遅い旧Detail
 
-## 実装方針
+対象: `selection_change_hides_other_body_immediately_and_late_preview_cannot_clear_new_busy_or_failure`
 
-### 1. 共通HTTPS fixtureと失敗診断
+- **現在の保証・費用:** 旧status200／500の2回。選択変更で旧本文を隠し、旧応答が新しいbusy／失敗を壊さないことを確認。付随するcommentsを含む総数11件のassertで10件となった失敗が記録されている。
+- **重複先:** `tests/tui_process.rs::comment_selection_clears_old_document_and_late_initial_response_cannot_clear_new_busy` はComments側、`preview_debounces_selection_and_enter_reuses_safely_rendered_detail` はdebounceと成功表示を確認する。世代gateは共通だがDetailのdocument／statusは別であり、これらで全代替しない。
+- **推奨: 維持＋検証対象の限定。** 旧200／500の両ケース、本文非表示・新busy・B-3失敗の画面assert、header_delay0.45／0.85秒とpause0.19／0.6秒を維持する。総要求数11だけを削除し、対象Detail GETの受信待ちと件数assertへ替える。
+- B-2からB-3へ動かすキーより前に、既存の `wait_request` で `GET /api/v2/issues/B-2` ordinal1を確認する。B-3のbusy観測前にも `GET /api/v2/issues/B-3` ordinal1を確認する。画面条件を併用し、終了後に両method／pathのGETが各1回であることをassertする。現在のfixtureではcommentsは空配列であり、記法用の同対象issue GETは増えない。
+- **固有に失う保証・影響:** 付随するcomments等を含む正確な総数11の監視を外す。この試験からは付随要求の増減を検出しなくなるが、旧Detail要求が一度も届かないまま通る試験にはしない。commentsの取得回数・非対話・追加GETの別試験は残す。ユーザー契約でない総数を、旧応答検証の成立条件と混同しない。
 
-- `tests/fixtures/https_server.py` のTLS handshakeをhandler側へ遅延し、一つの未完了handshakeがaccept全体を塞がないようにする。既存ThreadingHTTPServer、loopback動的port、検証可能な自己署名証明書、0700 root／0600秘密鍵、子process限定trust、kill／wait後cleanupを維持する。
-- `tests/https_fixture.rs` から、silent TCP peerを開いたまま別の証明書検証付きHTTPS要求が完了することを検証する。peerを閉じてから成功する弱い試験にせず、有限の待機と必ず実行するcleanupを用いる。逆引き禁止の既存試験とtrustなし拒否も維持する。
-- `tests/fixtures/tty_shell.py` はdeadline／例外経路のcleanup前にも、step index、経過時刻、送信stepの時刻、受信済みmethod／queryを除いたpath／ordinal・件数など、原因切り分けに必要な限定情報を出す。成功時JSONだけの拡張で済ませない。
-- diagnosticsへheaders／body／API key／config／secretを含み得るqueryをdumpしない。新しい永続ログ管理や失敗root保存ライフサイクルは設けず、既存テスト出力を使う。
+### D. createのeditor失敗
 
-### 2. 実30秒timeoutの最大6並列集約
+対象: `bl_create_editor_failures_keep_other_inputs_and_do_not_change_the_empty_body`
 
-`tests/request_timeout.rs` を作り、単一集約テスト内の標準libraryのscoped threads等で6ケースを開始し、全てjoinしてケース別に成否を報告する。各ケースは独立Harness／server／CLIを使い、環境変数・応答sequence・受信記録を共有しない。最大並列数は6で固定し、全suiteの並列数や製品Tokio worker数は変えない。Cargoのsuite境界により、通常の正式実行ではこのgroupとPTY suiteを同時に実行しない。
+- **現在の保証・費用:** nonzero／utf8／unlinkの3回。空本文・タイトル・cooked・一時file削除・GETのみを確認する。
+- **重複先:** `tests/editor.rs::body_failures_keep_original_and_delete_temporary_data`、`src/tui.rs::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff`、Aの共通editor経路。成功時の端末所有・resize・原文送信は `tests/tui_process.rs::bl_create_masks_entire_input_and_keeps_editor_body_dates_and_focus_through_resize` にもある。
+- **推奨: 統合・縮小（3→1）。** nonzeroだけにし、現在のstepと全assertを残す。
+- **固有に失う保証・影響:** utf8／unlink時のcreateフォームとの結合を減らす。その2種だけで入力やfocusが壊れる回帰の直接検出は減る。共通の失敗時原文保持と、create固有の失敗後保持代表は残す。
 
-| 移設元 | ケース／operation | 成功headers後の期待 | HTTP要求 |
-| --- | --- | --- | --- |
-| project_list::body_reading_is_inside_the_thirty_second_request_timeout | project list | network、httpStatus200、writeなし | projects GET 1回 |
-| issue_create::create_body_timeout_retains_created_without_retry | issue.create／POST | network、201、created | issues POST 1回 |
-| issue_update::update_body_timeout_keeps_updated_without_retry | issue.update／PATCH | network、200、updated | issue事前GET＋同対象PATCH各1回 |
-| comment_update::success_body_timeout_retains_updated_without_retry | comment.update／PATCH | network、200、updated | 対象comment GET＋myself GET＋対象comment PATCH各1回 |
-| comment_add::body_timeouts_keep_success_certainty_without_retry_for_post_and_patch | comment.add／POST | network、201、created | comments POST 1回 |
-| 同上 | comment.add／PATCH | network、200、updated | issue事前GET＋同対象PATCH各1回 |
+### E. comment追加のeditor失敗
 
-全ケースで実 `bl-cli`、既存の引数・form・認証／HTTPS設定、delay32、exit1、stdout空、stderrのJSON形式・改行・必要なapiErrors、operation／outcome／httpStatusを維持する。要求method／path／件数を照合し、retry／追加GET／fallbackがないことも維持する。CLI開始直前からの各ケースの既存 `29秒以上40秒未満` を残す。
+対象: `bl_comment_add_editor_failures_resize_tiny_and_discard_keep_body_and_field_draft`
 
-移設元5関数は新groupで同じ6ケースが実行されることを確認してから除く。テスト数の347への固定ではなく保証対応で移設漏れを検出する。signal中断試験や他のdecode／切断／拒否／表示失敗は移動・削除しない。新しい共通Service／transport抽象化は作らない。
+- **現在の保証・費用:** nonzero／utf8／unlinkの3回。本文・変更status、極小時の非操作、破棄取消、file削除、GETのみを確認する。
+- **重複先:** `tests/editor.rs::body_failures_keep_original_and_delete_temporary_data`、`src/tui.rs::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff`、A／Dと同じeditor経路。フォームのtiny／discardまで共通editor試験で代替するわけではない。
+- **推奨: 統合・縮小（3→1）。** nonzeroと対応noticeを残し、tiny／discard／status保持・空本文・file削除・非書込みのstepとassertをすべて残す。
+- **固有に失う保証・影響:** utf8／unlinkとcommentフォームの交差確認を減らす。その失敗種別だけでdraftや操作保護が壊れる回帰の直接検出は減る。comment固有の保持・保護は代表で残す。
 
-最大6並列は資源数の上限であり、Harnessのport読取やCommand待機をハードな期限で打ち切る機構ではない。既存待機がhangする限界は残し、今回のための汎用watchdogは追加しない。group全体40秒以下という性能判定と、各ケース29〜40秒のassertは別に扱う。
+### F. update成功応答の全field不正matrix
 
-### 3. PTY同期の診断と根拠のある限定修正
+対象: `bl_update_incomplete_or_mistyped_success_preserves_detail_and_reports_updated_without_retry`
 
-- 観測した上記2試験を、失敗情報を取れる状態で確認する。成功だけで解消とせず、対象要求・キー送信・editor復帰・resize／描画のどこまで進んだかを区別する。必要な最小の制御遅延や入力分割は試験目的を固定して行う。
-- HTTP受信の同期不足が確認されたstepには、既存SHELL_REQUESTS_FILEを使ったmethod／path／要求ordinalの一致待ちを限定追加する。stickyな汎用get-receivedやbusy表示だけを「対象要求送信済み」の証拠にしない。requestsは一度読み、同じsnapshotから条件・件数を得る。
-- HTTP受信は描画完了・成功headersのclient側観測・editor復帰・resize適用の証明にはしない。画面／editor／resizeの問題が確認されたstepだけ、必要な画面条件で操作を分離する。先に「受信待ちを足せば直る」「resizeが原因」と決めない。
-- 遅延した旧成功／旧失敗が新しいdraft・busy・登録結果を上書きしないこと、否定の観測窓、旧要求の消費数、固定対象への単一書込み、Latest／旧List保持を維持する。1.3／1.4／1.6秒等の遅延・観測待ちを一律削除しない。
-- 既定8秒、既存の複合1試験だけ15秒という現在の予算と、中断elapsed<5秒をまず維持する。前者は製品要件ではないが、一律延長で解消しない。根拠のないskip／ignore・成功までのretryはしない。
-- 製品原因、fixtureだけでは保証を維持できない変更、根拠の得られない修正が必要になった場合は未完了として停止し、Plan Reviewを含む再計画へ戻る。未承認の製品改変や大規模seam再編へ拡張しない。
+- **現在の保証・費用:** id／issueKeyだけの疎object、13fieldの欠落・型不正、milestone要素不正の計28回、HTTPS／bl／PTYを起動。同じUpdated確度・Do not resend・旧Detail・PATCH1回・後続GETなしを繰り返す。
+- **重複先:** `tests/issue_view.rs::invalid_required_issue_fields_fail_before_any_success_output` は全必須fieldの欠落・型不正・不正named値を実CLIで確認する。`src/service.rs::validate_issue_view` を `src/tui/create.rs::Create::update_display` も呼び、失敗にUpdated確度を付ける。`tests/tui_process.rs::bl_update_failures_preserve_certainty_never_retry_or_refresh_and_cannot_edit_the_result` にはdecode／切断／不完全応答等の確度・再送禁止もある。
+- **推奨: 統合・縮小（28→3）。** 既存の疎object `{"id":1,"issueKey":"B-1"}`、完全なupdate_issueからsummaryをfalseにした値、milestoneを `[{"id":5,"name":null}]` にした値だけを残す。疎objectは必須field欠落、summary=falseはscalar型不正、milestone.name=nullはnested不正の代表とする。既存のstep・Updated／再送禁止・旧Detail・単一PATCH・後続GETなしを全3ケースで残す。
+- **固有に失う保証・影響:** 全field個別の不正とPATCH成功後の表示／確度を掛け合わせる確認を減らす。validator単独のfield検証は残るが、fieldごとに異なる成功後処理の回帰を直接見つける範囲は狭くなる。現コードは同じvalidator失敗を共通に扱っているため、28回の端末往復より、全field検証＋3つの結合代表を推奨する。
 
-### 4. 今後のテスト作成基準・focused確認・正式チェック
+## 今回削減しない候補と理由
 
-`CONTRIBUTING.md` に、今回の移設説明だけでなく、今後の実装・テスト追加にも適用する「テストの設計・追加方針」を設ける。人とAgentが同じ基準を使い、次を恒久的なルールとする。
+- `tests/tui_process.rs::bl_update_invalidates_pending_list_and_comment_requests_and_keeps_the_fixed_detail_target` の8ケース: page／list-refresh／comment-oldest／comment-refreshは異なる取消入口。固定target・history・書込み後の表示保持に役割があり、今回は拡張削減しない。
+- `tests/tui_process.rs::bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_replace_new_draft_or_registration` の4ケース: Detail／Commentsの入口、旧成功／旧失敗、登録までの結合代表として維持する。既存15秒予算は延長しない。10反復の対象としては残さない。
+- `tests/tui_process.rs::bl_update_local_acceptance_fixture_refreshes_comments_but_preserves_old_list_with_one_patch` と `bl_update_fetches_latest_confirms_only_changes_and_refreshes_only_comments_once`: 共通する成功確認はあるが、前者は文書用JSON fixture・複数field、後者はsummaryのみのform・確認Enter非送信・GET経路に固有assertがある。安易な統合でfixtureの実行可能性を失わないよう今回は維持する。
+- `tests/tui_process.rs::search_dialog_direct_reproduction_fixture_exercises_normal_clear_and_cross_without_writes`: focus部分に類似検証があるが、文書用fixtureと実HTTPのnormal／clear／crossを結合する代表。assertだけ削っても起動が減らず、今回は維持する。
+- `src/tui.rs::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff` の13ケース: `tests/editor.rs` と原文・cleanupは重なるが、raw／noechoを残す子、所有権、親中断、復元失敗の複合エラーは実端末境界固有。端末をrawのまま利用者へ返す不具合を防ぐため維持する。
+- `src/tui.rs` の `shell_exits_promptly_with_started_blocking_work_on_quit_interrupt_error_and_panic`、`shell_restores_when_sigint_arrives_during_entry_before_the_first_frame`、`shell_restores_after_draw_errors_panics_and_reports_restore_failures`: 異なる終了経路・初回SIGINT・復元失敗を保証し、通常q終了と同一視しない。
+- `tests/request_timeout.rs::body_timeouts_preserve_status_and_write_certainty_in_parallel`: 6ケースは各操作の経路・成功status・確度が異なり、既に最大6並列へ集約済み。実30秒・認証・単一送信・retry禁止のassertを維持する。
+- CLI各suite、`tests/service.rs` の原文／入力／確度・TLS/env子process隔離・中断abort＋joinは境界が違う。特に `create_task_abort_joins_without_detached_http_or_later_certainty_changes` の否定観測窓は、後から送信や確度変更がないことの確認なので削らない。
+- `tests/body.rs`・`comment_preview.rs`・`safety.rs`・`tui_input.rs`・`tui_shell.rs` とsrcの純粋描画試験: 実process反復削減に比べ効果が小さく、Unicode／secret再構築／原文・入力・layout保証を失うため維持する。`src/tui/create.rs` の候補／選択欄secret保護試験も維持する。
 
-1. **まず保証と境界を選ぶ。** 入力検証・変換・表示・状態の規則は、既存の適切なlibrary／Shell→TestBackend境界で検証する。CLIのargv／stdin／JSON／exit、HTTPS認証・送受信、signal／PTY／editor／復元など、その境界自体を検証する場合は実processを使う。「小さいテストがよい」という理由で固有の保証を落とさない。
-2. **既存の保証を再利用する。** 新しい入力組合せのたびに同じ30秒timeoutや同じ端末往復を増やさない。既存の共通transport試験が保証するものと、新機能で追加する固有の挙動を区別する。新しい独立したtimeout契約が本当に必要ならtimeout groupに配置し、最大6並列・実行予算を再評価する。ケース増加時も無制限spawnにはせず、必要な変更はその実装のPlan／Reviewで決める。将来用のqueue／frameworkは今回作らない。
-3. **試験方法も設計する。** 新しい固定待機には理由と観測窓を記す。要求受信、headers観測、描画、editor復帰、resize適用を混同せず、可能なら目的に合う条件待ちを使う。否定の検証に必要な有限時間は残す。global環境変数・共有fixtureの競合、bounded cleanup、失敗診断も確認する。
-4. **追加時の説明を残す。** 変更の説明・Reviewでは、追加／維持した保証、選んだテスト境界、既存検証との役割分担、待機／起動を増やす理由、focusedコマンドを簡潔に示す。新規テストの実行対象への登録漏れと、他suiteへの30秒待機の重複をReviewで確認する。新たな専用台帳や必須テンプレート管理は設けない。
-5. **開発ループと正式確認を分ける。** 各変更途中はfocused、最終差分で正式チェックを行う。全対象結果を不要に繰り返す構成にしないが、変更後の必要な検証を過去の合格で代替しない。
+## 実装方針・変更範囲
 
-新規 `AGENTS.md` は、このCONTRIBUTINGのテスト方針をテスト追加・変更前に読むよう案内する短い入口に限定する。上記ルールや製品仕様の二重管理、新しいAgent／Extension／workflow設定は作らない。既存のAGENTS.mdがImplementation開始時に見つかれば上書きせず、既存規約に合わせ最小限に統合する。将来のAgentが必ず規約を守ることを技術的に強制・保証はしない。
+### #56相当: 根拠を絞ったテスト削減
 
-同じ節に、純粋library／Service／CLI／PTY／timeout groupのfocused例と、正式all-targetsの違いを記す。focusedは開発ループ用であり、全対象の代替ではない。timeoutを通常の各CLI focused確認から外すのは、新suiteへ保証を移設したためであり、正式all-targetsでは毎回全6ケースを実行する。
+- A〜Fだけを変更する。総数や関数本数の目標で削除を増やさない。
+- これらの現行ケース数は3＋2＋2＋3＋3＋28＝41、採用後は1＋1＋2＋1＋1＋3＝9。通常成功経路の静的見積りで、HTTPS Harness／bl／PTY起動を32組、editor起動を6回減らす。全suiteの実行秒や並列時の短縮率を示す実測ではない。
+- 既存関数名は基本的に維持し、不要になったloop・fixture分岐・変数だけ除く。新たな抽象化・framework・test専用公開API・大量の代替試験は作らない。
+- `tests/fixtures/tty_shell.py` の未コミット `wait_request` と同snapshot解析は、Bで引き続き使い、Cにも限定適用する。自己試験だけの基盤として残すわけではない。driverのdeadline／exceptionの安全診断、子回収、既存pause／deadlineは維持する。新しい同期APIは増やさない。
+- `tests/tty_shell_fixture.rs::tty_shell_waits_for_the_matching_request_ordinal_before_sending_input` を維持する。誤method・誤path・ordinal不足・途中行で送信せず、一致時に進む既存の実PTY回帰を使う。deadline／exceptionの2試験と、exception注入だけpause0・安全reportのassert messageという部分訂正も保持する。
+- 部分実装Bの旧403用loopが不要になる範囲だけ、Implementationで整理する。Planningでは消さない。履歴文書にある過去の根拠・失敗・旧Approveは削除しない。
 
-既存の正式コマンド・CI trigger・runner・監査方針は維持する。`.github/workflows/quality.yml` の全対象選択・Python SSL／PTY・OpenSSL前提との整合を確認する。変更が不要なら編集しない。CI cache／sharding／runner追加、監査DBの固定、監査結果cacheは行わない。
+### #57相当: 将来の作成基準と最終検証
 
-今回の実測と失敗・未確認事項は既存 `docs/testing/manual-acceptance.md` へ今回の新Work Itemの記録として追記し、Issue #22の過去の失敗・訂正・受入記録を書き換えない。大きい初期Plan・基本設計・READMEの製品契約を変更する必要はない。
+`CONTRIBUTING.md` に、今回だけでなく今後の追加・変更・Reviewに使う基準を記す。既存の品質確認コマンドは変更しない。
 
-## 作業単位と30分枠への対応
+1. 最初にユーザーに必要な保証と、既存のどのassertを使えるかを確認する。
+2. 純粋な入力・変換・表示は既存library／Shell→TestBackend境界を使い、CLIのargv／JSON／exit、HTTPS認証・送受信、signal／端末所有・復元など境界固有の保証に実process／PTYを使う。
+3. 共通処理の全失敗種別・全field matrixは適切な境界に置き、機能ごとの端末試験は固有保証を持つ代表ケースを優先する。代表化で削る組合せは正確に説明し、完全代替と偽らない。
+4. 要求受信・headers観測・描画・editor復帰・resizeを混同しない。否定・逆順応答の有限観測窓は必要なものを残す。総HTTP件数を固定するなら、その件数自体が保証する契約を説明する。
+5. 新しい実時間待機・起動を増やす理由、既存試験との役割分担、focusedコマンドを変更説明・Reviewに短く残す。削減だけの変更に不要なREDや代替テストを増やさない。
+6. 開発途中はfocused、最終差分では正式チェックとする。固定反復・性能閾値は必要な問いと予算がある場合にだけ別途決める。skip／ignore・成功retry・timeout延長を代替にしない。
 
-技術的な順序は、(1) TLS blocking回帰とfixture改善・失敗診断、(2) timeout集約、(3) 証拠に基づくPTY限定修正、(4) 最終計測・回帰・今後のテスト作成基準と導線の文書整合。実際のWork Itemsの分割・依存関係・本文はPlan承認後にticket Skillで別途確認する。並行writerは使わず、同じcwdの変更は順に扱う。
+短い `AGENTS.md` からこの節を案内し、ルールを二重管理しない。Implementation開始時に既存AGENTSがあれば上書きせず最小統合する。自動強制のframeworkを追加しない。
 
-- 中間作業は関連focused確認と必要なチェックを行う。共通fixtureの影響確認として全対象を実行する場合も、その差分の1回とし、各項目で性能full3回・release一式を繰り返さない。
-- 最終性能・回帰確認は、速いtimeout groupを導入しPTYの限定修正を終えた最終差分で行う。正式full3回・重点10反復・release確認を各Workerへ重複依頼しない。
-- 最終検証自体も独立した小さいWork Itemにできる。途中で差分が変われば影響する検証は無効で、旧結果を流用しない。
-- Worker枠内に収まる見込みがなくなったら、変更済みファイル・実行中process・終了済み検証／ログ・未完了検証を報告して引き継ぐ。30分以内の実装完了そのものを保証するものではなく、harness設定・新しい永続workflow状態は追加しない。
+文書Reviewでは、純粋な検証／表示、CLI引数／JSON、PTY signal／editor復元の3種類を実在テストへ対応させ、境界・実processの必要性・focusedコマンドが分かることを確認する。削減後も正しい機能説明に必要な場合だけ、CONTRIBUTINGの既存テスト説明を整合する。
 
-## 完了条件
+実装結果と失敗・未実施事項は `docs/testing/manual-acceptance.md` に#56/#57の新しい追記として記録する。実CIはworkflow設定整合の確認までとし、起動のためのpush／PRをしない。
 
-1. 実30秒timeoutの6ケースが独立環境・最大6並列で毎回の正式all-targetsに含まれ、各固有のHTTP経路・status・確度・入出力・時間・単一送信の保証を保っている。
-2. silent TCP peerを保持したまま別の検証HTTPSが進行する回帰試験が成功する。逆引き不要・trustなし拒否・認証とfixture cleanupが回帰しない。
-3. PTYのdeadline／例外経路で安全な診断を得られる。今回の2失敗について観測と修正根拠を記録し、証拠のある同期だけを改善する。根拠未確定のまま「解消」としない。
-4. 同じ最終差分の固定反復で下記の性能・安定性条件を満たす。失敗／未実施を隠さず、未達はtimeout・期待を緩めず再検討する。
-5. 最終の正式チェックと変更後treeのrelease localhost HTTPS／PTY代表確認が成功し、focused／正式の説明とCI設定が整合する。実CIは設定確認まで、未実行を明記する。CONTRIBUTINGに今後のテスト作成基準があり、AGENTS.mdから参照できる。検証境界・重複した実時間待機の回避・実processを残す条件・追加時のReview観点が、今回限りの移設手順ではなく将来の実装でも利用できる。
-6. 製品ソース・公開契約・依存／lockfile・実行方式が不変。Issue #22や他機能の完了判定・受入を今回へ取り込んでいない。
+### 変更する／しないファイル
+
+- テストの主変更: `tests/tui_process.rs`。
+- 既存部分実装を保持し、関係する整合・検証に含める: `tests/fixtures/tty_shell.py`、`tests/tty_shell_fixture.rs`。新しいdriver機能の追加は不要。
+- 文書: `CONTRIBUTING.md`、短い `AGENTS.md`、`docs/testing/manual-acceptance.md` の追記。
+- Planning成果物: 本Planと承認済みのWork Item更新。
+- 変更しない: `src/` の製品コード・tests、依存／Cargo.lock、Cargo exports／features、公開API・CLI／TUI契約、HTTPS fixture・timeout group、既存JSON再現fixtures、CI設定、初期Plan・基本設計・READMEの製品契約。新たな必要性が出たら独断で広げない。
 
 ## 動作確認方法
 
-### TDDと公開seam
+### 検証の時点・回数
 
-新しいfixtureの振る舞い・同期判断には既存 `tdd` Skillを使う。一つの失敗試験→最小修正の縦sliceで行う。事前合意するseamは以下で、PlanのApproveにこの検証方針を含む。
+以下は今回のPlanningでは実行しない。次のImplementationで行う。
 
-- Python HTTPS fixtureの起動→証明書検証付き要求／受信記録：TLS blocking・認証／HTTPを捕捉するが、実Backlogの権限は保証しない。
-- PTY driverのstep入力→子process入力／結果・失敗診断：未成立条件で進まないこと、例外時の証拠・cleanupを捕捉するが、実IMEは保証しない。
-- 実bl-cli／実blの既存公開process境界：timeout確度、単一書込み、画面・中断・復元を捕捉する。
+- #56相当の変更後に、下記focusedを各1回。途中の変更単位で必要なfocusedは用いるが、成功までの反復はしない。
+- #57相当の文書整合まで含む最終差分を固定して、正式チェックを各1回。全体試験は計1回で、focusedの代替にはせず、full3回を各Work Itemで繰り返さない。
+- 最終all-targetsには維持したtimeout6ケース、CLI／Service／PTY代表も含まれる。既存manual用2 ignoredはそのまま明記し、新しいskip／ignoreは作らない。
+- 製品コードを変更しないため、別のrelease POST／PATCH直接再演、実端末／IME・実Backlog受入の新実施、CI実行は今回の必須にしない。未実施と明記し、過去の合格を新差分の実行証拠へ流用しない。
 
-timeoutケースの単なる移設に形式的な新規REDを要求せず、6ケースの保証対応と既存assertの維持を検証する。private関数名・内部thread/task数を製品テストで固定しない。
+### focusedコマンド
 
-### 今後のテスト作成基準の確認
+A〜Fがそれぞれ1試験として計6試験選択されたことを確認する。ケース数はそれぞれ1／1／2／1／1／3である。選択0件を成功にしない。
 
-文書Reviewで、(a) 純粋な入力検証／表示、(b) CLI引数／JSON契約、(c) PTY signal／editor復元の3種類を既存テストの具体例へ対応させる。各例で、追加する保証・使用する既存境界・focusedコマンド・実processを残す理由または不要な理由を文書から判断できることを確認する。例示のために新機能や不要な重複テストを実装しない。AGENTSのリンクを辿って正しい節へ到達でき、CONTRIBUTING・正式all-targets・CIの説明に矛盾がないことも確認する。
+```sh
+cargo test --locked --test tui_process -- \
+  bl_update_editor_failure_keeps_latest_raw_body_other_fields_and_focus \
+  bl_update_cancelled_loading_and_older_detail_responses_cannot_replace_a_new_form_or_success \
+  selection_change_hides_other_body_immediately_and_late_preview_cannot_clear_new_busy_or_failure \
+  bl_create_editor_failures_keep_other_inputs_and_do_not_change_the_empty_body \
+  bl_comment_add_editor_failures_resize_tiny_and_discard_keep_body_and_field_draft \
+  bl_update_incomplete_or_mistyped_success_preserves_detail_and_reports_updated_without_retry \
+  --nocapture --test-threads=3
+cargo test --locked --test tty_shell_fixture -- --nocapture
+cargo test --locked --test editor -- --nocapture
+cargo test --locked --lib body_editor_roundtrip_and_failures_use_shared_terminal_handoff -- --nocapture
+```
 
-### 性能比較
+`tests/editor.rs` とsrc共通端末所有権のfocusedは、減らすmode／form反復の受け皿が現在も実行できることの確認であり、新しい代替試験ではない。
 
-同等のApple Silicon環境・固定Rust／依存・同じworkloadで、競合するbuild／テストを止めて行う。HEAD・diff／lock hash、CPU／OS、親PythonとPTY Python、SSL／OpenSSL、RUST_TEST_THREADS、実コマンド、終了コードを記録する。
+### TDD・公開境界と試験の成立確認
 
-1. `cargo test --locked --all-targets --no-run` のbuild時間を別記録する。binaryのwarm-upには必要なら `cargo test --locked --all-targets -- --list` を使い、実行対象一覧も確認する。最初の実行にだけ大きい起動差があれば捨てずに別記する。
-2. 最終差分を固定し、`/usr/bin/time -l cargo test --locked --all-targets` を**事前固定の3回**実行する。3回全ての成功を要求し、wall中央値・範囲・suite時間・失敗／ignored数を記録する。途中で失敗したら停止し、成功標本だけに取り替えない。修正後は別差分の測定組として扱う。
-3. ローカルのwarm wall中央値 **150秒以下**、かつtimeout groupのwall **40秒以下**を成功閾値とする。成功warm baseline256.10秒に対し約41％以上の短縮。残り診断約89.67秒＋集約30.16秒を参考に約30秒の余裕を設けた目標で、約120秒を実現済みとはしない。
-4. no-run build、初回起動、suite合計、Test step／job全体を混ぜない。変更後CIは設定だけを確認し、既存CIの379.07秒／Test431秒とローカル値を直接合否比較しない。将来の自然なCI結果を比較する場合もbuildとテストを分離する。
+今回は製品の新動作を実装せず、既存テストの代表化とassertの限定を行うため、形式的な新規REDは要求しない。driverの既存部分実装に新たな振る舞い修正が必要な場合だけ、既存 `tdd` Skillを読み、step入力→実PTY子の入力・安全な失敗出力／cleanupという既存公開境界で一つのRED→最小修正を行う。内部private APIを新たに公開しない。
 
-### 安定性・回帰
+- Cは対象GET受信前にキーを送らないことを既存gate回帰で確認し、対象要求のmethod／path／回数と画面assertの両方を確認する。gateを外すと必ずREDになるとは要求せず、そのための新markerや制御frameworkは作らない。
+- Bは旧要求を実際に消費してから取消・新loadへ進み、旧成功の観測窓を残す。対象GET4回だけを順序の証拠にしない。
+- A／D／Eは入力データ、画面状態、HTTP form／非書込み、cleanupを比較する。単に終了0へ縮めない。
+- Fは全field試験をCLI側に残したまま、成功PATCH後のUpdated・旧表示保持・再送禁止まで3代表で確認する。
 
-次の3試験を同じ最終差分・現行Cargo binaryで、1回のfocused実行にまとめた固定10反復を行う。例えばcargo testの複数filterを利用し、毎回3試験が選択されたことを確認する。focusedの並列は3とし、正式all-targetsのデフォルト並列は変更しない。
+### 最終正式チェック（各1回）
 
-- `bl_update_cancelled_loading_and_older_detail_responses_cannot_replace_a_new_form_or_success`
-- `bl_update_editor_failure_keeps_latest_raw_body_other_fields_and_focus`
-- `bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_replace_new_draft_or_registration`
-
-10反復全て0失敗を要求するが、統計的なflake率ゼロの証明とはしない。途中失敗は停止・証拠保持し、無条件再試行しない。必要な制御遅延試験で旧成功／旧失敗の順序・消費数と、新draft／Latest／旧表示保持を確認する。
-
-HTTPS fixtureの新回帰、既存trust拒否・認証・retry禁止、実CLIの各書込みとService、TUIのheaders前／body待ち／登録後refresh中の中断、Ctrl+Cバイト／実SIGINT、abort＋join後の確度、termios／alternate screen／cursor復元を既存focused試験と正式全対象で確認する。片側TTY拒否・editor／resize・安全表示も維持する。
-
-最終差分で以下を実行する。testの3回は上記の性能測定と同じ実行であり、別にもう3回追加しない。
+プロジェクトの既存定義を維持する。release buildを省略しない。
 
 ```sh
 cargo fmt --all -- --check
-cargo test --locked --all-targets
+/usr/bin/time -l cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 cargo audit --version
 cargo audit --file Cargo.lock
@@ -236,20 +225,44 @@ cargo build --locked --release --target aarch64-apple-darwin --bins
 git diff --check
 ```
 
-cargo-audit 0.22.2、通常のDB更新、lockfile監査前後のhash不変を確認し、警告・失敗を報告する。監査やrelease buildの結果を過去の合格で代替しない。変更後treeでbuildしたreleaseを、更新した共通fixtureと既存CONTRIBUTINGの自己完結localhost HTTPS／PTY手順で直接起動し、POST／PATCH代表の単一送信・原文／安全表示・Latest／旧List・exit／復元を確認する。実Backlog通信・データ準備・書込みは一切行わない。
+cargo-audit 0.22.2、通常のDB更新、監査前後のCargo.lock hash不変を確認する。警告・DB取得失敗・非0を無条件に許容しない。Planning時のCargo.lock SHA-256は `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16`。
+
+HEAD／diff、OS／CPU、Rust、親PythonとPTY用Python、SSL／OpenSSL、RUST_TEST_THREADS、コマンド・終了コード・成功／失敗／ignoredを記録する。all-targetsのwall・suite時間は同じ1回から参考値を記録する。別の性能fullやbuild warm-up測定は追加しない。旧Planの256.10秒等とはworkloadが異なるため、厳密な速度比較・中央値・flake率ゼロの根拠にしない。
+
+### 失敗・変更があった場合の停止条件
+
+- 失敗したコマンドはその場で停止し、試験名・assert・safeな診断・差分との関係を確認する。失敗標本を後の成功で上書きしない。
+- A〜Fまたは保持する部分実装に起因する、承認範囲内のテスト整理不備は修正する。修正後の必要な検証は別差分の新結果として区別し、成功までの無変更retryをしない。
+- 無関係の既存失敗や新しい製品原因なら、勝手に修正対象へ加えず、別作業が必要として報告し今回の完了判定を停止する。原因不明の正式チェック失敗も完了にしない。
+- 製品改変、公開契約変更、大規模移設、新しい基盤、timeout延長が必要ならREPLAN_REQUIREDとして停止する。
+- 最終検証後にコード・fixtureが変われば、影響する検証を取り直す。旧差分のReview・Code Review Approveは流用しない。時間不足なら差分・実行結果・未完了項目を保持して引き継ぐ。
+
+## 完了条件
+
+1. A〜Fが指定した代表化となり、削るmode／field組合せだけが除かれ、残す全assert・観測窓・target／書込み／原文・端末復元の保証が維持されている。
+2. Bの最新project由来のrule＋4候補と旧project候補非使用、Cの対象GET受信待ち・各1回・旧200／500の両ケースが明確である。付随総数11に依存せず、未受信の旧応答を検証したふりをしない。
+3. 未コミットのrequest gate／自己試験／exception注入の局所訂正を保持し、不要となる旧403の重複分岐だけを整理している。過去の失敗・根因未確定・旧判断を成功へ書き換えていない。
+4. 指定focused各1回と、最終差分の正式チェック各1回が成功し、失敗・警告・ignored・未実施を正確に記録している。32組の静的起動削減を実秒の達成値や不安定性解消へ読み替えていない。
+5. CONTRIBUTINGに将来にも使う保証／境界／重複／待機／focused・正式チェックの基準があり、短いAGENTSから辿れる。3種類の既存テスト例で適用を確認でき、CI設定と矛盾しない。
+6. 製品コード・公開契約・依存／lockfile・実行方式は不変。認証・secret非露出・原文保持・単一書込み・retry禁止・書込み確度、端末所有権・中断・復元の代表が残る。
+7. 改訂に整合するWork Itemsと記録があり、#56を「過去cutoffの全根因解消」、#57を「性能閾値達成／反復でflake解消」として完了させていない。
 
 ## 制約・対象外・残るリスク
 
-- HTTPS／認証／secret保護、単一書込み、redirect／retry禁止、成功確度、中断・端末復元の保証を弱めない。TLS検証回避、HTTP化、製品test flag、全体のtimeout延長、根拠のないskip／ignoreを追加しない。
-- 製品コード、API／Service／CLI／TUI公開入口、runtime worker数、依存、Cargo export／feature、既存基本設計・初期Planの製品契約は変更しない。必要なら停止・再計画する。
-- 証明書共有、常駐server、全PTYの軽い境界への移設、clock／transport抽象化、VT emulator／screen cache、CI cache／sharding、Worker設定の変更は対象外。
-- 根拠を得たTLS blocking改善は、元の約5秒差や観測2失敗の同一原因を証明しない。PTYの正確な原因が未確定であること、初回wall差の未特定コストを引き継ぐ。
-- 最大6並列はhardな終了期限ではない。既存のprocess起動／port読取待機のhang、任意のOS負荷、全端末・IMEの差までは解消・保証しない。
-- CIの設定整合とローカル成功だけで、変更後の実CI成功や特定のCI短縮率を断言しない。実CI未実行を残す。新しい実端末／実Backlog受入を本作業の必須にせず、旧受入を今回の実測へ流用しない。
-- Planning成果物は本ファイルと新Work Items。Issue #22の状態・本文・コメントを変更せず、Implementation・commit・merge・release・deployを自動開始しない。
+- 新framework、test専用公開API、VT emulator／screen cache、常駐server、証明書共有、CI改造、テストの大量移設、新しい永続状態は追加しない。
+- skip／ignore、成功までのretry、timeout延長、期待の無差別緩和で失敗を隠さない。代表化は本Planで選んだ組合せだけで行う。
+- 実時間timeout、signal、出力失敗、認証／secret、rawとsafe表示、HTTPとServiceの違いは単なる重複と扱わない。
+- 代表化で削るmode／fieldと各フォームの交差検出範囲は狭くなる。一方、update固有の非空本文保持・focus・summary-only送信と、取消後の新フォーム保護は代表を残す。全保証同等とも未知のリスク一般をユーザーが包括承諾したとも説明しない。
+- 過去のeditor cutoff・startup遅延の内部原因等は未確定のまま残る。後の成功や今回の削減を根因解明にしない。任意のOS負荷・全端末／IME・実Backlog権限を保証しない。
+- 最終full1回は回帰確認であって、低頻度flake不存在の証明ではない。release buildは行うが、別途のrelease実操作・実CI・実IME・実Backlogは今回未実施とする。
+- Issue #22等の履歴・状態、他機能の受入条件、release／deploy／mergeは変更しない。
 
-## 承認・保存・受渡し
+## 承認・保存・Work Item受渡し
 
-明示Approve後、この全文を `docs/plans/test-infrastructure-performance.md` に正式保存してreadbackする。途中のtool出力・Scout／Oracle会話・一時Probe scriptを正式入力として引き継がず、必要な結論は本Planと解決可能な一次参照に集約する。
+本改訂全文を `taskflow_plan_review` へ提出し、明示Approve後に同じ正式パスへ保存して全文一致を確認する。Plan承認前に実装やWork Item更新をしない。
 
-その後 `taskflow-to-ticket` Skillを明示的に読み、本Planの正式パスと全文を渡す。既存tracker設定の確認はticket Skillだけで行い、別の新Work Itemsとして、分割・依存関係と最終本文／保存公開先をそれぞれ承認してから保存・公開する。各項目から本Planを参照可能にする。一部だけの保存・公開ではPlanning完了とせず、全項目のreadback確認後に停止する。Implementationは別の新しいセッションで行う。
+保存後に `taskflow-to-ticket` Skillを明示的に読み、正式パスと全文を渡す。#56はテスト整理、#57は将来の作成基準と最終検証という既存Work Itemを再利用する案を基本とするが、分割・依存・保存公開方法はticket Skillで別途ユーザー確認する。各Work Itemから本Planを参照でき、旧条件より改訂内容が優先されることを明記する。#54/#55のCLOSED状態や過去記録は変更しない。
+
+tracker設定・分割・最終本文と保存公開先の承認はPlan Approveと区別する。一部だけ公開できた場合はPlanning完了としない。
+
+両Work Itemの確定参照と本Planの保存を確認した後、更新済み#56と本Planを入力として新しいRootセッションでImplementationを再開するkickoffを示して停止する。既存部分実装を保持し、現在の差分の再確認と新しい検証・Reviewを求める。Worker起動・production code実装・commit／stash／push／merge／release／deployは、このPlanningから自動開始しない。
