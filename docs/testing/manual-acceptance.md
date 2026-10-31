@@ -2944,3 +2944,58 @@ Rootは自動試験とは別のPython subprocessでも実fixture／実debug bina
 既存の約5秒差やPTY不安定性をTLSと同じ原因とも、解消済みとも判断しません。timeout集約・PTY同期は別Issueの対象です。
 この追記時点で独立Correctness／Ponytail Reviewと最終Code Review gateは未実施であり、Issue完了・承認済み・READY_FOR_MERGEとは判定しません。
 新しいログ専用保存機構は作らず、既存文書への記録に限定しました。この文書追記では独自検証を追加せず、行末diff checkだけを行い、stage／commit／merge／release／deployは行いません。
+
+### #55 実30秒timeoutの6ケース集約（2026-10-31 UTC）
+
+Issue: https://github.com/minorunakamura/backlog-cli/issues/55 。正式Plan `docs/plans/test-infrastructure-performance.md` の実装方針2だけの記録です。
+開始HEAD `7483b4b7ea68e88ad4aa6c3d6bf4002568173010`、開始時clean。製品src、共通Harness、fixture、依存／lock、CI、Planは変更していません。
+新規 `tests/request_timeout.rs` の単一テストが独立Harness／検証付きHTTPS／実bl-cliの6ケースをscoped threadsで開始し、panic時も全てjoinしてケース名を報告します。
+**旧5関数を残した状態で新groupの全6ケース成功とlibtest並列数1での成功を確認し、その後に旧5関数だけを削除**しました。
+既存のsignal・切断・拒否・decode・表示失敗試験は残しています。
+
+環境: Darwin arm64／macOS 26.7.1、logical CPU 10／32 GiB、rustc／cargo 1.99.1、親Python 3.14.9、PTY用 `/usr/bin/python3` 3.9.6、OpenSSL 4.0.3。RUST_TEST_THREADS未指定、他のbuild／test計測と重ねていません。
+Cargo.lock SHA-256は `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で不変です。
+ログ: `/tmp/backlog-55-worker.8Xihl2/`（Worker実測。Rootの独立検証ではありません）。
+
+| コマンド | exit・wall／結果 |
+|---|---|
+| `/usr/bin/time -l cargo test --locked --test request_timeout --no-run` | 0、1.13秒（既存targetを用いたbuild準備。cold build値ではない） |
+| `/usr/bin/time -l cargo test --locked --test request_timeout -- --nocapture` | 0、wall32.40秒／suite30.84秒、単一テスト内全6ケース成功 |
+| `/usr/bin/time -l cargo test --locked --test request_timeout -- --nocapture --test-threads=1` | 0、wall30.74秒／suite30.62秒、単一テスト内全6ケース成功 |
+| `/usr/bin/time -l cargo test --locked --test project_list --test issue_create --test issue_update --test comment_update --test comment_add` | 0、wall24.77秒（build1.94秒を含む）、移設後71成功／0失敗 |
+| `cargo fmt --all -- --check`／`git diff --check` | 0／0 |
+
+各CLI開始直前からの経過秒は以下です。group wallが40秒以下という性能判定と、全ケースの `29秒以上40秒未満` のassertを別々に満たしました。
+全6ケースでdelay32、exit1、stdout空、stderr改行付きJSON、network、httpStatus、必要なapiErrors配列を確認しています。
+writeはoperation／outcome、readはwriteなしを確認し、下記の要求順・件数・全要求の認証header・formを照合しています（retry／余分なGET／fallbackなし）。
+
+| 移設元ケース | 要求・結果 | default秒 | libtest=1秒 |
+|---|---|---:|---:|
+| project_list::body_reading_is_inside_the_thirty_second_request_timeout | projects GET 1、200／writeなし | 30.716934 | 30.486709 |
+| issue_create::create_body_timeout_retains_created_without_retry | issues POST 1、既存argsの空白付きタイトル等のform、201／issue.create／created | 30.706411 | 30.487524 |
+| issue_update::update_body_timeout_keeps_updated_without_retry | issue GET＋PATCH各1、summary=new、200／issue.update／updated | 30.721931 | 30.514817 |
+| comment_update::success_body_timeout_retains_updated_without_retry | comment GET＋myself GET＋comment PATCH各1、content=new、200／comment.update／updated | 30.725477 | 30.483088 |
+| comment_add::body_timeouts_keep_success_certainty_without_retry_for_post_and_patch のPOST枝 | comments POST 1、content=body、201／comment.add／created | 30.708886 | 30.502401 |
+| 同PATCH枝 | issue GET＋PATCH各1、statusId=8／comment=body、200／comment.add／updated | 30.700642 | 30.516787 |
+
+旧suite実行中、各suiteのTLS拒否試験付近でPython serverの `Exception occurred during processing of request` が計5件出ました（詳細tracebackなし）。Rust test失敗・Cargo警告はなく、fixture診断の変更はしていません。
+Planの旧5suite timeout待機合計約180秒・独立probe group30.16秒は過去の参考値であり、今回HEADのbaseline再測定や全体高速化達成値ではありません。
+最大6並列はhard deadlineではなく、既存Harnessのport読取／Command待機のhang限界を残します。汎用watchdogは追加していません。
+正式all-targets／Clippyと別の直接CLI検証・独立ReviewはRootへ留保。full性能3回／全体150秒判定・release一式は最終Work Item、実CI・実端末／IME・実Backlogは未確認です。
+commit／stage／stash／push／merge／release公開／deployは行っておらず、この記録だけでIssue完了・最終承認とは扱いません。
+
+#### #55 Rootの独立検証・Review（2026-10-31 UTC）
+
+同じ変更後treeでRootが独立実行しました。環境は上記と同じで、親PythonのSSLはOpenSSL 3.6.3、PTY PythonのSSLはLibreSSL 2.8.3です。OpenSSL CLIの版とは区別します。
+`cargo fmt --all -- --check`、`cargo test --locked --all-targets --no-run`（wall0.78秒）、`cargo test --locked --all-targets -- --list`、`cargo clippy --locked --all-targets -- -D warnings`、`git diff --check` は全てexit0、Rustの警告なしでした。
+正式一覧に新groupの単一テストがあり、旧5関数がないことを確認しました。旧5ファイルはHEADから該当関数だけ除いた内容と一致し、その他のbyteは不変です。
+
+- `/usr/bin/time -l cargo test --locked --test request_timeout -- --nocapture --test-threads=1`: exit0、全6ケース成功、wall **30.95秒**／suite30.83秒、各CLI **30.708970〜30.758377秒**。
+- `/usr/bin/time -l cargo test --locked --all-targets`: exit0、24 targets計 **346成功・0失敗・既存実端末用2 ignored**、wall118.67秒、timeout group30.16秒、移設元5suite計71成功。回帰確認1回であり、最終性能3回・150秒判定の代替ではありません。
+- cargo testとは別に、Python subprocessから実debug `bl-cli` と既存HTTPS fixtureを6独立一時rootで起動しました。全6ケースのmethod／path／form／認証／件数、exit／stdout／改行JSON／apiErrors／status／write、各29〜40秒をassertし、exit0。group **30.171484秒**、各CLI **30.011262〜30.020426秒**、server stderr空、server kill／waitと一時root削除も完了しました。
+
+ログと直接検証script: `/tmp/backlog-55-root/` の `fmt.log`、`no-run.log`、`list.log`、`timeout-single-libtest.log`、`all-targets.log`、`clippy.log`、`direct-cli.log`、`direct-cli.py`。直接検証scriptは実行時の元tool-callからそのまま抽出したものです。Cargo.lockは上記SHA-256で不変です。
+正式全対象でも旧TLS拒否経路のPython例外見出しが5件あり、project_listでは `TLSV1_ALERT_UNKNOWN_CA` のtracebackを確認しました。新group／直接検証では発生せず、該当拒否試験とfixtureは今回不変のため、既存診断として残し、抑制・一括修正はしていません。
+
+別々のfresh built-in reviewerでCorrectness（`e9bb1f3c-cffa-4cb7-90b3-1fa0d8fd730a`）とPonytail（`a60bff18-722e-4ff0-b876-eded6313d52d`）Reviewを実施し、両方とも修正要求なしでした。Rootも要求・実差分・根拠を確認し、採用して直す指摘・不採用の修正提案はありません。両Reviewerはread-onlyで、検証の再実行ではなくRootのログとコードを確認しました。
+この追記は検証結果の記録だけで、実装・期待値は変更していません。最終Code Review gateはこの追記時点で未実施です。full性能3回・release一式は最終Work Itemへ留保し、実CI・実端末／IME・実Backlogは未確認のままです。

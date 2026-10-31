@@ -658,18 +658,6 @@ fn explicit_stdin_interrupt_never_fetches_or_writes() {
 }
 
 #[test]
-fn success_body_timeout_retains_updated_without_retry() {
-    let h = Harness::new(fixture(json!({"body":"{}","delay":32})));
-    let mut argv = args();
-    argv.extend(["-b", "new"]);
-    let start = std::time::Instant::now();
-    failure(&h.run(&argv), 1, "network", "updated", Some(200));
-    assert!(start.elapsed() >= std::time::Duration::from_secs(29));
-    assert!(start.elapsed() < std::time::Duration::from_secs(40));
-    assert_eq!(h.requests().len(), 3);
-}
-
-#[test]
 fn global_profile_and_tty_remain_noninteractive() {
     let h = Harness::new(fixture(json!({"body":comment().to_string()})));
     h.config(json!({"profiles":{"work":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));

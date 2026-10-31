@@ -813,19 +813,6 @@ fn update_explicit_stdin_wait_can_be_interrupted_before_preflight() {
 }
 
 #[test]
-fn update_body_timeout_keeps_updated_without_retry() {
-    let h = Harness::new(fixture(json!({"body":"{}","delay":32})));
-    let mut argv = args();
-    argv.extend(["-t", "new"]);
-    let start = std::time::Instant::now();
-    failure(&h.run(&argv), 1, "network", "updated", Some(200));
-    assert!(start.elapsed() >= std::time::Duration::from_secs(29));
-    assert!(start.elapsed() < std::time::Duration::from_secs(40));
-    assert_eq!(h.requests().len(), 2);
-    assert_eq!(h.requests()[1]["method"], "PATCH");
-}
-
-#[test]
 fn update_global_profile_flags_and_tty_are_noninteractive() {
     let h = Harness::new(fixture(json!({"body":"{\"id\":1,\"issueKey\":\"P-1\"}"})));
     h.config(json!({"profiles":{"work":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));

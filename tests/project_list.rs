@@ -243,17 +243,6 @@ fn api_failures_are_not_empty_lists_or_retried_and_redirects_are_not_followed() 
 }
 
 #[test]
-fn body_reading_is_inside_the_thirty_second_request_timeout() {
-    let h = Harness::new(json!({"body":"[]", "delay":32}));
-    let start = std::time::Instant::now();
-    let error = failure(&h.run(&["project", "list", "--json"]), 1, "network");
-    assert_eq!(error["error"]["httpStatus"], 200);
-    assert!(start.elapsed() >= std::time::Duration::from_secs(29));
-    assert!(start.elapsed() < std::time::Duration::from_secs(40));
-    assert_eq!(h.requests().len(), 1);
-}
-
-#[test]
 fn interrupt_before_headers_and_during_body_read_preserves_observed_http_status() {
     for (response, ready, status) in [
         (json!({"body":"[]", "header_delay":32}), "requests", None),
