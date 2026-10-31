@@ -88,6 +88,35 @@ fn own_comment_patches_only_original_content_once_and_preserves_response_object(
 }
 
 #[test]
+fn leading_zero_comment_id_updates_the_same_numeric_id_with_one_content_patch() {
+    let mut updated = comment();
+    updated["content"] = json!("new");
+    let h = Harness::new(json!({"routes":{
+        "GET /api/v2/issues/P-1/comments/0007":{"body":comment().to_string()},
+        "GET /api/v2/users/myself":{"body":r#"{"id":123456789012345678901234567890}"#},
+        "PATCH /api/v2/issues/P-1/comments/0007":{"body":updated.to_string()}
+    }}));
+    let value = success(&h.run(&[
+        "issue", "comment", "update", "P-1", "0007", "-b", "new", "--json",
+    ]));
+    assert_eq!(value["id"], 7);
+    assert_eq!(value["content"], "new");
+    let r = h.requests();
+    assert_eq!(
+        r.len(),
+        3,
+        "latest comment, myself, single PATCH; no retry or followup GET"
+    );
+    assert_eq!(r[0]["method"], "GET");
+    assert_eq!(r[0]["path"], "/api/v2/issues/P-1/comments/0007");
+    assert_eq!(r[1]["method"], "GET");
+    assert_eq!(r[1]["path"], "/api/v2/users/myself");
+    assert_eq!(r[2]["method"], "PATCH");
+    assert_eq!(r[2]["path"], "/api/v2/issues/P-1/comments/0007");
+    assert_eq!(r[2]["form"], json!({"content":["new"]}));
+}
+
+#[test]
 fn only_own_non_null_changed_body_can_be_edited_and_owner_id_is_validated() {
     let h = Harness::new(json!({}));
     for (owner, body, kind, code, status) in [

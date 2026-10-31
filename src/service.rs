@@ -170,6 +170,14 @@ impl Service {
             api: Api::with_comment_progress(config, progress)?,
         })
     }
+    pub(crate) fn with_comment_update_progress(
+        config: &Config,
+        progress: crate::CreateProgress,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            api: Api::with_comment_update_progress(config, progress)?,
+        })
+    }
     pub async fn comment_update(
         &self,
         issue: &str,
@@ -189,7 +197,23 @@ impl Service {
         if body.is_empty() {
             return Err(Error::new("input", "Comment body must not be empty"));
         }
+        let latest = self.editable_comment(issue, comment_id).await?;
+        self.send_comment_update(issue, comment_id, body, &latest)
+            .await
+    }
+    pub(crate) async fn editable_comment(
+        &self,
+        issue: &str,
+        comment_id: &str,
+    ) -> Result<Value, Error> {
         let latest = self.comment_view(issue, comment_id).await?;
+        if latest["id"].as_number().map(ToString::to_string).as_deref()
+            != Some(comment_id.trim_start_matches('0'))
+        {
+            return Err(invalid_response(
+                "Comment response does not match selected ID",
+            ));
+        }
         let owner = latest["createdUser"]["id"]
             .as_number()
             .filter(|id| positive_integer(&id.to_string()))
@@ -201,18 +225,36 @@ impl Service {
                 "Only your own comment body can be updated",
             ));
         }
-        let current = latest["content"]
-            .as_str()
-            .ok_or_else(|| Error::new("input", "Change history has no editable comment body"))?;
-        if current == body {
+        if !latest["content"].is_string() {
+            return Err(Error::new(
+                "input",
+                "Change history has no editable comment body",
+            ));
+        }
+        Ok(latest)
+    }
+    pub(crate) async fn send_comment_update(
+        &self,
+        issue: &str,
+        comment_id: &str,
+        body: &str,
+        latest: &Value,
+    ) -> Result<Value, Error> {
+        if body.is_empty() {
+            return Err(Error::new("input", "Comment body must not be empty"));
+        }
+        if latest["content"].as_str() == Some(body) {
             return Err(Error::new("input", "Comment body has not changed"));
         }
         let value = self.api.update_comment(issue, comment_id, body).await?;
-        if !valid_comment(&value) {
-            return Err(
-                invalid_response("Updated comment response has invalid required fields")
-                    .with_write_outcome("comment.update", WriteOutcome::Updated),
-            );
+        if !valid_comment(&value)
+            || value["id"].as_number().map(ToString::to_string).as_deref()
+                != Some(comment_id.trim_start_matches('0'))
+        {
+            return Err(invalid_response(
+                "Updated comment response has invalid fields or target ID",
+            )
+            .with_write_outcome("comment.update", WriteOutcome::Updated));
         }
         Ok(value)
     }

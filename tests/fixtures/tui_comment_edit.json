@@ -1,0 +1,45 @@
+{
+  "routes": {
+    "/api/v2/space": {
+      "body": "{\"name\": \"Local comment edit check\"}"
+    },
+    "/api/v2/projects": {
+      "body": "[{\"id\": 2, \"projectKey\": \"B\", \"name\": \"Beta\"}]"
+    },
+    "/api/v2/issues/count": {
+      "body": "{\"count\":1}"
+    },
+    "GET /api/v2/issues": {
+      "body": "[{\"id\": 1, \"issueKey\": \"B-1\", \"summary\": \"Old list title\", \"status\": {\"name\": \"Open\"}}]"
+    },
+    "GET /api/v2/issues/B-1": {
+      "sequence": [
+        {
+          "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Detail B-1\", \"description\": \"Original body\", \"issueType\": {\"id\": 2, \"name\": \"Task\"}, \"priority\": {\"id\": 3, \"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"id\": 1, \"name\": \"Open\"}, \"resolution\": null, \"startDate\": null, \"dueDate\": null, \"milestone\": [{\"id\": 5, \"name\": \"First\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\"}"
+        },
+        {
+          "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Detail B-1\", \"description\": \"Original body\", \"issueType\": {\"id\": 2, \"name\": \"Task\"}, \"priority\": {\"id\": 3, \"name\": \"Medium\"}, \"assignee\": null, \"status\": {\"id\": 1, \"name\": \"Open\"}, \"resolution\": null, \"startDate\": null, \"dueDate\": null, \"milestone\": [{\"id\": 5, \"name\": \"First\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\"}"
+        },
+        {
+          "body": "{\"id\": 1, \"projectId\": 2, \"issueKey\": \"B-1\", \"summary\": \"Latest title\", \"description\": \"Latest raw body\", \"issueType\": {\"id\": 2, \"name\": \"Task\"}, \"priority\": {\"id\": 3, \"name\": \"Medium\"}, \"assignee\": {\"id\": 4, \"name\": \"Latest owner\"}, \"status\": {\"id\": 1, \"name\": \"Open\"}, \"resolution\": null, \"startDate\": null, \"dueDate\": null, \"milestone\": [{\"id\": 5, \"name\": \"First\"}], \"created\": \"2026-01-01T00:00:00Z\", \"updated\": \"2026-02-02T00:00:00Z\"}"
+        }
+      ]
+    },
+    "/api/v2/projects/2": {
+      "body": "{\"textFormattingRule\":\"markdown\"}"
+    },
+    "/api/v2/issues/B-1/comments": {
+      "body": "[{\"id\": 2, \"content\": \"Newest stays on page\", \"changeLog\": [], \"createdUser\": {\"id\": 7, \"name\": \"Comment author\"}, \"created\": \"2026-03-01T00:00:00Z\", \"updated\": \"2026-03-02T00:00:00Z\"}, {\"id\": 1, \"content\": \"Displayed old body\", \"changeLog\": [{\"field\": \"status\", \"originalValue\": \"Open\", \"newValue\": \"Closed\"}], \"createdUser\": {\"id\": 7, \"name\": \"Comment author\"}, \"created\": \"2026-03-01T00:00:00Z\", \"updated\": \"2026-03-02T00:00:00Z\"}]"
+    },
+    "GET /api/v2/issues/B-1/comments/1": {
+      "body": "{\"id\": 1, \"content\": \"Latest raw body\\n\", \"changeLog\": [{\"field\": \"status\", \"originalValue\": \"Open\", \"newValue\": \"Closed\"}], \"createdUser\": {\"id\": 7, \"name\": \"Comment author\"}, \"created\": \"2026-03-01T00:00:00Z\", \"updated\": \"2026-03-02T00:00:00Z\"}"
+    },
+    "/api/v2/users/myself": {
+      "body": "{\"id\":7}"
+    },
+    "PATCH /api/v2/issues/B-1/comments/1": {
+      "body": "{\"id\": 1, \"content\": \" Raw #23 \\u65e5\\u672c\\u8a9e\\n test-secret\\u001b]52;c;unsafe\\u0007\\n\", \"changeLog\": [{\"field\": \"status\", \"originalValue\": \"Open\", \"newValue\": \"Closed\"}], \"createdUser\": {\"id\": 7, \"name\": \"Comment author\"}, \"created\": \"2026-03-01T00:00:00Z\", \"updated\": \"2026-03-02T00:00:00Z\"}",
+      "delay": 0.3
+    }
+  }
+}

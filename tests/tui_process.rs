@@ -6028,3 +6028,256 @@ fn bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_rep
         }
     }
 }
+
+#[test]
+fn bl_comment_edit_keeps_selected_id_and_page_sends_raw_content_once_without_refresh() {
+    let h =
+        Harness::new(serde_json::from_str(include_str!("fixtures/tui_comment_edit.json")).unwrap());
+    let body = " Raw #23 日本語\n test-secret\u{1b}]52;c;unsafe\u{7}\n";
+    settings(&h, "B");
+    h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),"body-file"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+    std::fs::write(h.root.join("editor-body"), body).unwrap();
+    let result = scripted(
+        &h,
+        serde_json::from_str(include_str!("fixtures/tui_comment_edit_steps.json")).unwrap(),
+    );
+    assert_eq!(result["code"], 0, "{result}");
+    assert_eq!(result["restored"], true, "{result}");
+    assert_eq!(
+        result["request_counts"][4], result["request_counts"][5],
+        "Enter sent: {result}"
+    );
+    let requests = h.requests();
+    let writes: Vec<_> = requests.iter().filter(|r| r["method"] != "GET").collect();
+    assert_eq!(writes.len(), 1, "{requests:?}");
+    assert_eq!(writes[0]["path"], "/api/v2/issues/B-1/comments/1");
+    assert_eq!(writes[0]["method"], "PATCH");
+    assert_eq!(writes[0]["form"], json!({"content":[body]}));
+    assert_eq!(
+        requests.last().unwrap()["method"],
+        "PATCH",
+        "automatic GET: {requests:?}"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["path"].as_str().unwrap().contains("comments?"))
+            .count(),
+        1
+    );
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap()).unwrap();
+    assert_eq!(record["original"], "Latest raw body\n");
+    for text in ["test-secret", "\u{1b}]52;"] {
+        assert!(
+            !result["stdout"].as_str().unwrap().contains(text),
+            "{result}"
+        );
+    }
+    assert!(
+        result["snapshots"][11]
+            .as_str()
+            .unwrap()
+            .contains("Open -> Closed"),
+        "{result}"
+    );
+}
+
+fn comment_edit_routes() -> Value {
+    serde_json::from_str(include_str!("fixtures/tui_comment_edit.json")).unwrap()
+}
+fn comment_edit_editor(h: &Harness, mode: &str) {
+    settings(h, "B");
+    h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),mode],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
+}
+
+#[test]
+fn bl_comment_edit_refuses_latest_history_and_other_owner_before_editor_and_editor_failure_never_sends()
+ {
+    let mut routes = comment_edit_routes();
+    let mut history = comment_item(1, Value::Null, json!([]));
+    let mut other = comment_item(1, json!("Other person's body"), json!([]));
+    other["createdUser"]["id"] = json!(8);
+    history["createdUser"]["id"] = json!(7);
+    let latest = routes["routes"]["GET /api/v2/issues/B-1/comments/1"].clone();
+    routes["routes"]["GET /api/v2/issues/B-1/comments/1"] = json!({"sequence":[
+        {"body":history.to_string()}, {"body":other.to_string()},latest
+    ]});
+    let h = Harness::new(routes);
+    comment_edit_editor(&h, "nonzero");
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Newest stays on page","keys":"Lln"},
+            {"wait":"Displayed old body","keys":"e"},
+            {"wait":"Change history has no editable comment body","keys":"\r"},
+            {"wait":"Displayed old body","keys":"e"},
+            {"wait":"Only your own comment body can be updated","keys":"\r"},
+            {"wait":"Displayed old body","keys":"e"},
+            {"wait":"EDITOR READY","keys":"\n"},
+            {"wait":"Editor did not exit successfully","keys":"\r"},
+            {"wait":"Comment body has not changed","keys":"\u{1b}"},
+            {"wait":"Displayed old body","keys":"q"}
+        ]),
+    );
+    assert_eq!(result["code"], 0, "{result}");
+    assert_eq!(result["restored"], true, "{result}");
+    assert!(h.requests().iter().all(|r| r["method"] == "GET"));
+    assert!(
+        !result["snapshots"][2]
+            .as_str()
+            .unwrap()
+            .contains("EDITOR READY")
+    );
+    assert!(
+        !result["snapshots"][4]
+            .as_str()
+            .unwrap()
+            .contains("EDITOR READY")
+    );
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(h.root.join("editor-record")).unwrap()).unwrap();
+    assert_eq!(record["original"], "Latest raw body\n");
+    assert!(!std::path::Path::new(record["path"].as_str().unwrap()).exists());
+}
+
+#[test]
+fn bl_comment_edit_rejection_and_wrong_target_success_keep_old_comment_without_retry_or_get() {
+    for (response, outcome) in [
+        (
+            json!({"status":403,"body":"{\"errors\":[{\"code\":5,\"message\":\"Denied\"}]}"}),
+            "not_updated: comment not updated",
+        ),
+        (
+            json!({"body":comment_item(99,json!("WRONG TARGET"),json!([])).to_string()}),
+            "updated: comment updated",
+        ),
+    ] {
+        let mut routes = comment_edit_routes();
+        routes["routes"]["PATCH /api/v2/issues/B-1/comments/1"] = response;
+        let h = Harness::new(routes);
+        comment_edit_editor(&h, "body");
+        let result = scripted(
+            &h,
+            json!([
+                {"wait":"Newest stays on page","keys":"Lln"},
+                {"wait":"Displayed old body","keys":"e"},
+                {"wait":"EDITOR READY","keys":"\n"},
+                {"wait":"Body editor finished","keys":"\r"},
+                {"wait":"Confirm comment update","keys":"s"},
+                {"wait":outcome,"keys":"es"},
+                {"wait":outcome,"keys":"\r","pause":0.2},
+                {"wait":"Displayed old body","keys":"q"}
+            ]),
+        );
+        assert_eq!(result["code"], 0, "{result}");
+        assert_eq!(result["restored"], true, "{result}");
+        let requests = h.requests();
+        assert_eq!(
+            requests.iter().filter(|r| r["method"] == "PATCH").count(),
+            1,
+            "{requests:?}"
+        );
+        assert_eq!(requests.last().unwrap()["method"], "PATCH", "{requests:?}");
+        assert!(!result["stdout"].as_str().unwrap().contains("WRONG TARGET"));
+    }
+}
+
+#[test]
+fn bl_comment_edit_interrupt_aborts_joins_and_preserves_not_updated_unknown_updated() {
+    for (phase, response, marker, outcome, signal) in [
+        ("before", json!({"body":"{}"}), "", "not_updated", false),
+        (
+            "sent",
+            json!({"header_delay":20,"body":"{}"}),
+            "patch-received",
+            "unknown",
+            true,
+        ),
+        (
+            "headers",
+            json!({"delay":20,"body":"{}"}),
+            "patch-headers-sent",
+            "updated",
+            false,
+        ),
+    ] {
+        let mut routes = comment_edit_routes();
+        routes["routes"]["PATCH /api/v2/issues/B-1/comments/1"] = response;
+        let h = Harness::new(routes);
+        comment_edit_editor(&h, "body");
+        let mut last = json!({"wait":if phase=="before" {"Confirm comment update"} else {"Sending comment update"},"wait_file":marker,"pause":0.15});
+        last[if signal { "signal" } else { "keys" }] =
+            json!(if signal { "SIGINT" } else { "\u{3}" });
+        let steps = json!([
+            {"wait":"Newest stays on page","keys":"Lln"},
+            {"wait":"Displayed old body","keys":"e"},
+            {"wait":"EDITOR READY","keys":"\n"},
+            {"wait":"Body editor finished","keys":"\r"},
+            {"wait":"Confirm comment update","keys":if phase=="before" {""} else {"s"}},last
+        ]);
+        std::fs::write(h.root.join("shell-steps.json"), steps.to_string()).unwrap();
+        let result = shell(&h, "scripted", &[]);
+        assert_eq!(result["code"], 130, "{phase}: {result}");
+        assert_eq!(result["restored"], true, "{result}");
+        let stderr = result["stderr"].as_str().unwrap();
+        assert!(stderr.contains(&format!("; {outcome}:")), "{result}");
+        assert!(result["elapsed"].as_f64().unwrap() < 5.0, "{result}");
+        assert_eq!(
+            h.requests()
+                .iter()
+                .filter(|r| r["method"] == "PATCH")
+                .count(),
+            usize::from(phase != "before")
+        );
+    }
+}
+
+#[test]
+fn bl_comment_edit_cancelled_load_and_late_comment_read_cannot_replace_new_edit_or_result() {
+    let mut routes = comment_edit_routes();
+    let latest = routes["routes"]["GET /api/v2/issues/B-1/comments/1"].clone();
+    routes["routes"]["GET /api/v2/issues/B-1/comments/1"] = json!({"sequence":[
+        {"header_delay":1.1,"body":comment_item(1,json!("CANCELLED LOAD"),json!([])).to_string()},latest
+    ]});
+    let page = routes["routes"]["/api/v2/issues/B-1/comments"].clone();
+    routes["routes"]["/api/v2/issues/B-1/comments"] = json!({"sequence":[page,
+        {"header_delay":0.9,"body":json!([comment_item(99,json!("LATE READ"),json!([]))]).to_string()}
+    ]});
+    let h = Harness::new(routes);
+    comment_edit_editor(&h, "body-file");
+    std::fs::write(
+        h.root.join("editor-body"),
+        " Raw #23 日本語\n test-secret\u{1b}]52;c;unsafe\u{7}\n",
+    )
+    .unwrap();
+    let result = scripted(
+        &h,
+        json!([
+            {"wait":"Newest stays on page","keys":"Lln"},
+            {"wait":"Displayed old body","keys":"R"},
+            {"wait":"Loading... Esc: cancel","keys":"e","wait_request":{"method":"GET","path":"/api/v2/issues/B-1/comments","ordinal":2}},
+            {"wait":"Loading latest comment","keys":"\u{1b}","wait_request":{"method":"GET","path":"/api/v2/issues/B-1/comments/1","ordinal":1}},
+            {"wait":"Displayed old body","keys":"e"},
+            {"wait":"EDITOR READY","keys":"\n"},
+            {"wait":"Body editor finished","keys":"\r"},
+            {"wait":"Confirm comment update","keys":"s"},
+            {"wait":"updated: comment updated","keys":"\r","pause":1.3},
+            {"wait":"Raw #23","keys":"q"}
+        ]),
+    );
+    assert_eq!(result["code"], 0, "{result}");
+    for text in ["CANCELLED LOAD", "LATE READ", "Loading... Esc: cancel"] {
+        assert!(
+            !result["snapshots"][9].as_str().unwrap().contains(text),
+            "{result}"
+        );
+    }
+    assert_eq!(
+        h.requests()
+            .iter()
+            .filter(|r| r["method"] == "PATCH")
+            .count(),
+        1
+    );
+}

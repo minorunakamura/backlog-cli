@@ -91,6 +91,14 @@ impl Api {
         api.write_progress = Some(("comment.add", progress));
         Ok(api)
     }
+    pub(crate) fn with_comment_update_progress(
+        config: &Config,
+        progress: CreateProgress,
+    ) -> Result<Self, Error> {
+        let mut api = Self::new(config)?;
+        api.write_progress = Some(("comment.update", progress));
+        Ok(api)
+    }
     /// Fetch the formal workspace name without changing or discarding unknown fields.
     pub async fn space(&self) -> Result<Value, Error> {
         let value = self.get(&["space"]).await?;

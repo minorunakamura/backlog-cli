@@ -1,6 +1,7 @@
 //! Project and issue browsing with modal issue forms.
 mod browse;
 mod comment;
+mod comment_edit;
 mod create;
 mod detail;
 mod input;
@@ -47,6 +48,7 @@ enum Focus {
 enum EditorRequest {
     Settings(usize),
     CreateBody,
+    CommentBody,
     #[cfg(test)]
     Body,
 }
@@ -60,6 +62,8 @@ pub struct Shell {
     no_color: bool,
     create: Option<create::Create>,
     create_generation: u64,
+    comment_edit: Option<comment_edit::Edit>,
+    comment_edit_generation: u64,
     create_progress: crate::CreateProgress,
     profile: String,
     origin: String,
@@ -78,6 +82,8 @@ impl Shell {
             no_color,
             create: None,
             create_generation: 0,
+            comment_edit: None,
+            comment_edit_generation: 0,
             create_progress: crate::CreateProgress::default(),
             profile: "default".into(),
             origin: String::new(),
@@ -115,6 +121,24 @@ impl Shell {
                 return None;
             }
             return input.key(key, area);
+        }
+        if let Some(edit) = &mut self.comment_edit {
+            if area.width >= 40 && area.height >= 12 {
+                match edit.key(key, area) {
+                    comment_edit::Action::None => {}
+                    comment_edit::Action::Editor => {
+                        self.editor_request = Some(EditorRequest::CommentBody)
+                    }
+                    comment_edit::Action::Close => {
+                        self.comment_edit = None;
+                        self.set_focus(Focus::Comment);
+                    }
+                }
+            } else if key.code == KeyCode::Char('q') && key.modifiers.is_empty() && !edit.sending()
+            {
+                return Some(0);
+            }
+            return None;
         }
         if self.create.is_some() {
             if area.width >= 40 && area.height >= 12 {
@@ -281,6 +305,25 @@ impl Shell {
             }
             return None;
         }
+        if self.focus == Focus::Comment
+            && key.code == KeyCode::Char('e')
+            && key.modifiers.is_empty()
+            && key.kind == KeyEventKind::Press
+        {
+            if let Some(id) = self.browse.comment.selected_id()
+                && let Some(key) = self.browse.update_target()
+            {
+                self.comment_edit_generation += 1;
+                self.create_progress = crate::CreateProgress::new(crate::WriteOutcome::NotUpdated);
+                self.comment_edit = Some(comment_edit::Edit::new(
+                    key,
+                    id,
+                    &self.profile,
+                    &self.origin,
+                ));
+            }
+            return None;
+        }
         self.browse.key(key.code, self.focus, rows);
         match key.code {
             KeyCode::Char('h' | 'l') | KeyCode::Tab | KeyCode::BackTab => {
@@ -353,9 +396,13 @@ impl Shell {
             frame.render_widget(
                 Paragraph::new(
                     if self
-                        .create
+                        .comment_edit
                         .as_ref()
-                        .is_some_and(|c| c.sending() || c.refreshing)
+                        .is_some_and(|edit| edit.sending())
+                        || self
+                            .create
+                            .as_ref()
+                            .is_some_and(|c| c.sending() || c.refreshing)
                     {
                         "Terminal too small: need 40x12. Ctrl+C: interrupt"
                     } else {
@@ -371,6 +418,10 @@ impl Shell {
         if let Some(input) = &self.input_check {
             input.draw(frame);
             self.error_popup(frame);
+            return;
+        }
+        if let Some(edit) = &self.comment_edit {
+            edit.draw(frame, &self.browse.secret);
             return;
         }
         if let Some(create) = &self.create {
@@ -390,7 +441,10 @@ impl Shell {
                 "h/l Tab/S-Tab:Comment",
                 "j/k PgUp/Dn g/G e:edit R Esc:Issue",
             ),
-            Focus::Comment => ("h/l Tab/S-Tab:Detail", "j/k n/p:page g/G c:add R Esc:Issue"),
+            Focus::Comment => (
+                "h/l Tab/S-Tab:Detail",
+                "j/k n/p g/G c:add e:edit R Esc:Issue",
+            ),
         };
         let regions = "H:Left L:Right";
         let exits = if compact {
@@ -703,6 +757,11 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         None;
     let mut create_write: Option<tokio::task::JoinHandle<Result<serde_json::Value, Error>>> = None;
     let mut update_prepare: Option<tokio::task::JoinHandle<Result<create::Prepared, Error>>> = None;
+    let mut comment_load: Option<(
+        u64,
+        tokio::task::JoinHandle<Result<comment_edit::Loaded, Error>>,
+    )> = None;
+    let mut comment_write: Option<tokio::task::JoinHandle<Result<serde_json::Value, Error>>> = None;
     shell.origin = config.origin.to_string();
     let result = catch_unwind(AssertUnwindSafe(|| runtime.block_on(async {
         // Register eagerly: raw-mode entry must never precede the SIGINT handler.
@@ -742,6 +801,23 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                             shell.browse.complete(response, config.settings.project.as_deref())?;
                             if std::mem::take(&mut shell.browse.focus_issue) { shell.set_focus(Focus::Issue); }
                         } else { index += 1; }
+                    }
+                    if let Some((generation, task)) = &mut comment_load {
+                        if *generation != shell.comment_edit_generation || !shell.comment_edit.as_ref().is_some_and(|edit| edit.loading()) {
+                            task.abort(); let _ = comment_load.take().unwrap().1.await;
+                        } else if task.is_finished() {
+                            let result = comment_load.take().unwrap().1.await.map_err(|_| Error::new("terminal", "Comment load task failed"))?;
+                            if shell.comment_edit.as_mut().unwrap().loaded(result) {
+                                shell.editor_request = Some(EditorRequest::CommentBody);
+                            }
+                        }
+                    }
+                    if comment_write.as_ref().is_some_and(|task| task.is_finished()) {
+                        let result = comment_write.take().unwrap().await.map_err(|_| Error::new("terminal", "Comment update task failed"))?;
+                        let edit = shell.comment_edit.as_mut().unwrap();
+                        if let Some(preview) = edit.finished(result, &config) {
+                            shell.browse.comment.update(&edit.id, preview);
+                        }
                     }
                     if let Some((generation, task)) = &mut create_load {
                         if *generation != shell.create_generation || !shell.create.as_ref().is_some_and(|c| c.loading()) {
@@ -791,13 +867,15 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                     }
                     // Bound work per tick even during a stream of paste/resize events.
                     for _ in 0..32 {
+                        if shell.editor_request.is_some() { break; }
                         if !event::poll(Duration::ZERO).map_err(|_| Error::new("terminal", "Cannot poll terminal input"))? { break; }
                         let event = event::read().map_err(|_| Error::new("terminal", "Cannot read terminal input"))?;
                         let size = terminal.size().map_err(|_| Error::new("terminal", "Cannot read terminal size"))?;
                         if let Some(code) = shell.event(event, Rect::new(0, 0, size.width, size.height)) {
                             return if code == 0 { Ok(()) } else { Err(Error::new("interrupted", "Operation interrupted")) };
                         }
-                        if let Some(target) = shell.editor_request.take() {
+                    }
+                    if let Some(target) = shell.editor_request.take() {
                             drop(terminal);
                             guard.restore()?;
                             // Keep restoration armed during editor execution, including unwinding.
@@ -810,6 +888,7 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                                     };
                                     editor::edit_file(&config.editor, &path, async { signal.recv().await; }).await
                                 }
+                                EditorRequest::CommentBody => editor::edit_body(&config.editor, &mut shell.comment_edit.as_mut().unwrap().body, async { signal.recv().await; }).await,
                                 EditorRequest::CreateBody => editor::edit_body(&config.editor, &mut shell.create.as_mut().unwrap().body, async { signal.recv().await; }).await,
                                 #[cfg(test)]
                                 EditorRequest::Body => editor::edit_body(&config.editor, shell.input_check.as_mut().unwrap().editor_body.as_mut().unwrap(), async { signal.recv().await; }).await,
@@ -824,23 +903,34 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
                                 };
                             }
                             if edited.as_ref().is_err_and(|error| error.kind == "interrupted") { return edited; }
-                            shell.browse.error_notice = Some(safety::text(&match edited {
-                                Ok(()) => match target {
-                                    EditorRequest::Settings(_) => "Settings editor closed; restart to apply".into(),
-                                    EditorRequest::CreateBody => "Body editor finished".into(),
-                                    #[cfg(test)]
-                                    EditorRequest::Body => "Body editor finished".into(),
-                                },
-                                Err(error) => error.message,
-                            }, &[&config.api_key]));
-                            if let Some(create) = &mut shell.create { create.notice = shell.browse.error_notice.take().unwrap_or_default(); }
+                            if matches!(target, EditorRequest::CommentBody) {
+                                shell.comment_edit.as_mut().unwrap().edited(edited);
+                            } else {
+                                shell.browse.error_notice = Some(safety::text(&match edited {
+                                    Ok(()) => match target {
+                                        EditorRequest::Settings(_) => "Settings editor closed; restart to apply".into(),
+                                        _ => "Body editor finished".into(),
+                                    },
+                                    Err(error) => error.message,
+                                }, &[&config.api_key]));
+                                if let Some(create) = &mut shell.create { create.notice = shell.browse.error_notice.take().unwrap_or_default(); }
+                            }
                             guard.enter()?;
                             terminal = Terminal::new(CrosstermBackend::new(&mut guard.output)).map_err(|_| Error::new("terminal", "Cannot initialize terminal"))?;
                             let size = terminal.size().map_err(|_| Error::new("terminal", "Cannot read terminal size"))?;
                             // resize clears the viewport and resets the diff buffer even at the same size.
                             terminal.resize(Rect::new(0, 0, size.width, size.height)).map_err(|_| Error::new("terminal", "Cannot resize terminal"))?;
                             terminal.draw(|frame| shell.draw(frame)).map_err(|_| Error::new("terminal", "Cannot draw terminal"))?;
-                            break;
+                    }
+                    if let Some(edit) = &shell.comment_edit {
+                        if edit.loading() && comment_load.is_none() {
+                            let config = Arc::clone(&config); let key = edit.key.clone(); let id = edit.id.clone();
+                            comment_load = Some((shell.comment_edit_generation, tokio::spawn(async move { comment_edit::load(&config, &key, &id).await })));
+                        }
+                        if edit.sending() && comment_write.is_none() {
+                            let (key, id, body, latest) = edit.submission();
+                            let service = crate::service::Service::with_comment_update_progress(&config, shell.create_progress.clone())?;
+                            comment_write = Some(tokio::spawn(async move { service.send_comment_update(&key, &id, &body, &latest).await }));
                         }
                     }
                     if let Some(create) = &mut shell.create {
@@ -879,6 +969,14 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
             }
         }
     }))).unwrap_or_else(|_| Err(Error::new("terminal", "TUI stopped after an internal panic")));
+    if let Some((_, task)) = comment_load {
+        task.abort();
+        let _ = runtime.block_on(task);
+    }
+    if let Some(task) = comment_write {
+        task.abort();
+        let _ = runtime.block_on(task);
+    }
     if let Some((_, task)) = create_load {
         task.abort();
         let _ = runtime.block_on(task);
@@ -906,7 +1004,21 @@ fn run_shell_on<W: Write>(config: Config, output: W, mut shell: Shell) -> Result
         }
         (Err(error), Ok(())) => Err(error),
     };
-    let result = if shell.create.is_some() {
+    let result = if shell.comment_edit.is_some() {
+        result.map_err(|mut error| {
+            let (outcome, status) = shell.create_progress.snapshot();
+            error.http_status = status;
+            let label = match outcome {
+                crate::WriteOutcome::Updated => "updated: comment updated; do not resend",
+                crate::WriteOutcome::Unknown => {
+                    "unknown: comment update result unknown; do not resend"
+                }
+                _ => "not_updated: comment not updated",
+            };
+            error.message.push_str(&format!("; {label}"));
+            error.with_write_outcome("comment.update", outcome)
+        })
+    } else if shell.create.is_some() {
         result.map_err(|mut error| {
             let (outcome, status) = shell.create_progress.snapshot();
             error.http_status = status;

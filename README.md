@@ -4,7 +4,7 @@ Apple Silicon Mac向けのBacklog TUI `bl` / 非対話CLI `bl-cli`（Rust）。
 現在は `bl-cli project list` / `issue-type list` / `priority list` / `resolution list` と
 `issue list` / `issue mine` / `issue view` / `issue create` / `issue update` / `issue comment list` / `issue comment view` / `issue comment add` / `issue comment update` を利用できます。
 `bl` はプロジェクト選択、通常/横断検索ダイアログ、課題一覧のページ巡回、選択追従プレビュー/詳細・コメント閲覧と再取得、ブラウザ起動、端末復元を利用できます。
-設定editor連携と課題作成・更新、コメント追加フォームを利用できます。既存コメント本文のTUI編集は未実装です。
+設定editor連携と課題作成・更新、コメント追加フォーム、既存コメント本文のTUI編集を実装しています。コメント本文更新 (#23) の必須実端末・実Backlog受入はpendingです。
 課題作成 (#20) の実端末・実Backlog受入結果は[手動受入記録](docs/testing/manual-acceptance.md#issue-20-tui課題作成)を参照してください。
 両binaryの `--help` / `-h` と `--version` / `-V` は設定・API接続・TTYなしで利用できます。
 
@@ -185,7 +185,7 @@ TUIでは種別・ID・BODY／CHANGES見出し・末尾metadataを付けませ�
 ちょうど10,000は比較対象です。これはTUI独自の表示基準で、Backlog WebやAPIの文字数制限・超過フラグとは同一ではありません。
 通常コメント・他の履歴・CLI／JSON・APIデータには適用しません。50ms目安の近似比較でも対象全文は保持し、秘匿を装飾より優先します。
 本文なし履歴だけのページでは記法確認のためのissue/project GETを追加しません。
-`c`による追加は次節、`e`による既存コメント本文編集は未実装です。最新buildでの#18受入結果と未確認事項は[手動受入記録](docs/testing/manual-acceptance.md)を参照してください。
+`c`による追加と`e`による既存コメント本文編集は以下の節を参照してください。最新buildでの#18受入結果と未確認事項は[手動受入記録](docs/testing/manual-acceptance.md)を参照してください。
 
 ### TUIコメント追加 (#22)
 
@@ -211,6 +211,23 @@ TUIでは種別・ID・BODY／CHANGES見出し・末尾metadataを付けませ�
 
 ローカル製品検証の手順は[CONTRIBUTING](CONTRIBUTING.md#tuiコメント追加-22-releaseの直接ローカル検証)、
 実端末・実Backlogの必須受入と未実施事項は[手動受入記録](docs/testing/manual-acceptance.md#issue-22-tuiコメント追加)を参照してください。
+
+### TUIコメント本文更新 (#23)
+
+- Commentにfocusし、表示中のコメントで修飾なし **e** を押すと、課題keyとコメントIDを固定して最新コメントとmyselfを確認し、設定editorへ最新本文の原文を渡します。
+  自分以外の本文・`content:null`の履歴は編集できません。履歴そのものや課題項目は変更しません。
+- editorから戻ったら **Enterで確認**、確認画面の **独立したsでcontentだけを1回PATCH** します。
+  profile／origin／課題key／コメントID／本文と「課題項目変更なし」を安全表示し、j/k・PgUp/Dn・Home/Endで全文を読めます。
+  確認Enterは送信しません。確認のEscは編集へ、編集画面のeはeditorへ戻ります。
+- 空／同値は確認へ進まず、取消・editor失敗は送信しません。失敗では元本文を保持し、変更がある取消だけ破棄確認します。
+  送信中は編集・再送・破棄・qを無効にし、40x12未満では隠れた確認・送信を受け付けません。
+- Ctrl+C／SIGINTはabort＋join後のnot_updated／unknown／updatedを保ち、130終了と端末復元を行います。
+  200 headers後の本文読取・JSON・対象検証失敗でもupdatedを下げず、unknown／updatedから再送へ誘導しません。
+- 正常な同IDの成功応答で**同じコメント**を更新します。ページ内の他コメントと選択を保持し、最新へ移動しません。
+  **Issue List・Detail・コメント一覧は自動再取得しません**。関連情報の再取得はRに任せ、旧read・取消loadで結果を上書きしません。
+
+ローカルrelease検証は[CONTRIBUTING](CONTRIBUTING.md#tuiコメント本文更新-23-releaseの直接ローカル検証)、
+実Backlogの必須受入（別工程・未実施）は[手動受入記録](docs/testing/manual-acceptance.md#issue-23-tuiコメント本文更新)を参照してください。
 
 ### TUI検索ダイアログ (#17)
 
