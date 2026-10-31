@@ -1,6 +1,61 @@
 use std::process::Command;
 
 #[test]
+fn local_https_fixture_serves_verified_requests_while_a_silent_tcp_peer_is_open() {
+    let output = Command::new("python3")
+        .args(["-E", "-S", "-c"])
+        .arg(
+            r#"
+import http.client
+import pathlib
+import select
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+
+with tempfile.TemporaryDirectory(prefix="backlog-silent-peer-") as root:
+    pathlib.Path(root, "response.json").write_text('{"body":"[]"}')
+    child = subprocess.Popen(
+        [sys.executable, "-E", "-S", sys.argv[1], root],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    peer = connection = None
+    try:
+        assert select.select([child.stdout], [], [], 10)[0], "fixture startup timed out"
+        port = int(child.stdout.readline().strip())
+        peer = socket.create_connection(("127.0.0.1", port), timeout=2)
+        context = ssl.create_default_context(cafile=str(pathlib.Path(root, "tls/localhost-cert.pem")))
+        connection = http.client.HTTPSConnection("localhost", port, context=context, timeout=2)
+        connection.request("GET", "/api/v2/projects")
+        response = connection.getresponse()
+        assert response.status == 200
+        assert response.read() == b"[]", "HTTPS must complete before the silent peer closes"
+        assert peer.fileno() >= 0
+    finally:
+        if connection is not None:
+            connection.close()
+        if peer is not None:
+            peer.close()
+        child.kill()
+        child.communicate(timeout=5)
+"#,
+        )
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/https_server.py"
+        ))
+        .output()
+        .expect("Cannot run Python HTTPS silent-peer regression test");
+    assert!(
+        output.status.success(),
+        "HTTPS silent-peer regression failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn local_https_fixture_starts_and_serves_without_reverse_dns() {
     let output = Command::new("python3")
         .args(["-E", "-S", "-c"])

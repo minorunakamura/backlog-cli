@@ -38,6 +38,31 @@ def screen_text(data):
                 col += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
     return "\n".join("".join(row) for row in cells)
 
+def report_failure(failure):
+    requests = []
+    ordinals = {}
+    try:
+        with open(os.environ["SHELL_REQUESTS_FILE"]) as source:
+            for line in source:
+                try:
+                    record = json.loads(line)
+                    method, path = record["method"], record["path"].split("?", 1)[0]
+                    key = (method, path)
+                    ordinals[key] = ordinals.get(key, 0) + 1
+                    requests.append({"method": method, "path": path, "ordinal": ordinals[key]})
+                except (ValueError, KeyError, TypeError):
+                    # A concurrent request may still be writing its final line.
+                    continue
+    except (OSError, KeyError):
+        pass
+    # Allowlist metadata only: no exception message, steps, screens, or raw HTTP records.
+    print(json.dumps({"failure": failure, "step_index": step_index,
+                      "elapsed": time.monotonic() - started, "sent_at": sent_at[:step_index],
+                      "request_counts": request_counts[:step_index],
+                      "request_count": len(requests), "requests": requests,
+                      "child_pid": child.pid}), file=sys.stderr, flush=True)
+
+
 mode, binary, *args = sys.argv[1:]
 deadline_seconds = int(os.environ.get("SHELL_DEADLINE_SECONDS", "8"))
 assert deadline_seconds > 0, "shell scenario deadline must be positive"
@@ -54,17 +79,18 @@ action_sent = False
 paste_sent = False
 input_left = False
 steps_path = os.environ.get("SHELL_STEPS_FILE")
-steps = json.load(open(steps_path)) if steps_path and os.path.exists(steps_path) else []
 snapshots = []
 sent_at = []
 request_counts = []
 browse_request_counts = []
 step_ready_at = None
+step_index = 0
 try:
+    steps = json.load(open(steps_path)) if steps_path and os.path.exists(steps_path) else []
     while child.poll() is None:
         if time.monotonic() - started > deadline_seconds:
-            screen = screen_text(output.decode("utf-8", "replace"))
-            raise AssertionError(f"shell exceeded {deadline_seconds}s scenario deadline; remaining steps={steps!r}; screen={screen!r}")
+            report_failure("deadline")
+            raise SystemExit(1)
         if select.select([master], [], [], 0.02)[0]:
             output.extend(os.read(master, 65536))
         if not action_sent and mode == "early-signal" and b"\x1b[?25l" in output:
@@ -107,6 +133,7 @@ try:
                         child.send_signal(getattr(signal, step["signal"]))
                     os.write(master, step.get("keys", "").encode())
                     steps.pop(0)
+                    step_index += 1
                     step_ready_at = None
         # Other actions wait for a rendered screen, not merely raw-mode entry.
         marker = os.environ.get("SHELL_WAIT_MARKER")
@@ -137,6 +164,9 @@ try:
                       "restored": after == before,
                       "termios_diff": [[i, str(a), str(b)] for i, (a, b) in enumerate(zip(before, after)) if a != b],
                       "elapsed": time.monotonic() - started}))
+except Exception as error:
+    report_failure(type(error).__name__)
+    raise SystemExit(1)
 finally:
     if child.poll() is None:
         child.kill()
