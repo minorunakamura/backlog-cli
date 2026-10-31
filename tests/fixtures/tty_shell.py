@@ -39,6 +39,8 @@ def screen_text(data):
     return "\n".join("".join(row) for row in cells)
 
 mode, binary, *args = sys.argv[1:]
+deadline_seconds = int(os.environ.get("SHELL_DEADLINE_SECONDS", "8"))
+assert deadline_seconds > 0, "shell scenario deadline must be positive"
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
 before = termios.tcgetattr(slave)
@@ -60,9 +62,9 @@ browse_request_counts = []
 step_ready_at = None
 try:
     while child.poll() is None:
-        if time.monotonic() - started > 8:
+        if time.monotonic() - started > deadline_seconds:
             screen = screen_text(output.decode("utf-8", "replace"))
-            raise AssertionError(f"shell did not exit responsively; remaining steps={steps!r}; screen={screen!r}")
+            raise AssertionError(f"shell exceeded {deadline_seconds}s scenario deadline; remaining steps={steps!r}; screen={screen!r}")
         if select.select([master], [], [], 0.02)[0]:
             output.extend(os.read(master, 65536))
         if not action_sent and mode == "early-signal" and b"\x1b[?25l" in output:

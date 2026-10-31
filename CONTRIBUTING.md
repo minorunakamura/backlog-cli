@@ -21,7 +21,7 @@ Crossterm公開APIを使用します。Herdr/Ghostty・macOS標準の日本語�
 `bl` のプロジェクト選択・通常/横断検索ダイアログ・課題一覧ページ巡回/再取得・選択追従プレビュー/詳細・コメント閲覧・ブラウザ起動・focus・layout・端末復元も実装しています。
 共有単行入力部品を製品のkeyword欄へ組み込み、開発専用の実端末確認経路も維持しています。
 設定editor連携と共有libraryの本文編集、TUI課題作成・更新フォームを実装しています。
-#20の実端末／実Backlog受入結果と#21の未実施事項は手動受入記録を参照してください。コメント書込みのTUIフォームは後続Work Itemの範囲です。
+#20の実端末／実Backlog受入結果と#21の未実施事項は手動受入記録を参照してください。コメント追加フォームのローカル検証と実環境の未実施事項は末尾の#22節を参照してください。既存コメント本文編集は後続Work Itemの範囲です。
 
 ## 品質確認
 
@@ -884,3 +884,102 @@ shasum -a 256 target/aarch64-apple-darwin/release/bl target/aarch64-apple-darwin
 これは実端末の字幅／IME／目視や実Backlog書込みの代替ではありません。
 接続先・対象・変更／解除内容の別の明示許可を得た実Backlog受入と実端末確認は
 [manual-acceptance.md](docs/testing/manual-acceptance.md#issue-21-tui課題更新)へ記録し、未実施を成功扱いにしません。
+
+### TUIコメント追加 (#22): releaseの直接ローカル検証
+
+Comment focusの修飾なし`c`から本文・状態・担当者・完了理由だけを編集します。Tab順は本文→状態→担当者→完了理由→確認→取消。
+候補と解除、本文editor、確認から独立した`s`、取消／破棄確認は課題フォームと共用です。状態と完了理由は独立で、ID 0と解除を区別します。
+opaqueなprepared commentに共通Serviceが確定したmethod/formを保持し、確認と送信で再解決・追加の確認GETをしません。
+本文だけならPOST comments、実際の課題項目変更があれば非空本文をcommentとして1 PATCH、本文なしならcommentは送りません。
+正常応答後だけ既存のLatest comments読取り／表示準備を一度行い、すべて成功後に交換します。空ページも成功です。
+PATCHの正常な対象課題はDetailへ反映しますが、Listの行・タイトル・条件・total・履歴・選択・scrollは変更しません。
+表示更新失敗はCreated/Updatedを保ち、旧Commentと「登録済み・コメント表示更新失敗／再送不要／R」を表示します。
+送信／表示再取得中のmodalは閉じず、Ctrl+C／SIGINTではabort+join後のcomment.add確度と端末復元を通知します。
+既存コメント本文の編集（#23）は追加していません。
+
+```sh
+cargo test --locked --test tui_process bl_comment_add_ -- --nocapture
+cargo test --locked --test service --test comment_add --test issue_comment --test issue_update --test tui_shell
+cargo test --locked --test tui_process bl_create_
+cargo test --locked --test tui_process bl_update_
+```
+
+次は**cargo testと別のrelease製品**を起動する自己完結のlocalhost HTTPS/PTY検証です。
+実設定・実key・Backlogへの接続は不要です。2ケースそれぞれ新規server／一時rootを作り、最後に回収します。
+本文ありの表示更新なのでLatest GETの後に既存のissue＋project記法GETも行います（計17 GET＋1 POST/PATCH）。
+固定fixtureは初期Detailと初期Comment記法のGET、フォーム開始時の最新GETを区別します。
+原文送信と安全表示、確認Enterの非送信、単一書込み、Comment／Detailと旧List、終了0とtermios復元をassertします。
+
+```sh
+cargo build --locked --release --target aarch64-apple-darwin --bins
+python3 - <<'PY'
+import json, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path.cwd()
+binary = repo / 'target/aarch64-apple-darwin/release/bl'
+for method in ['post', 'patch']:
+    with tempfile.TemporaryDirectory(prefix='bl-comment-add-local-') as directory:
+        root = pathlib.Path(directory)
+        (root / 'response.json').write_bytes((repo / 'tests/fixtures/tui_comment_add.json').read_bytes())
+        (root / 'steps.json').write_bytes((repo / f'tests/fixtures/tui_comment_add_{method}_steps.json').read_bytes())
+        (root / 'backlog').mkdir()
+        (root / '.backlog').mkdir()
+        body = ' Raw #22 日本語\n test-secret\x1b]52;c;unsafe\x07\n'
+        (root / 'editor-body').write_text(body)
+        server = subprocess.Popen([sys.executable, str(repo / 'tests/fixtures/https_server.py'), directory],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            origin = 'https://localhost:' + server.stdout.readline().strip()
+            (root / 'backlog/config.json').write_text(json.dumps({'editor': [sys.executable,
+                str(repo / 'tests/fixtures/editor.py'), str(root / 'editor-record'), 'body-file'],
+                'profiles': {'default': {'spaceUrl': origin, 'apiKeyEnv': 'TEST_KEY'}}}))
+            (root / '.backlog/settings.json').write_text(json.dumps({'project': 'B', 'issue': {'create': {
+                'issueType': 'DO NOT USE', 'priority': 'DO NOT USE', 'assignee': 'DO NOT USE'}}}))
+            env = dict(HOME=directory, XDG_CONFIG_HOME=directory, TEST_KEY='test-secret', NO_COLOR='1',
+                       PATH='/usr/bin:/bin', SSL_CERT_FILE=str(root / 'tls/localhost-cert.pem'),
+                       SHELL_STEPS_FILE=str(root / 'steps.json'), SHELL_REQUESTS_FILE=str(root / 'requests'))
+            run = subprocess.run([sys.executable, str(repo / 'tests/fixtures/tty_shell.py'), 'scripted', str(binary)],
+                                 cwd=root, env=env, capture_output=True, text=True, timeout=15)
+            assert run.returncode == 0, run.stderr
+            result = json.loads(run.stdout)
+            assert (result['code'], result['restored'], result['termios_diff'], result['stderr']) == (0, True, [], ''), result
+            assert result['request_counts'][4] == result['request_counts'][5], 'confirmation Enter sent HTTP'
+            assert 'Latest owner (4)' in result['snapshots'][1], result
+            assert '0 chars' in result['snapshots'][1], 'description copied into comment'
+            assert 'LATEST REGISTERED' in result['snapshots'][7], result
+            assert ('Changed title' if method == 'patch' else 'TITLE: Detail B-1') in result['snapshots'][8], result
+            assert 'Old list title' in result['snapshots'][9], result
+            requests = [json.loads(line) for line in (root / 'requests').read_text().splitlines()]
+            writes = [r for r in requests if r['method'] != 'GET']
+            assert len(requests) == 18 and len(writes) == 1, requests
+            assert sum(r['method'] == 'GET' for r in requests) == 17, requests
+            write = writes[0]
+            assert write['method'] == method.upper(), write
+            assert write['path'] == '/api/v2/issues/B-1' + ('/comments' if method == 'post' else ''), write
+            expected = {'content': [body]} if method == 'post' else {
+                'statusId': ['2'], 'assigneeId': [''], 'resolutionId': ['0'], 'comment': [body]}
+            assert write['form'] == expected, write
+            after = requests[requests.index(write) + 1:]
+            assert [r['path'] for r in after] == ['/api/v2/issues/B-1/comments?count=20&order=desc',
+                '/api/v2/issues/B-1', '/api/v2/projects/2'], requests
+            assert all(r['method'] == 'GET' for r in after), requests
+            for prefix in ['/api/v2/issues/count?', '/api/v2/issues?']:
+                assert sum(r['path'].startswith(prefix) for r in requests) == 1, requests
+            assert 'test-secret' not in result['stdout'] and '\x1b]52;' not in result['stdout'], result
+            record = json.loads((root / 'editor-record').read_text())
+            assert record['original'] == '' and record['mode'] == 0o600 and record['cooked'], record
+            assert not pathlib.Path(record['path']).exists(), record
+            pathlib.Path(f'/tmp/issue22-direct-{method}-result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+            pathlib.Path(f'/tmp/issue22-direct-{method}-requests.json').write_text(json.dumps(requests, ensure_ascii=False, indent=2))
+            print(f'PASS: release bl {method}; 17 GET+1 {method.upper()}; confirm Enter=no send; raw body preserved/safe display; latest Comment; Detail/old List; exit=0; termios restored')
+        finally:
+            server.terminate()
+            _, errors = server.communicate(timeout=3)
+            assert not errors, errors
+PY
+shasum -a 256 target/aarch64-apple-darwin/release/bl target/aarch64-apple-darwin/release/bl-cli
+```
+
+期待結果は2つの`PASS:`とbinaryのSHA-256です。観測結果とfake-key HTTP記録は`/tmp/issue22-direct-{post,patch}-{result,requests}.json`です。
+実端末のIME／字幅／目視／editor復帰と実Backlogでの追加・状態変更・初期状態への復元は別の必須受入です。
+接続先・対象・内容の明示許可の下でRoot／利用者が実施し、[手動受入記録](docs/testing/manual-acceptance.md)へ記録します。
+未実施を成功やIssue完了と扱いません。

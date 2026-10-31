@@ -2556,3 +2556,349 @@ Rootも修正後のexact（1成功）、`search_dialog_`（20成功）、fmt、�
 別工程のRoot直接検証 `python3 /tmp/issue21-ci.oUz8G0/root-direct.py` もexit0です。同じrelease bl・同じ15 step・適用count/listだけ各250ms遅延で、旧waitは先行操作によるdriver exit1／timeoutを再現、新waitは適用済みsummary・Applying modalなし、4件の同条件count/list query・巨大ID・余計検索なし、15 GETのみ・fake-secret非表示・終了0／termios差分なしを確認しました。再現用の変更は/tmp内の応答とstepsだけで、repoに遅延・retry・timeout変更を残していません。CI元ログのassert失敗と、制御遅延時の後続focus待機timeoutは、同じ早期進行が異なるタイミングで現れたものとして区別します。
 
 この限定差分についてfresh Correctness Review（`b5a398ae-61ee-409d-9c88-3b49f61844c2`）とfresh Ponytail Review（`bba9afc5-e061-4459-a781-6c6319406a6a`）を別々に実行し、両方とも修正要求なしでした。Rootは、旧focus markerとApplying背面の関係、新summaryが適用済み条件からのみ描画されること、期待query／既存assertの維持、Rootの実行ログと直接HTTP記録への根拠を照合して受け入れました。採用／不採用に分ける具体的指摘はありません。Reviewer自身のテスト再実行やリモートCI成功とはしていません。最終Code Review gateはこの記録後にRootが呼び、現在差分への明示Approveまたはskippedを確認するまで完了とはしません。
+
+## Issue #22: TUIコメント追加
+
+### Worker実装・ローカル検証（2026-10-30 UTC）
+
+正式入力はIssue #22の最新本文・受入改訂コメント、Approved Plan `docs/plans/backlog-cli-initial.md`、基本設計 `docs/designs/backlog-cli.md`。開始HEADは `a89c90c`、開始時clean。対象はCommentの追加だけで、既存コメント編集（#23）・依存・設定・CI・Plan／設計・Issue状態は変更していません。
+
+Commentの修飾なしPress `c`を既存modalへ接続し、本文／状態／担当者／完了理由と確認／取消だけを表示します。最新課題の実値を初期値とし、本文は空、create既定値は不使用です。共通Serviceの既存変更判定からopaque prepared commentを作り、同一method／formを確認・送信します。本文のみは1 POST、課題項目の実変更は任意の非空本文付き1 PATCHで、descriptionは送りません。state／resolution連動・retry・fallback・確認の追加GETはありません。既存のLatest comments取得と表示準備の原子的交換を再利用し、正常な課題応答はDetailに反映、Issue Listには読取りも直接変更も行いません。comment.addのPOST／PATCH確度を共通progressへ記録し、終了時は既存abort＋join後に観測値を通知します。
+
+公開seamは事前承認済みの実bl＋PTY（入力／render／exit／termios）、localhost HTTPS（method／path／form／回数）、共通Service／既存CLIです。private関数形状の新規テストや新規driverは追加していません。9件の `bl_comment_add_` テストは本文のみ／同値候補、本文＋項目、本文なし項目、空／no-op、最新値・既定値非流用・候補外現値、独立status／resolution・ID0・明示解除、確認非送信と独立1送信、editor失敗／resize／極小／破棄保持、正常／失敗応答、表示準備失敗と旧Comment選択／scroll保持、空ページと本文ありの条件付き記法取得、取消loadと旧Detail／Comment応答、POST／PATCHの送信開始後／成功headers後／表示更新中のCtrl+CとSIGINTを確認します。送信前PATCH中断も別テストで確認します。既存作成／更新と全CLIの回帰も実行しました。
+
+#### RED／GREEN・途中失敗の履歴
+
+以下のログはすべて `/tmp/` に保存し、失敗やtimeoutを最終成功に読み替えていません。
+
+| 実行コマンド／段階 | exit／実測 | ログ |
+|---|---|---|
+| `cargo test --locked --test tui_process bl_comment_add_body_only -- --nocapture`、実装前 | **101 RED**、Comment c未接続でAdd comment待機timeout | `22-red-body.log` |
+| 同コマンド、最小modal→prepare→POST→refresh実装後 | **0 GREEN**、1成功 | `22-green-body.log` |
+| `cargo test --locked --test tui_process bl_comment_add_patch_confirmation_interrupt -- --nocapture`、確認時progress修正前 | **101 RED**、送信前PATCHの確度がnot_updatedでなかった | `22-red-certainty.log` |
+| 同コマンド、prepared methodの確度記録後 | **0 GREEN**、1成功 | `22-green-certainty.log` |
+| `cargo test --locked --test tui_process bl_comment_add_ -- --nocapture`、項目slice追加 | 0、4成功 | `22-fields.log` |
+| 同filter、失敗／中断coverage追加 | 101、4成功／2失敗。Unknownの通知にcomment.addがなく、別assertは差分描画のraw stdoutに連続文字列を期待していた | `22-failures-interrupt.log` |
+| 上記修正の最初の再実行 | 101、compile E0369（PartialEqのないWriteOutcomeへ`==`を使用）。依存やenumを広げず`matches!`へ修正 | `22-green-failures-interrupt.log` |
+| 同filter、通知・assert修正後 | 0、6成功。送信中もpreparedの確認内容を保持 | `22-green-failures-interrupt-2.log` |
+| `cargo test --locked --test tui_process bl_comment_add_refresh_is_atomic -- --nocapture` | 初回101（fixture配列が最新順でなくOTHER ENTRY待機失敗）、2回目101（記法失敗sequenceをフォーム開始時に消費）。fixture期待順を修正し3回目0、1成功 | `22-refresh.log`／`22-refresh-2.log`／`22-refresh-3.log` |
+| `cargo test --locked --test tui_process bl_comment_add_editor_failures -- --nocapture` | 初回101（tiny resizeと同時入力が保護で無視されるのにTab進行を期待）、2回目101（既存editorエラー文の期待違い）。操作順／既存文言を修正し3回目0、1成功。製品の保護・エラーを弱めていない | `22-editor.log`／`22-editor-2.log`／`22-editor-3.log` |
+| `cargo test --locked --test tui_process bl_comment_add_cancelled_load -- --nocapture` | 0、1成功（4ケース） | `22-reversal.log` |
+| `cargo test --locked --test tui_process bl_comment_add_ -- --nocapture` | 0、9成功 | `22-focused.log` |
+| `cargo test --locked --test service --test comment_add --test issue_comment --test issue_update --test tui_shell` | 0、5 suite／72成功 | `22-service-cli.log` |
+| `cargo test --locked --test tui_process bl_create_` | 0、10成功（共用単行入力testも含む） | `22-create.log` |
+| `cargo test --locked --test tui_process bl_update_` | 0、22成功 | `22-update.log` |
+| `cargo test --locked --all-targets`、最初の実行 | **コマンドtimeout**（240秒）、exit未取得・全対象成功ではない | `22-all-tests.log` |
+| 同、2回目 | **101**、40×12のComment helpにc:addを足したためEsc:Issueが欠けた既存testが1失敗。n/p:pageへ短縮し操作案内を収めた | `22-all-tests-2.log` |
+| `cargo test --locked --test tui_shell`、help修正後 | 0、9成功。40×12にもc:addがあるassertを追加 | `22-help-green.log` |
+| `cargo test --locked --all-targets`、3回目 | **Worker runの1800000ms上限でabort**、exit未取得・全対象成功ではない。利用者許可で同じWorkerを再開 | `22-all-tests-3.log` |
+| 再開後の `cargo test --locked --all-targets`（command timeout 1200秒） | 0、22 suite／347成功／0失敗／既存manual2 ignored | `22-all-tests-final.log`、`.exit` |
+| 再開後の `cargo fmt --all -- --check` | **1**、短縮helpのmatch armを1行へwrapする差分のみ。`cargo fmt --all`（0）後に下記全チェックを再実行 | `22-fmt-final.log`、`.exit` |
+
+再開前のfmt／Clippy／audit／build／直接release検証のexitは0でした（`22-fmt.log`、`22-clippy.log`、`22-audit.log`、`22-build.log`、`22-direct.log`）。auditは0.22.2、1395 advisory／230依存、警告なし、lock hashは下記と同じでした。help変更前buildの直接検証を最終sourceの証拠に流用せず、再開後のbuild／直接検証0（`22-build-final.log`／`22-direct-final.log`）に加え、最後のrustfmt後にも下表をすべて実行しました。
+
+#### 最終sourceの正式チェック・release直接検証
+
+実行環境はDarwin arm64、`rustc 1.99.1 (58cf8f9c3 2026-10-13)`／`cargo 1.99.1 (5f94df478 2026-08-27)`。下表ログと同名 `.exit` に個別終了コードを保存しました。
+
+| コマンド | exit／実測 | `/tmp/`ログ |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0、差分なし | `22-fmt-final-2.log` |
+| `cargo test --locked --all-targets` | 0、22 suite／347成功／0失敗／既存manual2 ignored。tui_process114成功、新規9件を含む。warningなし | `22-all-tests-final-2.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし | `22-clippy-final-2.log` |
+| `cargo audit --version` | 0、`cargo-audit-audit 0.22.2` | `22-audit-version-final.log` |
+| `cargo audit --file Cargo.lock` | 0、通常DB取得／index更新成功、1395 advisory／230依存、脆弱性・警告なし（2026-10-30 UTC） | `22-audit-final.log` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0、両binary成功、警告なし | `22-build-final-2.log` |
+| `python3 /tmp/issue22-direct-final.py`（CONTRIBUTING #22のPythonを抽出） | 0、下記2ケースとも期待どおりPASS | `22-direct-final-2.log` |
+| `git diff --check`（本記録追記後） | 0 | `22-diff-check-final.log` |
+
+監査前後のlockfile SHA-256はともに **`1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16`**（`22-lock-before-final.sha256`／`22-lock-after-final.sha256`、cmp exit0）。Cargo.toml／Cargo.lockの変更はありません。
+
+最終releaseのSHA-256（`22-build-final-2.sha256`）:
+
+- `bl`: **`4f10174bb04f846c9af266c8e0f4df84252714441be00c03804328a27b564162`**
+- `bl-cli`: **`900777b7f5b8afed70c73d8055ac3335cc4a0b61d60b597fd1c221fc61737eaf`**
+
+直接release検証はcargo testとは別に、この `bl` をlocalhost HTTPS／PTYで起動しました。CONTRIBUTINGの自己完結コマンドと `tui_comment_add.json`／`tui_comment_add_{post,patch}_steps.json` が再現入力です。**期待・実測とも各17 GET＋1書込み**。本文のみはPOST `/api/v2/issues/B-1/comments` にcontentだけ、項目付きはPATCH `/api/v2/issues/B-1` にstatusId=2／assigneeId空／resolutionId=0／非空commentだけを送信しました。確認EnterでHTTP増加なし、独立sの1回だけ、原文の空白・改行・日本語保持、fake secretと外部OSCの非表示、editorへ渡す元本文が空・一時file0600／削除、最新Comment表示、PATCH時Detail反映／POST時旧Detail、旧List保持をassertしました。書込み後はLatest comments 1 GETと既存のissue＋project記法GETだけで、list／count再取得なし。両ケースともexit0／空stderr／termios差分なし／server stderr空、PASSでした。
+
+raw PTY結果とfake-key HTTP記録は `/tmp/issue22-direct-post-result.json`、`/tmp/issue22-direct-post-requests.json`、`/tmp/issue22-direct-patch-result.json`、`/tmp/issue22-direct-patch-requests.json`。途中実行の同名結果は最後の実行で置換されています。実key／機密本文は使用していません。
+
+#### 必須受入・レビューの未実施事項
+
+**Issue #22は未完了です。READY_FOR_MERGE／承認済みとは判定していません。** 上記はWorkerのローカル検証で、Rootの独立実行・fresh 2レビュー・最終Code Review gateはこの記録時点では未実施／別工程です。GitHub Actionsも未実行です。
+
+実端末のIME・字幅／候補・100×24／40×12／極小往復・editor復帰直後の描画・終了後shellと、実Backlog API／権限／実データとの結合は必須ですが、Workerは実施していません。過去の#18／#20／#21受入やローカルharnessを#22製品の実受入へ流用しません。Workerは実Backlog・credentialsへアクセスせず、認証情報の探索・実書込み・復元を行っていません。
+
+Root／利用者向けの許可済み受入範囲はorigin `https://lazybl.backlog.com/`、profile `default`、対象 `BLCLI-2`。本文のみ `#22 本文のみ検証` と、本文 `#22 状態変更付き検証`＋状態「処理中」の追加、その後**初期状態だけ復元**し、コメントは残します。これはWorkerへの実API実行権限ではありません。Rootの事前確認ではprofile originは一致し、Agent環境のBACKLOG_API_KEYは不在です。利用者の認証済み端末で最終hashを照合して実施し、登録内容・Rなし最新Comment・Detailと旧List・復元・環境情報と結果を追記する必要があります。実サービスへ障害注入・過大負荷・削除・自動cleanupは行いません。
+
+stage／commit／stash／破棄／push／merge／release公開／deploy／Issue変更は行っていません。最終確認でstagedファイルなし。scratchログ／直接検証script／結果は `/tmp/` のみ、repoへの追加物は上記のfixture3点と既存文書への追記だけです。
+
+### Root独立実行の失敗と限定test同期修正（2026-10-30 UTC）
+
+上記Worker成功とは別に、Rootの独立実行 `/tmp/issue22-root.x71JMP/test.log` は **exit101** でした。
+全対象の途中まで337成功／1失敗／既存manual2 ignored、`tui_process` は113成功／1失敗で、後続の `tui_shell` は未実行です。
+同directoryのfmt／Clippy／audit／build／diffはexit0。test.log 467〜481行の失敗は
+`bl_comment_add_refresh_is_atomic_preserves_old_selection_scroll_and_certainty_on_failure` が
+`Comment R: refresh display` を待つ一方、実画面は `Created: B-1`／`Comment display refreshed` となったdriver timeoutです。
+これを成功・単なる時間不足とは扱わず、過去のWorker結果も書き換えていません。
+
+**原因はtestの記法失敗注入sequenceと開始同期の不足**でした。旧testは `OTHER ENTRY` を見た時点で `Lln`、
+次の `OLD LINE 01` で `jjjjjc` を送り、独立したDetailの完了を待ちませんでした。
+初期Commentはcontent:nullなので記法GET不要（`src/tui/browse.rs:164–169`）です。
+Detailはissue GET後にproject記法GETを行います（同193〜208行）が、Commentのcは
+`update_target`→`cancel_previews` で未完了Detailを取消します（`src/tui.rs:267–280`、`src/tui/browse.rs:583–611`、
+取消taskのabort＋joinは `src/tui.rs:735–738`）。初期Detailがissue GET待ちのうちにcへ進むと、
+`/api/v2/projects/2` の `[markdown, markdown, {}]` はフォーム開始で1番目、成功後Comment表示準備で2番目しか消費されません。
+本来の3番目 `{}` へ到達せず、製品が正常に更新成功を示してtest期待だけが外れます。
+
+#### 制御遅延による再現と修正の証拠
+
+`/tmp/issue22-correction.4Fa546/repro.py` は既存fixtureと実 `target/debug/bl`／既存HTTPS・PTY driverだけを使用し、
+初期Detailのissue GETに700msのheader遅延を注入しました。POST／PATCHをそれぞれ旧stepsと新stepsで1回ずつ実行し、
+HTTPの原記録を各subdirectoryの `requests`、画面／失敗を `driver.out`／`driver.err` に保持しています。
+制御script自体は期待どおりのRED／GREENとHTTP回数をassertしてexit0（`repro.log`／`repro.exit`）。
+
+| 条件 | driver exit | 書込み前／後のproject記法GET | 結果 |
+|---|---|---|---|
+| POST、旧steps | **1** | **1／1** | 同じrefresh成功画面でfailure通知待機timeoutを再現 |
+| PATCH、旧steps | **1** | **1／1** | 同じ誤注入・timeoutを再現 |
+| POST、新steps | **0** | **2／1** | 3番目 `{}` で表示準備失敗、Created／旧表示保持／再送禁止／OLD LINE 06保持 |
+| PATCH、新steps | **0** | **2／1** | 3番目 `{}` で表示準備失敗、Updated／旧表示保持／再送禁止／OLD LINE 06保持 |
+
+旧HTTP順序は初期issue GET（取消）、フォームissue→project(markdown)、1書込み、最新comments→issue→project(markdown)です。
+新順序は初期issue→project(markdown)の**描画完了後**、フォームissue→project(markdown)、1書込み、最新comments→issue→project({})です。
+初期commentsと初期issueの相互到着順は実際にも前後しており、そこには依存していません。
+
+repoの変更は **`tests/tui_process.rs` のこの1テストと本追記のみ**です。
+`TITLE: Detail B-1` の描画待ちを先頭に加え、result snapshotを6→7へ更新しました。
+formattingケースには上記700ms遅延を残して競合条件を常に試し、書込み前2／後1の記法HTTP数をassertします
+（同5838〜5852、5862、5880〜5888行）。これはsleepによる成功待ちやtimeout延長ではなく、公開画面で完了を同期するtestです。
+既存の失敗通知・旧選択／scroll保持・Created／Updated確度・再送禁止・Latest 1 GET・List非更新assertは維持しています。
+製品・公開契約・Plan／設計・依存・共通harness／timeout・既存fixture・他テストは変更していません。
+
+#### 修正後の実行結果
+
+下記ログと同名 `.exit` はすべて `/tmp/issue22-correction.4Fa546/` に保存しています。
+修正後の各testコマンドは初回成功で、timeout増加や成功するまでの再試行はしていません。
+
+| コマンド | exit／実測 | ログ |
+|---|---|---|
+| `cargo test --locked --test tui_process bl_comment_add_refresh_is_atomic_preserves_old_selection_scroll_and_certainty_on_failure -- --exact --nocapture` | 0、1成功（POST／PATCH×5ケース、formattingは制御遅延あり） | `focused.log` |
+| `cargo test --locked --test tui_process bl_comment_add_ -- --nocapture` | 0、9成功 | `comment-add.log` |
+| `cargo test --locked --all-targets`（command timeout1200秒） | 0、22 suite／347成功／0失敗／既存manual2 ignored。tui_process114成功、tui_shell9成功、warningなし | `all-targets.log` |
+| `cargo fmt --all -- --check` | 0 | `fmt.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし | `clippy.log` |
+| `git diff --check`（本追記後） | 0 | `diff.log` |
+
+test／記録だけの修正なのでaudit／release build／CONTRIBUTING直接release手順は再実行していません。
+既存releaseのbl／bl-cli SHA-256は上記 `4f10174b…`／`900777b7…` と再照合一致しましたが、新規buildの成功とはしません。
+Root失敗runの原HTTPは収集していないため、そのrun内の到着順そのものを直接証明したとはせず、同一の誤注入を制御遅延で再現した根拠と区別します。
+実Backlog／credentials／実端末受入へはアクセスせず、stage／commit／stash／破棄／push／merge／release／Issue変更も行っていません。
+変更後のRoot再実行・独立レビュー・最終Code Review gateと必須の実受入は別工程のままです。Issue #22の完了・READY_FOR_MERGEとは判定していません。
+
+### Root再実行の別失敗・取消前HTTP到着同期と未解消の8秒cutoff（2026-10-30 UTC）
+
+前節の修正後、Rootの `/tmp/issue22-root.x71JMP/test-corrected.log` は **exit101** でした。
+前節のatomic refresh試験は成功し、別の新規試験
+`bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_replace_new_draft_or_registration`
+が8秒のPTY期限で失敗しました。残stepsは `Comment display refreshed` → `LATEST REGISTERED`、
+最終画面は `Updated: B-1`／`Registered; refreshing comments`／`Refreshing: please wait` です。
+337成功／1失敗／既存manual2 ignored、`tui_shell` 到達前でした。このRoot runのHTTP原記録はなく、
+初期CommentがDetailより先に表示されたことだけを原因とは断定していません。
+
+今回の調査・ログは **`/tmp/issue22-correction2.DwZpq7/`** に保持しています。
+実Backlog・credentialsは使わず、製品binaryと既存のlocalhost HTTPS／PTYの公開境界で調べました。
+repoを変える前の4ケース、初期Detailのissue GETだけ700ms遅らせた4ケース、
+全 `tui_process` 114件はそれぞれ成功しました（`repro-baseline.log`／`repro-old.log`／`tui-process-before.log`）。
+これは失敗解消の根拠ではなく、初期Comment先行だけでは再現しなかった記録です。
+各PTYの `driver.out`／`driver.err`、HTTP `requests`／`response.json`／`shell-steps.json` を残しています。
+
+#### 別々に制御再現した二つの事象
+
+Rootの明示許可で **/tmp内だけ** にHTTPS／PTYの診断copyを作りました。
+repoのserver、driver、8秒期限は変更していません。
+
+1. **取消前にHTTPへ到着しないsequence race（今回修正した範囲）**。
+   `controlled.py tls` は初期Detail完了後、R直後のTLS acceptを600ms遅らせます。
+   元stepsはbusy表示と200msだけでc／Escを送るため、Rと取消対象フォームのGETがserverに到達せず、
+   次のフォームが古い403応答を消費しました。`tls-True-True/requests` には初期comments 1回と
+   初期／最終フォームのissue GETだけがあり、8秒時点は `New generation owner` 待ち、画面は
+   `API request was rejected` です。診断14秒期限でもdriver exit1、書込みなし。
+   **これはRootの登録後refresh画面とは異なる失敗です。**
+   `tls-fixed.py tls-fixed` は同じTLS遅延で初期Detail待ちと既存 `get-received` のremove／waitを加え、
+   Rのcomments GETと取消フォームのissue GETが到着してから取消します。
+   その結果はdriver exit0／製品exit0／空stderr／termios差分なし、Latest表示成功、
+   issue GET3回・comments GET3回・PATCH1回でした。HTTPと各stepの時刻／画面は
+   `tls-fixed-True-True/requests` と `driver.out` に保持しています。
+
+2. **PTY処理遅延での8秒cutoff（解消を主張していない範囲）**。
+   `load25.py load25` は診断copyの画面再構成1回に250msを加えました。
+   `load25-True-True/at-eight.json` の8秒境界snapshotはRootと同じ残steps2件と
+   `Updated: B-1`／`Registered; refreshing comments`／`Refreshing: please wait` です。
+   旧GETはすべて消費され、PATCHは最初のkey送信から5.935秒、最新comments GETは6.255秒で到着しています。
+   診断copyだけ14秒まで観測すると **製品exit0／空stderr／restored:true／termios差分なし**、
+   Latestまで表示して約10.65秒でdriverも正常終了しました。
+   **この制御条件では製品のrefresh stuckではありません。**
+   人為的な処理遅延による同一症状の再現を、HTTP未収集の過去Root runの原因証明とは扱いません。
+
+保存結果のassert確認は `python3 /tmp/issue22-correction2.DwZpq7/check-evidence.py`、exit0です。
+`controlled-tls.log` のdriver exit1は意図したREDであり、script自体のexit0と区別します。
+調査中の診断script生成に同じPython構文エラーがあり、診断呼出し2回が製品を起動せず終了1でした。
+修正後の制御結果だけを上記に記載し、成功するまでの製品test再試行は行っていません。
+
+#### repoへの限定修正と取消／key／世代の確認
+
+変更は **`tests/tui_process.rs` の最後の1試験と本追記だけ**です。
+初期Detailと旧Commentの表示完了を待ち、既存の汎用 `get-received` markerを消してRを送り、
+次のmarker到着を待ってcへ進みます。同じmarkerを再度消し、取消対象フォームのGET到着も待ってEscを送ります。
+これでbusy表示だけをHTTP送信済みの根拠にしません。1.3秒の旧応答遅延・1.4秒の旧応答後確認・4ケースと
+結果／Latestの期待は維持しています。初期待ち追加に合わせ、旧応答後のdraft snapshot照合をindex4→5へ更新しました。
+PATCHがB-1へstatusId=2だけを1回送ること、issue GETが4／3回・comments GETが2／3回で
+取消対象も含む期待のsequenceを消費することをassertしました。
+前節のatomic formatting test、他の8新規試験、#17、製品、fixture、timeout、依存、Plan／設計／APIは変更していません。
+
+実装の確認では、cは固定Detail keyを取得してpreviewを失効させます（`src/tui.rs:267–280`、
+`src/tui/browse.rs:583–611`）。runtimeは無効readをabortしてjoinし、フォームloadも世代違い／閉鎖時に
+abort＋joinします（`src/tui.rs:735–752`）。read完了はbusy世代と課題keyで制限され、Latest完了も
+更新世代とkeyの一致時だけ反映されます（`src/tui/browse.rs:321–331,362–435`）。
+フォームのissue応答keyも照合されます（`src/tui/create.rs:55–69`）。今回その製品契約の変更は不要でした。
+
+#### 修正後の正式実行と、実HTTPで再現した残存失敗
+
+各ログと同名 `.exit` は `/tmp/issue22-correction2.DwZpq7/` に保存しています。
+
+| コマンド | exit／実測 | ログ |
+|---|---|---|
+| `cargo test --locked --test tui_process bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_replace_new_draft_or_registration -- --exact --nocapture` | 0、1試験内4ケース成功 | `focused.log` |
+| `cargo test --locked --test tui_process bl_comment_add_ -- --nocapture` | 0、9成功 | `comment-add.log` |
+| `cargo test --locked --all-targets`（command timeout1200秒、HTTP保存監視付きで**1回**） | **101、337成功／1失敗／既存manual2 ignored**。同じ取消／逆転試験の8秒cutoff。tui_process113成功／1失敗、後続tui_shell未実行 | `all-targets.log` |
+| `cargo test --locked --test tui_shell`（未到達分を独立実行） | 0、9成功 | `tui-shell.log` |
+| `cargo fmt --all -- --check` | 0 | `fmt.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし | `clippy.log` |
+| `python3 /tmp/issue22-correction2.DwZpq7/check-evidence.py` | 0、保存済みRED／GREEN・8秒snapshotと継続成功・実full失敗HTTPをassert | `check-evidence.log` |
+| `git diff --check`（本追記後） | 0 | `diff.log` |
+
+full失敗の原HTTP・入力fixtureを **`captured-after/backlog-project-91610-49/`** に回収できました。
+これは `comment_read=true, failing=false` の3番目のケースです。最初のspace GETからの実到着時刻は次のとおりです。
+
+| GET／書込み | 秒 |
+|---|---:|
+| 初期comments | 0.192 |
+| 初期Detail issue／project記法 | **5.190／5.192** |
+| Rの旧comments | 5.410 |
+| 取消フォームissue | 5.648 |
+| 新フォームissue／最後のcandidate | 6.016／6.030 |
+| B-1 PATCH（1回） | 7.613 |
+| 登録後Latest comments（3番目） | **7.928** |
+
+最新commentsには維持した300msのheader遅延があるため、最初のGETからでも完了は8.228秒以降です。
+PTY期限はprocess起動から8秒なので、正常なrefreshが期限に収まらない時刻で開始されています。
+この失敗では **期待の旧GETはすべて到着済み**で、sequence不足ではありません。
+初期DetailのHTTP到着が初期commentsより約5秒遅れたことは実測ですが、TLS／transport／OS schedulingの
+どれがこの空白を生んだかは未確定です。成功後のfetchが永久にstuckしたとは推測しません。
+またRootの過去runそのもののHTTPではないため、Root runの正確な原因確定とも区別します。
+full失敗後は無条件の再試行・製品変更・timeout延長・sleep短縮・期待緩和をせず、証拠を保持して停止しました。
+fullログはwarningなしで、以前のatomic formatting試験・他の8新規コメント試験・既存update等は成功しています。
+
+**全対象成功ではなく、元の8秒cutoffリスクは残っています。Issue #22完了／READY_FOR_MERGEとは判定しません。**
+Rootの独立判断・freshレビュー／最終gate・必須の実端末／実Backlog受入は別工程です。
+今回のtest／docs限定変更にaudit／release build／直接release実行は繰り返していません。
+実Backlog・credentials・実端末・gitのstage／commit／stash／破棄／push等は行っていません。
+
+### #22 ユーザー承認済みの試験方法訂正：複合シナリオだけ有限15秒（2026-10-31 UTC）
+
+前節の全対象実行の失敗とHTTP時刻は履歴として保持します。本追補は**製品要件ではなく試験方法の訂正**です。
+明示承認された範囲で、取消／逆転の4ケースを実行する最後のPTY試験だけ、各ケース全体の期限を8秒→15秒にしました。
+`tests/fixtures/tty_shell.py` のtest専用 `SHELL_DEADLINE_SECONDS` は正の整数秒、未指定時は従来の8秒です。
+`tests/tui_process.rs` の既存helperは8秒を維持し、`scripted_with_deadline(..., 15)` を使うのはこの1試験だけです。
+これは製品のrequest timeout 30秒や応答性SLAを変更するものではありません。Ctrl+C等のelapsed < 5秒のassertは変更していません。
+
+最小差分として、初期Detail待ち、既存markerのremove／HTTP到着待ち、旧応答の1.3秒遅延と
+到着後のdraft確認用1.4秒待ち、成功／旧失敗 × Detail／Commentの全4ケースをそのまま保持しました。
+固定B-1へのstatusId=2だけのPATCH1回、旧GETの消費数、旧失敗の非表示、新draft、Latest、終了0／stderr空／端末復元の期待は緩めていません。
+製品ソース、他fixture、README／CONTRIBUTING、Plan／設計、依存、config／CIは今回変更していません。
+継承した未コミット差分・未追跡fixtureを保持しています。
+
+#### 公開bl／localhost HTTPS／PTY境界でのRED→GREENと期限の確認
+
+記録は **`/tmp/issue22-test-method.VOg6jc/`**。`check-deadline.py` は前節で保存した同じ実入力を使用し、
+初期Detailのheader delayだけ6秒に制御します（他の応答・marker・取消／登録stepは維持）。
+これは8秒を超える正常終了の再現条件であり、**元の約5秒のHTTP到着差の原因証明ではありません**。
+製品binaryは既存debug `bl` を直接起動し、実Backlog／credentialsは使用していません。
+
+| コマンド／条件 | exit／実測 | ログ |
+|---|---|---|
+| 修正前 `python3 /tmp/issue22-test-method.VOg6jc/check-deadline.py extended`（15秒指定を旧driverは未対応） | **1 RED**、driver exit1、約8.14秒で新draft操作前にcutoff | `red.log` |
+| 修正後の同コマンド | **0 GREEN**、driver／製品exit0、約9.75秒、9 snapshots、Latest、stderr空／restored:true／termios差分なし、旧issue／comments各3 GET、固定PATCH1回をassert | `green.log` |
+| `python3 /tmp/issue22-test-method.VOg6jc/check-deadline.py default`（env未指定） | 0、期待どおりdriver exit1／約8.13秒でcutoff。default8を維持 | `default.log` |
+| `python3 /tmp/issue22-test-method.VOg6jc/check-deadline.py blocked`（15秒指定、Latest後に意図的に終了せず未到達stepを待つ） | 0、期待どおりdriver exit1／約15.13秒でcutoff。PATCH1回／旧GET数もassert | `bounded.log` |
+
+上記GREEN／default／blockedは独立fixtureで並行実行しました。意図したdriver非0と検証scriptの成功を区別しています。
+script／各fixture入力／HTTP／driver出力と `.exit` を保存しています。恒久的な別frameworkやprivate内部testは追加していません。
+
+#### 修正後の限定回帰（各コマンドexit0）
+
+| コマンド | 実測 | ログ |
+|---|---|---|
+| `cargo test --locked --test tui_process bl_comment_add_cancelled_load_and_reversed_detail_or_comment_reads_cannot_replace_new_draft_or_registration -- --exact --nocapture` | 1試験内4ケース成功、16.04秒 | `focused.log` |
+| `cargo test --locked --test tui_process bl_comment_add_ -- --nocapture` | 9成功、20.14秒。write certainty／取消／refresh原子性を含む | `comment-add.log` |
+| `cargo test --locked --test tui_shell` | 9成功 | `tui-shell.log` |
+| `cargo test --locked --lib tui::tests:: -- --nocapture` | 27成功、実端末用2 ignored。driver利用の入力／editor／初回SIGINT／復元失敗／blocking終了も成功 | `terminal.log` |
+| `cargo test --locked --test tui_process bl_delayed_startup_is_quittable_and_interruptible_without_waiting_for_network -- --exact --nocapture` | 1成功。header／body待機時q／Ctrl+C／SIGINTのelapsed < 5秒と端末復元を維持 | `responsive-process.log` |
+| `cargo fmt --all -- --check` | 成功 | `fmt.log` |
+| `git diff --check` | 成功（本追記後も再確認） | `diff.log` |
+
+今回workerは全対象testを繰り返していません。Rootが最終差分に対して正式fmt／**all-targetsを1回**／Clippy／audit／release build・直接実行を確認し、
+その後freshな独立2レビューと実ユーザー受入／code gateへ進む必要があります。今回の限定成功を全対象成功やIssue #22完了へ読み替えません。
+元の初期Detail HTTP到着の約5秒差の原因は未解決で、調査を再開したり製品不具合と断定したりしていません。
+前回全対象の約254.79秒はAPI timeout試験（comment_add約60秒、comment_update／issue_create／issue_update／project_list各約30秒）と
+TUI約57秒が主な内訳でした。今回suite高速化、skip、parallel／infra変更は行っていません。
+実端末／実IME／実Backlog受入、release再実測、GitHub操作、stage／commit／stash／破棄／push等は未実施です。
+
+### #22 試験方法訂正後のRoot独立検証（2026-10-31 UTC）
+
+Rootは最後のdriver／helper差分を直接読み、複合シナリオ1試験だけ15秒、他は既定8秒、既存の中断応答性assertと全4ケースの期待が維持されていることを確認しました。以前の失敗・未解明の初期Detail到着差は履歴として保持し、この試験方法訂正を原因解明とは扱いません。
+
+以下はWorkerの自己申告ではなくRootによる変更後の実行です。ログ・個別終了コードは `/tmp/issue22-root-final.kMhEFW/`。全対象テストはこの最終差分に対して1回実行しました。
+
+| コマンド | 終了コード・観測 |
+|---|---|
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0、22 suite／347成功／0失敗／実端末用2 ignored、warningなし |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし |
+| `cargo audit --file Cargo.lock` | 0、cargo-audit 0.22.2、1395 advisory／230依存、DB取得・index更新成功、脆弱性・警告なし |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0 |
+| `git diff --check` | 0 |
+| CONTRIBUTING #22のPythonを新たに抽出した `python3 /tmp/issue22-root-final.kMhEFW/direct-22.py` | 0、release blのPOST／PATCH両方PASS |
+
+監査前後のCargo.lock SHA-256はともに `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で不変。release SHA-256はbl `4f10174bb04f846c9af266c8e0f4df84252714441be00c03804328a27b564162`、bl-cli `900777b7f5b8afed70c73d8055ac3335cc4a0b61d60b597fd1c221fc61737eaf` で製品ソース未変更の前buildと一致しました。
+
+正式テストとは別に、このrelease blをlocalhost HTTPS／PTYで直接起動しました。POST／PATCH各17 GET＋1書込み、確認Enter非送信・独立s、原文form・安全表示、空の初期コメント本文・editor一時file保護／削除、最新Comment、PATCH時Detail反映とPOST時旧Detail、旧List保持、exit0・空stderr・termios差分なしを確認しました。書込み後はLatest comments一回と本文記法用の既存issue／project GETだけです。`direct.log` と同directoryの `issue22-direct-{post,patch}-{requests,result}.json` はfakeデータだけを保持します。
+
+この時点ではfreshな独立2レビュー・実端末／実IME・実Backlog受入・最終Code Review gateは未実施です。Agent環境に指定keyはなく、実Backlogへの通信・書込みは行っていません。以前の8秒cutoffを隠さず、任意の負荷で必ず15秒以内に終わる保証はしません。GitHub Actions・stage／commit／push／merge等は未実施で、Issue完了／READY_FOR_MERGEとは判定しません。
+
+### #22 fresh独立2レビューとRootの指摘採否（2026-10-31 UTC）
+
+別々のfresh built-in reviewerでCorrectness Review（`22628965-4890-4495-acce-65ce592c5b4c`）とPonytail Review（`b646095c-3efd-4c03-af47-205321751a32`、ponytail-review Skill）を完了しました。最新Issue本文／コメント、正式Plan／基本設計、Rootが保存した全未コミット差分と未追跡fixture3点、正式チェックとrelease直接実行のログ・HTTP／snapshotを読み取り専用で確認しています。
+
+両者とも具体的なP0／P1／P2指摘・修正要求なし。Rootもprepared method／form、最新値と明示解除、独立s、安全表示、成功後LatestとDetail／List境界、取消・世代・確度の根拠を照合し、採用／不採用に分ける指摘はありません。不要な追加仕様・高速化の提案や無条件review loopは加えていません。
+
+Reviewer自身のコマンド再実行・実端末／実API成功を示す結果ではありません。実端末／実IME・実Backlog受入と最終Code Review gateは未完了のため、技術レビューのOKをIssue完了／merge許可へ読み替えません。Rootはdefault profile origin一致・指定API key不在とrelease bl hash不変を再確認し、認証情報を補完せず利用者の認証済み端末での許可済み範囲の受入を依頼します。
+
+### #22 最終buildへの利用者の実端末・実Backlog受入報告
+
+利用者は提示した手順に対し、次の結果を明示報告しました。同一内容の報告2件は1回の受入結果として記録し、重複投稿・再実行の指示には扱いません。
+
+- 起動buildのbl SHA-256：`4f10174bb04f846c9af266c8e0f4df84252714441be00c03804328a27b564162`。Rootの最終release hashと一致。
+- 接続先・profile・対象：許可済みの `https://lazybl.backlog.com/`、`default`、`BLCLI-2`。Rootは事前にprofile origin一致を確認済み。
+- 開始時の状態：**未対応**。
+- 本文 `#22 本文のみ検証` の投稿、本文 `#22 状態変更付き検証` と状態「処理中」の同時変更、登録内容のWeb照合・Rなしの最新Comment表示・Detailへの状態反映：**OK**との報告。
+- 状態だけを開始時の「未対応」へ復元：**OK**。コメントを削除せず残す許可済み手順への報告であり、他項目の変更・削除は指示していません。
+- 送信前のeditor往復・日本語入力、確認からEscで戻った際の入力保持・破棄確認、100×24／40×12／極小往復・resize・終了後のshell復元を含む提示済み手順：**OK**との報告。
+- 端末名・版とmacOSは「以前と同じ」と明示回答。既存の確認済み値であるHerdr 0.8.0／Ghostty 1.3.1、macOS 26.7.1／Apple Siliconを引き継ぎます。今回のTERM／NO_COLOR個別値・IME／keyboard設定値は再取得しておらず、推測した新しい値は記録しません。
+
+これは**利用者の認証済み端末での実操作・目視報告**です。Root／Worker／Reviewer自身による実API・実IME観測とはしません。再取得失敗・応答逆転・中断・単一送信のHTTP回数・一覧非更新等の詳細はRootのlocalhost HTTPS／PTY検証と自動試験を別の根拠とし、実サービスへの障害注入・負荷試験は行っていません。
+
+Rootは最新Issue本文・受入コメントを再取得し、上記hash一致と、受入記録以外の差分が独立Review対象から不変であることを再確認しました。最新値による変更判定、確認・独立送信と保持・保護、成功後Comment／Detail反映、失敗時確度／旧表示保持とList非更新の4完了条件は既存の一次コード・ローカル検証・独立2レビューと照合し、追加の実Backlog受入条件は上記報告で確認しています。
+
+テスト基盤全体の高速化は別テーマのPlanning kickoffを提示しただけで、この差分へ追加実装していません。最終Code Review gateはこの記録と差分確認の後にRootが呼びます。skippedまたは現在差分への明示Approveを確認するまでREADY_FOR_MERGEとは判定しません。GitHub Actions、stage／commit／stash／破棄／push／merge／release公開／deploy／Issue状態変更は行っていません。

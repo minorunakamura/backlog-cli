@@ -3,7 +3,10 @@ use crate::{
     Error,
     config::{Config, Settings},
     safety,
-    service::{Candidate, IssueCreate, IssueUpdate, PreparedIssueUpdate, Selection, Service},
+    service::{
+        Candidate, CommentAdd, IssueCreate, IssueUpdate, PreparedCommentAdd, PreparedIssueUpdate,
+        Selection, Service,
+    },
 };
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -49,7 +52,11 @@ struct EditLoaded {
     issue: serde_json::Value,
     rule: String,
 }
-pub(super) async fn load_update(config: &Config, key: &str) -> Result<Loaded, Error> {
+pub(super) async fn load_update(
+    config: &Config,
+    key: &str,
+    comment: bool,
+) -> Result<Loaded, Error> {
     let service = Service::new(config)?;
     let issue = service.issue_view(key).await?;
     if issue["issueKey"].as_str() != Some(key) {
@@ -63,14 +70,21 @@ pub(super) async fn load_update(config: &Config, key: &str) -> Result<Loaded, Er
         .project_text_formatting_rule(issue["projectId"].as_number().unwrap())
         .await?;
     let mut options: [Vec<Choice>; 6] = Default::default();
-    for (slot, candidate) in options.iter_mut().zip([
-        Candidate::IssueType { project: &project },
-        Candidate::Priority,
-        Candidate::Assignee { project: &project },
-        Candidate::Milestone { project: &project },
-        Candidate::Status { project: &project },
-        Candidate::Resolution,
-    ]) {
+    for (index, (slot, candidate)) in options
+        .iter_mut()
+        .zip([
+            Candidate::IssueType { project: &project },
+            Candidate::Priority,
+            Candidate::Assignee { project: &project },
+            Candidate::Milestone { project: &project },
+            Candidate::Status { project: &project },
+            Candidate::Resolution,
+        ])
+        .enumerate()
+    {
+        if comment && !matches!(index, 2 | 4 | 5) {
+            continue;
+        }
         *slot = service
             .candidates(candidate)
             .await?
@@ -95,6 +109,9 @@ pub(super) async fn load_update(config: &Config, key: &str) -> Result<Loaded, Er
     .iter()
     .enumerate()
     {
+        if comment && !matches!(index, 2 | 4 | 5) {
+            continue;
+        }
         let values: Vec<_> = if index == 3 {
             issue[*field].as_array().unwrap().iter().collect()
         } else if issue[*field].is_null() {
@@ -236,8 +253,22 @@ pub(super) struct Create {
     result: String,
     pub(super) refreshing: bool,
     pub(super) update_key: Option<String>,
+    pub(super) comment: bool,
     edit: Option<EditLoaded>,
-    prepared: Option<PreparedIssueUpdate>,
+    prepared: Option<Prepared>,
+}
+#[derive(Clone)]
+pub(super) enum Prepared {
+    Issue(PreparedIssueUpdate),
+    Comment(PreparedCommentAdd),
+}
+impl Prepared {
+    fn changes(&self) -> &[(&'static str, String)] {
+        match self {
+            Self::Issue(p) => p.changes(),
+            Self::Comment(p) => p.changes(),
+        }
+    }
 }
 impl Create {
     pub(super) fn new(project: Project, profile: &str, origin: &str, space: &str) -> Self {
@@ -264,6 +295,7 @@ impl Create {
             update_key: None,
             edit: None,
             prepared: None,
+            comment: false,
         }
     }
     pub(super) fn new_update(key: String, profile: &str, origin: &str, space: &str) -> Self {
@@ -282,6 +314,26 @@ impl Create {
         form.update_key = Some(key);
         form
     }
+    pub(super) fn new_comment(key: String, profile: &str, origin: &str, space: &str) -> Self {
+        let mut form = Self::new_update(key, profile, origin, space);
+        form.comment = true;
+        form.field = 7;
+        form
+    }
+    fn fields(&self) -> Vec<usize> {
+        if self.comment {
+            vec![7, 8, 3, 9, 10, 11]
+        } else {
+            (0..self.field_count()).collect()
+        }
+    }
+    pub(super) fn send_outcome(&self) -> crate::WriteOutcome {
+        match &self.prepared {
+            Some(Prepared::Comment(p)) => p.outcome(),
+            _ if self.update_key.is_some() => crate::WriteOutcome::NotUpdated,
+            _ => crate::WriteOutcome::NotCreated,
+        }
+    }
     fn field_count(&self) -> usize {
         if self.update_key.is_some() { 12 } else { 10 }
     }
@@ -294,9 +346,10 @@ impl Create {
             initial: self.initial.clone(),
             issue: self.edit.as_ref().unwrap().issue.clone(),
             key: self.update_key.clone().unwrap(),
+            comment: self.comment,
         }
     }
-    pub(super) fn prepared(&mut self, result: Result<PreparedIssueUpdate, Error>) {
+    pub(super) fn prepared(&mut self, result: Result<Prepared, Error>) {
         match result {
             Ok(prepared) => {
                 self.prepared = Some(prepared);
@@ -351,39 +404,41 @@ impl Create {
                 self.options = loaded.options;
                 self.choices = loaded.defaults;
                 if let Some(edit) = loaded.edit {
-                    self.title =
-                        SingleLineInput::new(edit.issue["summary"].as_str().unwrap().into());
-                    self.body = edit.issue["description"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .into();
-                    let date = |field: &str| -> Result<String, Error> {
-                        if edit.issue[field].is_null() {
-                            return Ok(String::new());
-                        }
-                        edit.issue[field]
+                    if !self.comment {
+                        self.title =
+                            SingleLineInput::new(edit.issue["summary"].as_str().unwrap().into());
+                        self.body = edit.issue["description"]
                             .as_str()
-                            .and_then(|date| date.get(..10))
-                            .filter(|date| crate::service::valid_date(date))
-                            .map(str::to_owned)
-                            .ok_or_else(|| {
-                                Error::new(
-                                    "invalid_response",
-                                    "Issue response has invalid editable date",
-                                )
-                            })
-                    };
-                    let dates =
-                        date("startDate").and_then(|start| date("dueDate").map(|due| (start, due)));
-                    match dates {
-                        Ok((start, due)) => {
-                            self.start = SingleLineInput::new(start);
-                            self.due = SingleLineInput::new(due);
-                        }
-                        Err(error) => {
-                            self.notice = error.message;
-                            self.phase = Phase::LoadFailed;
-                            return;
+                            .unwrap_or_default()
+                            .into();
+                        let date = |field: &str| -> Result<String, Error> {
+                            if edit.issue[field].is_null() {
+                                return Ok(String::new());
+                            }
+                            edit.issue[field]
+                                .as_str()
+                                .and_then(|date| date.get(..10))
+                                .filter(|date| crate::service::valid_date(date))
+                                .map(str::to_owned)
+                                .ok_or_else(|| {
+                                    Error::new(
+                                        "invalid_response",
+                                        "Issue response has invalid editable date",
+                                    )
+                                })
+                        };
+                        let dates = date("startDate")
+                            .and_then(|start| date("dueDate").map(|due| (start, due)));
+                        match dates {
+                            Ok((start, due)) => {
+                                self.start = SingleLineInput::new(start);
+                                self.due = SingleLineInput::new(due);
+                            }
+                            Err(error) => {
+                                self.notice = error.message;
+                                self.phase = Phase::LoadFailed;
+                                return;
+                            }
                         }
                     }
                     self.project.id = edit.issue["projectId"].to_string();
@@ -404,7 +459,7 @@ impl Create {
         Submission {
             values: self.values(),
             project: self.project.id.clone(),
-            prepared: self.prepared.take(),
+            prepared: self.prepared.clone(),
         }
     }
     pub(super) fn finished(&mut self, result: Result<serde_json::Value, Error>) -> bool {
@@ -412,6 +467,18 @@ impl Create {
         self.scroll.set(0);
         match result {
             Ok(value) => {
+                if self.comment {
+                    self.result = format!(
+                        "{}: {}\nRegistered / 登録済み; Issue List unchanged",
+                        if value["resource"] == "issue" {
+                            "Updated"
+                        } else {
+                            "Created"
+                        },
+                        self.update_key.as_deref().unwrap()
+                    );
+                    return false;
+                }
                 if self.update_key.is_some() {
                     self.result = format!(
                         "Updated: {}\n{}\nDetail updated; Issue List unchanged",
@@ -464,16 +531,27 @@ impl Create {
     }
     pub(super) fn refreshing_comments(&mut self) {
         self.refreshing = true;
-        self.result
-            .push_str("\nUpdated; refreshing comments / 更新済み・コメント表示更新中");
+        self.result.push_str(if self.comment {
+            "\nRegistered; refreshing comments / 登録済み・コメント表示更新中"
+        } else {
+            "\nUpdated; refreshing comments / 更新済み・コメント表示更新中"
+        });
     }
     pub(super) fn comments_refreshed(&mut self, result: Result<(), String>) {
         self.refreshing = false;
-        if let Some(prefix) = self
-            .result
-            .strip_suffix("\nUpdated; refreshing comments / 更新済み・コメント表示更新中")
-        {
+        if let Some(prefix) = self.result.strip_suffix(if self.comment {
+            "\nRegistered; refreshing comments / 登録済み・コメント表示更新中"
+        } else {
+            "\nUpdated; refreshing comments / 更新済み・コメント表示更新中"
+        }) {
             self.result = prefix.into();
+        }
+        if self.comment {
+            self.result.push_str(&match result {
+                Ok(()) => "\nComment display refreshed / 登録済み・コメント表示更新完了".into(),
+                Err(error) => format!("\n登録済み・コメント表示更新失敗\nOld display retained / 旧表示保持. Do not resend / 再送不要.\nComment R: refresh display\n{error}"),
+            });
+            return;
         }
         self.result.push_str(&match result {
             Ok(()) => "\nUpdated; Comment display refreshed / 更新済み・コメント表示更新完了".into(),
@@ -648,7 +726,7 @@ impl Create {
                 KeyCode::Char('b') => Some(7),
                 _ => None,
             };
-            if let Some(field) = target {
+            if let Some(field) = target.filter(|field| !self.comment || matches!(field, 3 | 7)) {
                 self.field = field;
                 self.notice.clear();
                 return Action::None;
@@ -656,9 +734,17 @@ impl Create {
         }
         match key.code {
             KeyCode::Esc if plain => return self.cancel(),
-            KeyCode::Tab if plain => self.field = (self.field + 1) % self.field_count(),
+            KeyCode::Tab if plain => {
+                let fields = self.fields();
+                self.field = fields
+                    [(fields.iter().position(|f| *f == self.field).unwrap() + 1) % fields.len()];
+            }
             KeyCode::BackTab if key.modifiers == KeyModifiers::SHIFT || plain => {
-                self.field = (self.field + self.field_count() - 1) % self.field_count()
+                let fields = self.fields();
+                self.field = fields[(fields.iter().position(|f| *f == self.field).unwrap()
+                    + fields.len()
+                    - 1)
+                    % fields.len()];
             }
             KeyCode::Delete | KeyCode::Backspace if plain && self.choice_field().is_some() => {
                 let index = self.choice_field().unwrap();
@@ -724,7 +810,7 @@ impl Create {
             for (parameter, value) in prepared.changes() {
                 let label = match *parameter {
                     "summary" => "Title",
-                    "description" => "Body",
+                    "description" | "content" | "comment" => "Body",
                     "issueTypeId" => "Issue type",
                     "priorityId" => "Priority",
                     "assigneeId" => "Assignee",
@@ -787,6 +873,10 @@ impl Create {
         let screen = frame.area();
         let area = Rect::new(1, 1, screen.width - 2, screen.height - 2);
         let title = match self.phase {
+            Phase::Confirm if self.comment => "Confirm comment (no write yet)",
+            Phase::Preparing if self.comment => "Preparing comment (no write yet)",
+            Phase::Result if self.comment => "Comment result",
+            Phase::Loading | Phase::LoadFailed | Phase::Form if self.comment => "Add comment",
             Phase::Confirm if self.update_key.is_some() => "Confirm update (no PATCH yet)",
             Phase::Confirm => "Confirm create (no POST yet)",
             Phase::Preparing => "Preparing update (no PATCH yet)",
@@ -868,7 +958,9 @@ impl Create {
             } else if self.refreshing {
                 "Refreshing: please wait / Ctrl+C: interrupt"
             } else {
-                if self.update_key.is_some() {
+                if self.comment {
+                    "j/k PgUp/Dn Home/End: read all\nEnter/Esc: Comment"
+                } else if self.update_key.is_some() {
                     "j/k PgUp/Dn Home/End: read all\nEnter/Esc: Detail"
                 } else {
                     "j/k PgUp/Dn Home/End: read all\nEnter/Esc: Issue List"
@@ -903,8 +995,13 @@ impl Create {
             labels.splice(8..8, ["Status", "Resolution"]);
         }
         let visible = inner.height.saturating_sub(4) as usize;
-        let top = self.field.saturating_sub(visible.saturating_sub(1));
-        for (row, index) in (top..self.field_count()).take(visible).enumerate() {
+        let fields = self.fields();
+        let top = fields
+            .iter()
+            .position(|f| *f == self.field)
+            .unwrap()
+            .saturating_sub(visible.saturating_sub(1));
+        for (row, index) in fields.into_iter().skip(top).take(visible).enumerate() {
             let value = match index {
                 0 => String::new(),
                 1..=3 => self.selection_text(index - 1),
@@ -1006,12 +1103,15 @@ impl Create {
 pub(super) struct Submission {
     values: Values,
     project: String,
-    prepared: Option<PreparedIssueUpdate>,
+    prepared: Option<Prepared>,
 }
 impl Submission {
     pub(super) async fn run(self, service: Service) -> Result<serde_json::Value, Error> {
         if let Some(prepared) = self.prepared {
-            service.send_issue_update(prepared).await
+            match prepared {
+                Prepared::Issue(p) => service.send_issue_update(p).await,
+                Prepared::Comment(p) => service.send_comment_add(p).await,
+            }
         } else {
             self.values.send(&self.project, &service).await
         }
@@ -1022,9 +1122,10 @@ pub(super) struct Preparation {
     initial: Values,
     issue: serde_json::Value,
     key: String,
+    comment: bool,
 }
 impl Preparation {
-    pub(super) async fn run(self, service: Service) -> Result<PreparedIssueUpdate, Error> {
+    pub(super) async fn run(self, service: Service) -> Result<Prepared, Error> {
         let v = &self.values;
         let i = &self.initial;
         let changed = |index: usize| v.choices[index] != i.choices[index];
@@ -1036,6 +1137,23 @@ impl Preparation {
             }
         };
         let clear = |index: usize| changed(index) && v.choices[index].is_empty();
+        if self.comment {
+            return service
+                .prepare_comment_add(
+                    &self.key,
+                    CommentAdd {
+                        body: Some(&v.body),
+                        status: selected(4),
+                        assignee: selected(2),
+                        resolution: selected(5),
+                        clear_assignee: clear(2),
+                        clear_resolution: clear(5),
+                    },
+                    Some(&self.issue),
+                )
+                .await
+                .map(Prepared::Comment);
+        }
         service
             .prepare_issue_update(
                 &self.key,
@@ -1064,6 +1182,7 @@ impl Preparation {
                 Some(&self.issue),
             )
             .await
+            .map(Prepared::Issue)
     }
 }
 impl Values {

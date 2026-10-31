@@ -1,0 +1,42 @@
+[
+  {
+    "wait": "Retained comment",
+    "keys": "Llc"
+  },
+  {
+    "wait": "Latest owner (4)",
+    "keys": "\r"
+  },
+  {
+    "wait": "EDITOR READY",
+    "keys": "\n"
+  },
+  {
+    "wait": "Body editor finished",
+    "keys": "\t\t\t\t\r"
+  },
+  {
+    "wait": "Confirm comment",
+    "keys": "\r"
+  },
+  {
+    "wait": "Confirm comment",
+    "keys": "s"
+  },
+  {
+    "wait": "Comment display refreshed",
+    "keys": "\r"
+  },
+  {
+    "wait": "LATEST REGISTERED",
+    "keys": "l"
+  },
+  {
+    "wait": "TITLE: Detail B-1",
+    "keys": "H"
+  },
+  {
+    "wait": "Old list title",
+    "keys": "q"
+  }
+]
