@@ -2902,3 +2902,45 @@ Reviewer自身のコマンド再実行・実端末／実API成功を示す結果
 Rootは最新Issue本文・受入コメントを再取得し、上記hash一致と、受入記録以外の差分が独立Review対象から不変であることを再確認しました。最新値による変更判定、確認・独立送信と保持・保護、成功後Comment／Detail反映、失敗時確度／旧表示保持とList非更新の4完了条件は既存の一次コード・ローカル検証・独立2レビューと照合し、追加の実Backlog受入条件は上記報告で確認しています。
 
 テスト基盤全体の高速化は別テーマのPlanning kickoffを提示しただけで、この差分へ追加実装していません。最終Code Review gateはこの記録と差分確認の後にRootが呼びます。skippedまたは現在差分への明示Approveを確認するまでREADY_FOR_MERGEとは判定しません。GitHub Actions、stage／commit／stash／破棄／push／merge／release公開／deploy／Issue状態変更は行っていません。
+
+### #54 共通HTTPS fixtureのTLS blocking改善とPTY失敗診断
+
+Issue: https://github.com/minorunakamura/backlog-cli/issues/54 。承認済みPlan `docs/plans/test-infrastructure-performance.md` の共通fixture改善の記録です。過去のIssue #22記録・受入とは別のWork Itemとして扱います。
+開始HEADは `a8b4cdcae02e1b3afd8beeb9db18bd452116238c`、開始時は正式入力として保護した未追跡の同Planだけでした。
+実装差分は `tests/fixtures/https_server.py`、`tests/fixtures/tty_shell.py`、`tests/https_fixture.rs`、新規 `tests/tty_shell_fixture.rs`。製品src・依存／lock・Harness・Worker設定は不変です。本追記の編集対象はこの文書だけです。
+
+#### 修正前の失敗と公開境界でのRED→GREEN
+
+- Rootの修正前観測：実HTTPS fixture起動後にsilent TCP peerを保持すると、別のcafile検証付きHTTPS要求が0.504秒でtimeoutしました。実driver＋blのdeadline 1秒／存在しないremove対象による例外はexit1で、`sent_at`／`requests`等の安全な診断がなく、deadlineには残りstepのkeys sentinelも漏れました。
+- Workerの新回帰は、HTTPSのhandshake timeout、PTY deadlineのscreen secret漏洩、例外のmissing path漏洩をそれぞれREDとして確認し、公開起動／失敗出力境界でGREENへ変更。focusedは32成功でした。TLS handshakeをhandler側へ遅延し、deadline／例外には秘密を含めない限定診断を追加しています。
+- Python 3.9／LibreSSLではsetupのcafileが拒否されたため、seed通信は親Python 3.14、実driverは既存PATHの `/usr/bin/python3` 3.9を使用しました。証明書検証の回避はしていません。
+
+Worker TDDログ：`/var/folders/04/cs5vwntd34d_fdbtdczbxg000000gn/T/pi-subagents-uid-501/async-subagent-runs/5b5b4769-a76e-48bf-b4f8-dadb51d54050/output-0.log`。
+
+#### Rootの変更後独立検証
+
+ログ：`/tmp/backlog-54-root-checks.0z3bDW/`。以下はWorkerのfocused結果とは別のRoot実行で、fullは共通fixture回帰として1回だけです。
+
+| コマンド | 終了コード・観測 |
+|---|---|
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0、350成功／0失敗／既存manual 2 ignored。内訳にhttps_fixture 2、tty_shell_fixture 2、tui_process 114、service 20を含む |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし |
+| `cargo audit --version` | 実出力は `cargo-audit-audit 0.22.2` |
+| `cargo audit --file Cargo.lock` | 0、1395 advisories／230 dependencies、警告なし |
+| `git diff --check` | 0（Root実装検証時） |
+
+監査前後のCargo.lock SHA-256はともに `1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` で不変でした。
+
+Rootは自動試験とは別のPython subprocessでも実fixture／実debug binaryを直接起動しました。
+
+- 修正前と同じsilent peer保持＋0.5秒timeoutの証明書検証付きHTTPS要求は、peerを成功まで保持したまま **0.0069秒、status 200／body `[]`**。実debug `bl-cli` のtrusted project list／header認証が成功し、trustなしではHTTP記録を増やさずnetwork拒否でした。
+- root／TLS／鍵にgroup・other権限がないことを確認。実driver＋blのdeadline／例外JSONは `step_index=1`、`sent_at` 1件と、method／queryを除いたpath／ordinal／件数を取得できました。query／header／key／screen／未送信keys／例外pathのsentinelは非露出、`child_pid` は消滅しました。
+- 既存loaded modeは成功JSON／exit0／termios復元。serverのkill／wait後、TemporaryDirectoryのroot／鍵／記録が削除されました。
+
+#### 未実施・未確定と今回の境界
+
+6.9msは制御再現の単回観測であり、テスト基盤全体の高速化達成値ではありません。性能計測full 3回・release確認一式、実CI、実IME／実Backlogは未実施です。
+既存の約5秒差やPTY不安定性をTLSと同じ原因とも、解消済みとも判断しません。timeout集約・PTY同期は別Issueの対象です。
+この追記時点で独立Correctness／Ponytail Reviewと最終Code Review gateは未実施であり、Issue完了・承認済み・READY_FOR_MERGEとは判定しません。
+新しいログ専用保存機構は作らず、既存文書への記録に限定しました。この文書追記では独自検証を追加せず、行末diff checkだけを行い、stage／commit／merge／release／deployは行いません。

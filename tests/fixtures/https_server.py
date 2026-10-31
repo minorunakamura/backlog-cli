@@ -113,7 +113,8 @@ extendedKeyUsage = serverAuth
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certificate, key)
     with LoopbackServer(("127.0.0.1", 0), Handler) as server:
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+        # Handshake in handler I/O so a silent peer cannot block the accept loop.
+        server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
         print(server.server_port, flush=True)
         server.serve_forever()
 finally:
