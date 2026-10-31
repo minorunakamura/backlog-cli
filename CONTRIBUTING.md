@@ -52,11 +52,79 @@ advisory databaseや監査結果はcacheせず、更新と `cargo audit --file C
 作成されるまでは、別PRで再びcache missになる場合があります。
 GitHub上で未実行ならその旨を記録し、確認のためだけのpushやPR作成は行いません。
 
+## テスト設計とReviewの基準
+
+### 保証から公開境界を選ぶ
+
+追加・変更・Reviewでは、まずユーザーに必要な保証を言葉にし、既存のどのassertを再利用できるか確認してから、適切な公開境界を選びます。
+
+- 純粋な入力検証・変換・表示は、既存libraryまたはShell→TestBackend境界で確認します。実CLIやPTYを起動して同じ組合せを繰り返す必要はありません。
+- argv／stdin／stdout／stderr／exit／JSON、実HTTPSの認証・送受信には実processを使います。signal、端末入力の所有権・引渡し・復元には実process／PTYが必要です。`src/` 内のテストでも、実PTYを起動するものを純粋なunit testとは扱いません。
+- 共通処理の全失敗種別・全field matrixは、その保証に適した境界へ置きます。機能ごとの端末試験は、固有の画面・draft・focus・送信・復元などを持つ代表ケースを優先します。
+  代表化では残すassertと削る交差保証を説明してください。例えば共通editorのutf8／unlink検証を残しても、その失敗と各フォームのfocus／draftの結合確認は減ります。全field検証が残っても、各field不正とPATCH成功後の表示／確度の組合せまで完全代替したことにはなりません。
+
+### 待機・起動と観測の成立条件
+
+- 要求受信、client側のheaders観測、描画完了、editor復帰、resize適用は別の事象です。HTTP受信記録だけで後者を証明せず、必要な画面条件・marker・端末状態を併用します。件数だけを順序の証拠にしません。
+- 否定確認や逆順応答で、後から送信・確度変更・旧表示の混入がないことを見る有限の観測窓は残します。全待機を受信gateへ置き換えるのではありません。
+- 総HTTP件数を固定する場合は、その件数が保証する契約との関係を説明します。付随要求込みの総数と、対象method／pathの受信・回数は区別します。総数を外すなら、監視しなくなる付随要求の増減も明記します。単一書込み・retry禁止などの契約を弱めません。
+- 新しい実時間待機・process／PTY起動を加える理由、既存試験との役割分担、focusedコマンドを変更説明・Reviewに短く残します。削減だけの変更に形式的なREDや不要な代替テストを増やしません。
+
+### 実在テストへの対応とfocused例
+
+以下はリポジトリ直下からコピーして使える例です。各コマンドは名前を完全一致で1試験選ぶ想定です。
+実行結果の試験名・選択件数を確認し、**選択0件を成功としない**でください。関数の移動・改名時はfilterも確認します。
+
+**純粋な変換・表示:** [tests/body.rs](tests/body.rs) の
+`markdown_headings_and_nested_emphasis_keep_lines_and_unicode` は公開 `body::display` から改行・Unicode・原文保持を確認します。
+[tests/tui_shell.rs](tests/tui_shell.rs) の
+`shell_shows_all_five_panels_only_at_the_full_layout_boundary` は公開Shell→TestBackendで100x24とcompact境界の表示を確認します。
+どちらも製品process／実端末は不要ですが、実signalや端末復元の保証にはなりません。
+
+```sh
+cargo test --locked --test body markdown_headings_and_nested_emphasis_keep_lines_and_unicode -- --exact --nocapture
+cargo test --locked --test tui_shell shell_shows_all_five_panels_only_at_the_full_layout_boundary -- --exact --nocapture
+```
+
+**実CLI・HTTPS:** [tests/cli_help_version.rs](tests/cli_help_version.rs) の
+`bl_cli_help_needs_neither_configuration_nor_a_terminal` は空設定・環境変数隔離・非TTYで実 `bl-cli` を起動し、help引数、stdout／stderr／exitを確認します（HTTPSは使いません）。
+[tests/issue_view.rs](tests/issue_view.rs) の
+`json_view_preserves_original_fields_and_builds_url_without_project_get` は実CLI＋証明書検証付きローカルHTTPSでJSON原文・構築URL・認証header・対象GETだけであることを確認します。
+libraryの値比較だけでは、CLIの入出力や実認証・送受信は保証できません。
+
+```sh
+cargo test --locked --test cli_help_version bl_cli_help_needs_neither_configuration_nor_a_terminal -- --exact --nocapture
+cargo test --locked --test issue_view json_view_preserves_original_fields_and_builds_url_without_project_get -- --exact --nocapture
+```
+
+**PTY固有のsignal・editor復元:** [src/tui.rs](src/tui.rs) の
+`tui::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff` は共通loop／guardから実PTY／editorへ引き渡し、cooked入力の専有、原文・他欄保持、一時file削除、中断・復元失敗を含む端末復元を確認します。
+同fileの `tui::tests::shell_restores_when_sigint_arrives_during_entry_before_the_first_frame` は初回描画前のSIGINTと130終了・復元を確認します。
+通常q終了やTestBackendの描画では代替できません。Cargoの完全一致filterには `tui::tests::` も含めます。
+
+```sh
+cargo test --locked --lib tui::tests::body_editor_roundtrip_and_failures_use_shared_terminal_handoff -- --exact --nocapture
+cargo test --locked --lib tui::tests::shell_restores_when_sigint_arrives_during_entry_before_the_first_frame -- --exact --nocapture
+```
+
+### 開発途中と最終差分の検証
+
+開発途中は変更箇所と受け皿となる既存試験をfocusedで確認します。最終差分では上記[品質確認](#品質確認)の正式チェックとrelease buildを行い、focusedで代替しません。
+既存manual用2 ignoredは実端末確認用として区別し、新しいskip／ignore、成功までの無変更retry、timeout延長や期待の無差別緩和で失敗を隠しません。
+固定反復や性能閾値は、必要な問いと予算がある場合にだけ別途決めます。無意味なRED・反復・性能ノルマを保証確認の代替にしません。
+失敗時はその実行を停止してassert・安全な診断と差分の関係を確認し、後の成功で失敗記録を置き換えません。無関係の既存失敗・製品原因・原因不明なら、対象を無断で広げず未完了として報告します。
+
+#57の最終検証は[改訂Plan「動作確認方法」](docs/plans/test-infrastructure-performance.md#動作確認方法)と[優先追補](https://github.com/minorunakamura/backlog-cli/issues/57#issuecomment-6545857516)に従い、文書を含む最終差分で正式チェックを各1回行います。
+cargo-audit 0.22.2・通常DB更新・監査前後のCargo.lock hash不変を確認し、全体試験は `/usr/bin/time -l cargo test --locked --all-targets` の同じ1回からwall／suite時間を参考値として記録します。旧workloadとの厳密な速度比較・中央値・flake不存在の証明にはしません。
+HEAD／diff・環境・コマンド・終了コード・警告・成功／失敗／ignored・未実施事項を[手動受入記録](docs/testing/manual-acceptance.md)へ追記し、過去の成功を新差分の証拠へ流用しません。コード／fixtureが変わった場合は影響する検証を取り直します。
+今回は固定3回・10反復・性能閾値・別途release直接再演を要求しませんが、正式release buildと既存の実30秒timeoutの6ケース・各CLIの時間assertは維持します。
+実CIは既存workflowとの設定整合までとし、実CI・別途release直接操作・実端末／IME・実Backlogは今回未実施と記録します。既存release再現手順・fixturesや他の機能Issueの受入条件は変更しません。
+
 ## テストと今回の範囲
 
 承認済み [Plan](docs/plans/backlog-cli-initial.md) と
 [基本設計](docs/designs/backlog-cli.md) を参照してください。
-公開境界を一つの失敗テスト→最小実装の縦sliceで検証します。
+新しい振る舞いは公開境界を一つの失敗テスト→最小実装の縦sliceで検証します。
 初期基盤の `tests/cli_help_version.rs` は、実CLIプロセスのargv/stdin/stdout/stderr/exitを
 境界に、環境変数を消し、空のHOME/XDG_CONFIG_HOME/cwdと非TTYでhelp/versionを確認します。
 内部private関数の名前や実装詳細はテストに固定しません。
@@ -328,7 +396,7 @@ statusとwrite確度、method／path／form／認証と要求件数を確認し�
 最大6並列は資源数の上限でありhard deadlineではなく、既存Harnessのport読取やCommand待機のhang限界は残ります。
 開発途中は変更対象のfocused確認を使い、timeout保証自体の確認には上記groupを実行してください。
 正式な `cargo test --locked --all-targets` は毎回この全6ケースも含み、focused確認で代替しません。
-group wall40秒以下という性能判定は、各CLIの29秒以上40秒未満のassertとは別に計測します。
+group wallは参考値であり、40秒以下という性能合否は設けません。各CLIの29秒以上40秒未満という既存assertは維持します。
 
 harnessは `tests/fixtures/https_server.py` をloopbackの動的portへ起動します。
 serverごとに一度、OpenSSLでlocalhostのSANと1日の有効期限を持つ自己署名証明書と
