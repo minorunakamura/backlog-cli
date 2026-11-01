@@ -55,12 +55,32 @@ def report_failure(failure):
                     continue
     except (OSError, KeyError):
         pass
+    markers = {"project_list": "> Project List", "issue_list": "> Issue List",
+               "issue_detail": "> Issue Detail", "comment": "> Comment"}
+    terminal_size = {"rows": None, "columns": None}
+    screen_focus_markers = dict.fromkeys(markers)
+    raw_focus_markers_seen = dict.fromkeys(markers)
+    # Diagnostic failures must not replace the original failure or prevent child cleanup.
+    try:
+        rows, columns = struct.unpack("HHHH", fcntl.ioctl(slave, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+        terminal_size = {"rows": rows, "columns": columns}
+    except Exception:
+        pass
+    try:
+        raw = output.decode("utf-8", "replace")
+        raw_focus_markers_seen = {key: marker in raw for key, marker in markers.items()}
+        screen = screen_text(raw)
+        screen_focus_markers = {key: marker in screen for key, marker in markers.items()}
+    except Exception:
+        pass
     # Allowlist metadata only: no exception message, steps, screens, or raw HTTP records.
     print(json.dumps({"failure": failure, "step_index": step_index,
                       "elapsed": time.monotonic() - started, "sent_at": sent_at[:step_index],
                       "request_counts": request_counts[:step_index],
                       "request_count": len(requests), "requests": requests,
-                      "child_pid": child.pid}), file=sys.stderr, flush=True)
+                      "child_pid": child.pid, "terminal_size": terminal_size,
+                      "screen_focus_markers": screen_focus_markers,
+                      "raw_focus_markers_seen": raw_focus_markers_seen}), file=sys.stderr, flush=True)
 
 
 mode, binary, *args = sys.argv[1:]

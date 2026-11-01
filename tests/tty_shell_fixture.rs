@@ -172,8 +172,16 @@ try:
         {"method": "GET", "path": "/api/v2/space", "ordinal": 1},
         {"method": "GET", "path": "/api/v2/projects", "ordinal": 1},
     ]
+    assert report["terminal_size"] == {"rows": 24, "columns": 100}, report
+    for field in ["screen_focus_markers", "raw_focus_markers_seen"]:
+        assert set(report[field]) == {"project_list", "issue_list", "issue_detail", "comment"}, report
+        assert all(type(value) is bool for value in report[field].values()), report
+    if case == "deadline":
+        assert report["screen_focus_markers"]["issue_list"] is True, report
+        assert report["raw_focus_markers_seen"]["issue_list"] is True, report
     assert set(report) == {"failure", "step_index", "elapsed", "sent_at", "request_counts",
-                           "request_count", "requests", "child_pid"}
+                           "request_count", "requests", "child_pid", "terminal_size",
+                           "screen_focus_markers", "raw_focus_markers_seen"}
     try:
         os.kill(report["child_pid"], 0)
     except ProcessLookupError:

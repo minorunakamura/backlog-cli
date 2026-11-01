@@ -5489,7 +5489,7 @@ fn bl_comment_add_body_only_confirms_then_posts_once_and_refreshes_without_touch
         &h,
         json!([
             {"wait":"TITLE: Detail B-1","keys":"Llc"},
-            {"wait":"Add comment","keys":"\r"},
+            {"wait":"Body edit:","keys":"\r"},
             {"wait":"EDITOR READY","keys":"\n"},
             {"wait":"Body editor finished","keys":"\t\r\r\t\t\t\r"},
             {"wait":"Confirm comment","keys":"\r"},
@@ -5524,7 +5524,7 @@ fn bl_comment_add_patch_confirmation_interrupt_keeps_comment_operation_and_not_u
         h.root.join("shell-steps.json"),
         json!([
             {"wait":"TITLE: Detail B-1","keys":"Llc"},
-            {"wait":"Add comment","keys":"\t\rj\r\t\t\t\r"},
+            {"wait":"Body edit:","keys":"\t\rj\r\t\t\t\r"},
             {"wait":"Confirm comment","keys":"\u{3}"}
         ])
         .to_string(),
@@ -5577,7 +5577,7 @@ fn bl_comment_add_latest_fields_no_defaults_independent_changes_clears_and_resol
             h.config(json!({"editor":["/usr/bin/python3",format!("{}/tests/fixtures/editor.py",env!("CARGO_MANIFEST_DIR")),h.root.join("editor-record"),"body-file"],"profiles":{"default":{"spaceUrl":h.origin,"apiKeyEnv":"TEST_KEY"}}}));
             std::fs::write(h.root.join("editor-body"), " Raw comment\n\n").unwrap();
             steps.extend([
-                json!({"wait":"Add comment","keys":"\r"}),
+                json!({"wait":"Body edit:","keys":"\r"}),
                 json!({"wait":"EDITOR READY","keys":"\n"}),
             ]);
         }
@@ -5650,10 +5650,10 @@ fn bl_comment_add_empty_and_same_values_reject_without_write_or_discard_and_neve
         &h,
         json!([
             {"wait":"OLD COMMENT","keys":"Llc"},
-            {"wait":"Add comment","keys":"\t\t\t\t\r"},
+            {"wait":"Body edit:","keys":"\t\t\t\t\r"},
             {"wait":"No body or fields have changed","keys":"\u{1b}"},
             {"wait":"> Comment","keys":"c"},
-            {"wait":"Add comment","keys":"\t\r\r\t\rj\r\t\rjj\r\t\r"},
+            {"wait":"Body edit:","keys":"\t\r\r\t\rj\r\t\rjj\r\t\r"},
             {"wait":"No body or fields have changed","keys":"\u{1b}"},
             {"wait":"> Comment","keys":"q"}
         ]),
@@ -5718,7 +5718,7 @@ fn bl_comment_add_write_failures_preserve_method_certainty_and_never_refresh_or_
                 &h,
                 json!([
                     {"wait":"OLD COMMENT","keys":"Llc"},
-                    {"wait":"Add comment","keys":"\r"},
+                    {"wait":"Body edit:","keys":"\r"},
                     {"wait":"EDITOR READY","keys":"\n"},
                     {"wait":"Body editor finished","keys":if patch {"\t\rj\r\t\t\t\r"} else {"\t\t\t\t\r"}},
                     {"wait":"Confirm comment","keys":"s"},
@@ -5780,7 +5780,7 @@ fn bl_comment_add_post_and_patch_interrupt_abort_join_before_headers_after_heade
                 }
                 std::fs::write(h.root.join("shell-steps.json"),json!([
                     {"wait":"OLD COMMENT","keys":"Llc"},
-                    {"wait":"Add comment","keys":"\r"},
+                    {"wait":"Body edit:","keys":"\r"},
                     {"wait":"EDITOR READY","keys":"\n"},
                     {"wait":"Body editor finished","keys":if patch {"\t\rj\r\t\t\t\r"} else {"\t\t\t\t\r"}},
                     {"wait":"Confirm comment","keys":"s"},last
