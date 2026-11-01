@@ -3455,3 +3455,67 @@ CI原ログの3件のdeadlineを製品回帰と断定せず、証拠のある早
 別々のfresh built-in reviewerでCorrectness Review（`6388cec5-a73f-4e55-b98e-4cc62a8b2b33`）とPonytail Review（`aae11d2e-e2b2-4c24-be97-d5d2a2d581ff`、ponytail-review Skill）を完了しました。両者ともRoot保存の実CIログ・補正差分・正式要求・製品の入力／描画経路・Root制御RED／GREENと全チェックの一次artifactを確認し、具体的P0／P1／P2指摘なし、限定補正の技術判定は`OK with notes`です。
 
 Rootも、Body edit:が入力可能なFormだけで表示されること、2つの検索summaryが直前の状態と異なり適用成功後だけ成立すること、既存assert／操作キー／8秒deadline／製品build入力が不変であることを照合しました。採用・不採用に分ける追加指摘はなく、修正は不要と判断しました。記録以外の差分がReview対象から不変であることを確認してから最終Code Review gateを呼びます。Reviewer自身による再実行・実CI成功の報告ではありません。修正後実CIは未確認、追加commit／push・mergeは未実施です。
+
+### #23 / PR #62 2回目CI失敗の限定補正・安全診断（2026-10-31 UTC）
+
+開始HEAD `c7426850f13a9a1eea84362ffea1f1b17af6df2f`、branch `feat/tui-comment-update`、clean。正式Issue #23／承認済みPlan／基本設計の要求は不変です。実CI run `41240577281`（同HEAD）はexit101、`tui_process`は117成功・2失敗。一次ログは `/tmp/backlog-pr62-ci2.m5JOK7BQ/failed.log` です。今回も製品修正・CI解消完了とは判定しません。
+
+**根拠のあるコメント追加同期の横展開:** `bl_comment_add_post_and_patch_interrupt_abort_join_before_headers_after_headers_and_refresh` は8秒deadline・step_index2・12 GET、editor未到達で失敗しました。Rootは前回と同じrepo外wrapperで `/api/v2/resolutions` の一時responseだけを `header_delay:0.7` にし、同じstep_index2・12 GETで制御RED（exit101）を確認済みです。Workerは原ログ／exitを読み、同じwrapper／mode／exactで補正後GREENを確認しました。RootのREDは `interrupt-delay-red.{log,exit}`（同directory）であり、WorkerがREDを再実行した記録ではありません。
+
+前回は当時失敗した2箇所だけを直し、同じ`Add comment` entry待ちの別callerを取りこぼしました。今回、残る7箇所をcaller単位で確認し、いずれもLoading取消ではなくForm入力が目的であるため、Formにだけ存在する`Body edit:`待ちへ変更しました。対象は `bl_comment_add_` のbody_only／patch_confirmation_interrupt／latest_fields／empty_and_same_values（2箇所）／write_failures／post_and_patch_interruptの6関数です。検索など他の待機は変更せず、新helperも追加していません。既存の全assert・操作キー・8秒deadline・中断応答性`elapsed < 5`は維持しました。
+
+**未再現の検索失敗:** `search_dialog_direct_reproduction_fixture_exercises_normal_clear_and_cross_without_writes` は実CIで8秒deadline・step_index19・33 GET。step18はReturned issue待ち＋0.3秒後に24×100へのresizeとLを同時送信し、step19は`> Issue Detail`待ちです。開始約2.3秒時点でL送信済みですが、旧診断には失敗画面・キー受信・実focusの情報がありません。Rootの通常exact 1回と、repo外driverで停止中にresize＋LをqueueしてCONTした診断はともにexit0で、CI再現ではありません。40×12以上のL受付はpreview busyと独立し、right_focus初期値はDetail、該当project confirmは`apply:false`で、B-4 preview完了だけによるfocus巻戻しの根拠はありません。timeout不足・preview未完了・resize raceのいずれも原因と断定しません。Workerの通常exactも下表のとおり1回成功しましたが、検索根因は未確定・未解決のままです。検索steps／製品sourceへの推測修正や外部driverのrepo追加はしていません。
+
+**次回失敗に備えた安全診断:** `tty_shell.py::report_failure` のstderr JSONにのみ次を追加しました。通常成功出力・step駆動・timeout・例外を起こす操作順は不変です。
+
+- `terminal_size`: `rows`／`columns`の整数。取得失敗時は各値`null`。
+- `screen_focus_markers`: `project_list`／`issue_list`／`issue_detail`／`comment`の固定キーに、現在の簡易`screen_text`に固定marker `> Project List`／`> Issue List`／`> Issue Detail`／`> Comment`が含まれるかのboolean。再構成失敗時は`null`。
+- `raw_focus_markers_seen`: 同じ固定markerが蓄積raw出力に現れたことがあるかのboolean（観測失敗時`null`）。`true`は過去の出現であって現在focusではなく、`false`もdelta出力によってmarkerが分割され得るため不在証明ではありません。screen側も可視markerの有無であり、実focus・キー受信を証明しません。
+
+新metadataにraw screen／本文／keys／wait文字列／例外message／header／query／credentialsは出しません。端末寸法取得・画面再構成の診断例外は局所で捕捉し、元failure報告と既存finallyのchild kill＋waitを維持します。既存`tests/tty_shell_fixture.rs::driver_failure`の実process seamへキー集合・型・24×100・deadline時の既知Issue List markerのassertだけを追加し、secret非漏洩・child reapのassertは保持しました。exceptionケースは既存の即時注入のままで、画面観測待ちや固定sleepを追加していません。新process／matrixは追加していません。
+
+**Worker実測:** macOS 26.7.1／arm64／rustc 1.99.1。ログ／終了コードはprivate directory `/tmp/backlog-pr62-ci2-worker.JBmEQmD7/` の表中basename＋`.log`／`.exit`。各cargo実行中だけ`/usr/bin/caffeinate -is`を使用しました。
+
+| コマンド（repo直下、cargoの前に上記caffeinate） | exit・結果 | basename |
+|---|---|---|
+| `cargo test --locked --test tty_shell_fixture tty_shell_deadline_reports_safe_progress_and_reaps_the_child -- --exact --nocapture`（assert追加・診断実装前） | 101、選択1件が`KeyError: terminal_size`でRED | `diagnostic-red` |
+| `cargo test --locked --test tty_shell_fixture -- --nocapture`（診断実装後） | 0、3成功、0失敗／ignored、1.29秒 | `diagnostic-green` |
+| `env PATH="/tmp/backlog-pr62-ci.gIJ1NoSs:$PATH" CI_REPRO_MODE=comment-load cargo test --locked --test tui_process bl_comment_add_post_and_patch_interrupt_abort_join_before_headers_after_headers_and_refresh -- --exact --nocapture` | 0、選択1件・成功1件、26.94秒（12 scenario全体、各8秒deadline不変） | `interrupt-controlled-green` |
+| `cargo test --locked --test tui_process bl_comment_add_ -- --nocapture` | 0、9成功、20.66秒 | `comment-add-normal` |
+| `cargo test --locked --test tui_process search_dialog_direct_reproduction_fixture_exercises_normal_clear_and_cross_without_writes -- --exact --nocapture` | 0、選択1件・成功1件、4.22秒。CI未再現 | `search-normal` |
+| `cargo test --locked --test tui_process bl_comment_edit_ -- --nocapture` | 0、5成功、4.84秒 | `comment-edit-normal` |
+| `cargo fmt --all -- --check` | 0 | `fmt` |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、警告なし | `clippy` |
+
+選択0件を成功扱いしていません。無変更retry・timeout延長・新ignore・assert緩和はありません。CONTRIBUTINGの既存診断・テスト方針と矛盾しないため同文書は変更していません。最終文書を含む`git diff --check`はexit0、`git diff --cached --name-only`は空です。
+
+**未解決事項と残gate:** 検索失敗の根因は未確定で、追加metadataを含む実GitHub CIは未実行。診断取得自体の失敗時は`null`となる防御をコードで確認しましたが、その故障注入は今回の既存process試験へ追加していません。全対象／audit／release等と独立Review・最終判断はRootが別途実施します。製品source／依存／CI／Plan／仕様は一切変更していません。既存利用者受入済みbl SHA-256 `30c2b4f5bc93c9ef7c684650096768247a59e97d7f5d7365993a571d155e53a0`の記録は維持し、今回のテスト診断検証を新しい製品実Backlog受入と混同しません。Workerは新規実API操作・credentials探索・子Agent・CodeGraph init・stage／commit／stash／push／Issue更新／mergeを行っていません。READY／CI修正完了とは判定しません。
+
+### #23 / PR #62 2回目CIへの部分補正：Root独立検証
+
+Rootは7箇所が同じロード済みForm入力への同期であることをcallerごとに確認し、tests／CONTRIBUTINGの通常操作に`wait: Add comment`が残っていないことを検索しました。検索steps・製品source・依存・CI・Planは不変です。失敗時metadataは固定key・寸法・boolean／nullだけであり、成功出力・step進行・deadline・子process回収の経路は変更していません。
+
+以下はRootが補正後に別実行した結果で、ログ／exitは `/tmp/backlog-pr62-ci2.m5JOK7BQ/root-results/` です。実行中だけ`caffeinate -is`を使用しtool枠300秒を維持しました。
+
+| Rootの確認 | exit・結果 |
+|---|---|
+| 失敗したコメント追加中断試験の同wrapper／mode／exact | 0、選択1件・成功1件、26.82秒（12 scenario合計、各deadline／中断応答性不変）。`interrupt-controlled.log`／`.exit` |
+| `cargo test --locked --test tty_shell_fixture -- --nocapture` | 0、3成功。寸法・focus marker metadata、secret非漏洩、child reap、要求ordinal gateを確認 |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo test --locked --all-targets` | 0、24 suite、354成功・0失敗・既存実端末用2 ignored。通常条件の検索fixtureも成功したが、CI原因の再現・解消証拠にはしない |
+| `cargo clippy --locked --all-targets -- -D warnings` | 0、Rust警告なし |
+| `cargo audit --version`／`cargo audit --file Cargo.lock` | 両0、0.22.2、通常DB更新、1395 advisory／230依存、脆弱性／警告報告なし |
+| 監査前後lock hash比較 | 0、両方`1d1474e540d5a406df52e7be59ace75a6a4d12f4d13c7360abc94a208229be16` |
+| `cargo build --locked --release --target aarch64-apple-darwin --bins` | 0、両binary hash不変 |
+| `python3 /tmp/backlog-issue23-resume/direct.py` | 0。release製品の13 GET＋1 content PATCH、Enter非送信／独立s、同ID／ページ／履歴／旧List保持、事後GETゼロ、原文・safe描画・tempfile削除・端末復元を再確認 |
+| `git diff --check` | 0 |
+
+既存TLS拒否等のserver例外見出し5件は保持し、該当試験成功と区別しています。bl SHA-256は`30c2b4f5bc93c9ef7c684650096768247a59e97d7f5d7365993a571d155e53a0`、bl-cliは`be2b535b6f282923c467fd960b59d7bfc7714b057fcb9bf16aa3af54bd471e5d`で既存利用者受入のbinaryと同一です。今回新しい実Backlog操作はしていません。
+
+これは既知原因の同期補正と安全診断のローカル検証結果であり、検索失敗は引き続き根因未確定・未解決です。次回の実CI失敗時に追加metadataを根拠として切り分ける必要があります。この記録時点で独立Review／最終Code Review、追加commit／pushは未実施で、READY／CI修正完了とは判定しません。
+
+### #23 / PR #62 部分補正と診断の独立2 Review完了
+
+別々のfresh built-in reviewerでCorrectness Review（`b0dbc232-3ab6-4f84-b09c-06d97bb11369`）とPonytail Review（`5ad1dfae-9c61-4d06-a9b6-a94e5e7cf176`、ponytail-review Skill）を完了しました。両者はRootの保存した4ファイル差分、正式要求、関連する一次コード、実CI失敗ログ、制御RED／GREEN、Root正式チェックの一次artifactを照合しています。既知同期補正・安全診断の部分差分には具体的P0／P1／P2指摘なし、技術判定は`OK with notes`でした。採用・不採用に分ける追加指摘はありません。
+
+Rootは7 callerと安全診断の境界、既存assert／入力／deadline／cleanup経路の維持を確認し、この部分差分に追加修正は不要と判断しました。ただし、検索step 19のCI失敗は根因未確定・未解決であり、両ReviewerとRootともPR全体は**BLOCKED**と区別しています。今回の部分差分へのCode Review承認を、検索の修正完了・CI成功・READYの代わりにしません。追加metadataを含むCIで再発した場合はその観測から再調査し、再発しない場合も単発成功を根因解消・flake不存在と断定しません。記録以外の差分がReview対象から不変であることを確認後、部分差分の最終Code Review gateを呼びます。追加commit／pushはまだ行っていません。
